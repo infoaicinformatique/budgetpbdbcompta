@@ -1,0 +1,8 @@
+# Reverse proxy HTTPS avec certificat Let's Encrypt automatique.
+# Installation : copier dans /etc/caddy/Caddyfile puis `systemctl reload caddy`.
+# Prérequis : ports 80 et 443 ouverts vers 77.159.204.155.
+budgetpbdbcompta.aic-informatique.net {
+	encode zstd gzip
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+	reverse_proxy 127.0.0.1:3000
+}

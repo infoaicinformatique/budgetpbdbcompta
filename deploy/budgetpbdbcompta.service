@@ -1,0 +1,23 @@
+# Service systemd : démarre `npm start` au boot et le relance en cas d'arrêt.
+#   cp deploy/budgetpbdbcompta.service /etc/systemd/system/
+#   cp .env.example /etc/budgetpbdbcompta.env   (puis adapter)
+#   systemctl daemon-reload && systemctl enable --now budgetpbdbcompta
+[Unit]
+Description=Budget Manager (budgetpbdbcompta.aic-informatique.net)
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/opt/budgetpbdbcompta
+EnvironmentFile=-/etc/budgetpbdbcompta.env
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

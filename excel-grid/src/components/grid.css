@@ -1,0 +1,254 @@
+/* --------------------------------------------------------------
+   Habillage inspiré d'Excel : lignes fines grises, en-têtes sobres,
+   vert Excel (#217346) pour la sélection, pointillés animés pour la
+   plage copiée.
+
+   Les dimensions (--xl-cell-w, --xl-cell-h, ...) sont injectées depuis
+   layout.ts afin que la table et les calques restent alignés.
+---------------------------------------------------------------*/
+
+.xl-app {
+  --xl-green: #217346;
+  --xl-line: #d4d4d4;
+  --xl-head-bg: #f5f5f5;
+  --xl-head-active-bg: #d8e4dd;
+  --xl-head-text: #3c3c3c;
+  --xl-sel-fill: rgba(33, 115, 70, 0.08);
+
+  font-family: Calibri, 'Segoe UI', -apple-system, BlinkMacSystemFont, Arial, sans-serif;
+  font-size: 13px;
+  color: #1a1a1a;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: #fff;
+}
+
+/* ---------------- Barre de formule ---------------- */
+
+.xl-formula-bar {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--xl-line);
+  background: #fff;
+  padding: 4px 6px;
+  flex-shrink: 0;
+}
+
+.xl-name-box {
+  width: 110px;
+  border: 1px solid var(--xl-line);
+  background: #fff;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  font-size: 12px;
+  color: var(--xl-head-text);
+}
+
+.xl-fx {
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  font-style: italic;
+  font-family: Cambria, Georgia, serif;
+  color: #6b6b6b;
+}
+
+.xl-formula-input {
+  flex: 1;
+  border: 1px solid var(--xl-line);
+  padding: 3px 8px;
+  font-family: Consolas, 'SF Mono', Menlo, monospace;
+  font-size: 12.5px;
+  outline: none;
+}
+.xl-formula-input:focus { border-color: var(--xl-green); }
+
+/* ---------------- Feuille ---------------- */
+
+.xl-grid-wrapper {
+  flex: 1;
+  overflow: auto;
+  outline: none;
+  background: #fff;
+}
+
+/* Conteneur positionné : sert de repère aux calques absolus. */
+.xl-sheet {
+  position: relative;
+  width: max-content;
+}
+
+.xl-grid {
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+  user-select: none;
+}
+
+/* En-têtes */
+
+.xl-corner,
+.xl-col-head,
+.xl-row-head {
+  background: var(--xl-head-bg);
+  color: var(--xl-head-text);
+  font-weight: 400;
+  font-size: 12px;
+  border-right: 1px solid var(--xl-line);
+  border-bottom: 1px solid var(--xl-line);
+  text-align: center;
+  position: sticky;
+  z-index: 3;
+}
+
+.xl-corner {
+  width: var(--xl-row-head-w);
+  min-width: var(--xl-row-head-w);
+  height: var(--xl-col-head-h);
+  top: 0;
+  left: 0;
+  z-index: 5;
+}
+
+.xl-col-head {
+  width: var(--xl-cell-w);
+  min-width: var(--xl-cell-w);
+  height: var(--xl-col-head-h);
+  top: 0;
+}
+
+.xl-row-head {
+  width: var(--xl-row-head-w);
+  min-width: var(--xl-row-head-w);
+  height: var(--xl-cell-h);
+  left: 0;
+}
+
+/* En-tête surligné quand la ligne/colonne fait partie de la sélection */
+.xl-head--active {
+  background: var(--xl-head-active-bg);
+  color: var(--xl-green);
+  font-weight: 600;
+}
+
+/* Cellules */
+
+.xl-cell {
+  position: relative;
+  width: var(--xl-cell-w);
+  height: var(--xl-cell-h);
+  padding: 0 4px;
+  border-right: 1px solid var(--xl-line);
+  border-bottom: 1px solid var(--xl-line);
+  background: #fff;
+  overflow: hidden;
+  white-space: nowrap;
+  text-align: left;
+  cursor: cell;
+  font-variant-numeric: tabular-nums;
+}
+
+.xl-cell--num { text-align: right; }
+
+.xl-cell__text {
+  display: block;
+  overflow: hidden;
+  line-height: calc(var(--xl-cell-h) - 2px);
+}
+
+/* Plage sélectionnée : fond vert très pâle */
+.xl-cell--selected { background: var(--xl-sel-fill); }
+
+/* Cellule active : encadré vert épais, fond blanc */
+.xl-cell--active {
+  background: #fff;
+  box-shadow: inset 0 0 0 2px var(--xl-green);
+  z-index: 2;
+}
+
+/* Erreur de formule */
+.xl-cell--error { color: #c00000; }
+
+/* Teinte de la zone qui sera remplie pendant le glissement */
+.xl-cell--fill { background: rgba(33, 115, 70, 0.06); }
+
+/* Édition en place */
+.xl-cell__input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: none;
+  outline: 2px solid var(--xl-green);
+  outline-offset: -2px;
+  padding: 0 4px;
+  font: inherit;
+  background: #fff;
+  z-index: 4;
+}
+
+/* Poignée de recopie : petit carré vert au coin bas-droit */
+.xl-fill-handle {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  width: 6px;
+  height: 6px;
+  background: var(--xl-green);
+  border: 1px solid #fff;
+  cursor: crosshair;
+  z-index: 6;
+}
+.xl-fill-handle:hover { transform: scale(1.4); }
+
+/* ---------------- Calques ---------------- */
+
+/* Contour de la plage copiée : un seul rectangle en pointillés animés
+   ("marching ants"), dessiné par quatre dégradés répétés. */
+.xl-ants {
+  position: absolute;
+  pointer-events: none;
+  z-index: 2;
+  background-image:
+    repeating-linear-gradient(90deg, var(--xl-green) 0 4px, transparent 4px 8px),
+    repeating-linear-gradient(90deg, var(--xl-green) 0 4px, transparent 4px 8px),
+    repeating-linear-gradient(0deg,  var(--xl-green) 0 4px, transparent 4px 8px),
+    repeating-linear-gradient(0deg,  var(--xl-green) 0 4px, transparent 4px 8px);
+  background-size: 100% 1px, 100% 1px, 1px 100%, 1px 100%;
+  background-position: 0 0, 0 100%, 0 0, 100% 0;
+  background-repeat: no-repeat;
+  animation: xl-ants 0.5s linear infinite;
+}
+
+@keyframes xl-ants {
+  to {
+    background-position: 8px 0, -8px 100%, 0 -8px, 100% 8px;
+  }
+}
+
+/* Aperçu de recopie : cadre gris autour de la zone visée */
+.xl-fill-ghost {
+  position: absolute;
+  pointer-events: none;
+  z-index: 2;
+  border: 1px dashed #555;
+  background: rgba(0, 0, 0, 0.03);
+}
+
+/* ---------------- Barre d'état ---------------- */
+
+.xl-status {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-top: 1px solid var(--xl-line);
+  background: var(--xl-head-bg);
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--xl-head-text);
+  flex-shrink: 0;
+}
+
+.xl-status__hint { color: #6b6b6b; }

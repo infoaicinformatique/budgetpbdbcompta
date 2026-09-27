@@ -1,0 +1,16 @@
+{
+  "name": "budgetpbdbcompta",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Budget Manager — Palm Beach Cannes, servi sur https://budgetpbdbcompta.aic-informatique.net",
+  "type": "module",
+  "engines": {
+    "node": ">=22.6"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "start:public": "HOST=0.0.0.0 node server.mjs",
+    "dev": "npm --prefix excel-grid run dev",
+    "verify": "npm --prefix excel-grid run verify"
+  }
+}
