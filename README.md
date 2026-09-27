@@ -35,6 +35,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now budgetpbdbcompta
 # 3. HTTPS — au choix :
 #   Caddy (certificat Let's Encrypt automatique)
 sudo cp /opt/budgetpbdbcompta/deploy/Caddyfile /etc/caddy/Caddyfile && sudo systemctl reload caddy
+#   ou Apache déjà en place + certbot : voir deploy/apache.conf
 #   ou nginx + certbot : voir deploy/nginx.conf
 ```
 
