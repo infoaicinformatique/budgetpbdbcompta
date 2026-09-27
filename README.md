@@ -21,7 +21,23 @@ Variables (voir `.env.example`) : `HOST`, `PORT`, `PUBLIC_HOST`,
 `BASIC_AUTH_USER` / `BASIC_AUTH_PASSWORD` (protection par mot de passe,
 recommandée : l'application embarque le plan comptable et les budgets).
 
-## Déploiement sur 77.159.204.155
+## Déploiement Docker (recommandé)
+
+```bash
+sudo git clone https://github.com/infoaicinformatique/budgetpbdbcompta.git /opt/docker/budgetpbdbcompta
+cd /opt/docker/budgetpbdbcompta
+sudo cp .env.example .env            # renseigner BASIC_AUTH_USER / BASIC_AUTH_PASSWORD
+sudo docker compose up -d --build
+```
+
+L'image ne contient que `server.mjs` et `budget-app.html`. Dans Nginx Proxy
+Manager (http://192.168.100.236:81), créer un Proxy Host
+`budgetpbdbcompta.aic-informatique.net` → `http://<IP de l'hôte Docker>:3000`
+avec un certificat Let's Encrypt (Force SSL).
+
+Mise à jour : `sudo git pull && sudo docker compose up -d --build`.
+
+## Déploiement sans Docker sur 77.159.204.155
 
 ```bash
 # 1. Code
