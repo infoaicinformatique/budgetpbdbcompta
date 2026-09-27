@@ -1,0 +1,23 @@
+# Déploiement Docker dans /opt/docker/budgetpbdbcompta :
+#   cp .env.example .env   (renseigner BASIC_AUTH_USER / BASIC_AUTH_PASSWORD)
+#   docker compose up -d --build
+# Nginx Proxy Manager redirige budgetpbdbcompta.aic-informatique.net vers <IP de l'hôte>:3000.
+services:
+  budgetpbdbcompta:
+    build: .
+    image: budgetpbdbcompta:latest
+    container_name: budgetpbdbcompta
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3000
+    ports:
+      - "3000:3000"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
