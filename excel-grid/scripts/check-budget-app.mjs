@@ -1006,7 +1006,7 @@ check('Paramètres : rubrique LDAP lue dans le cookie déposé par le serveur (2
   const serverSource = readFileSync(join(root, '..', 'server.mjs'), 'utf8');
   assert.ok(serverSource.includes("const AUTH_INFO_COOKIE = '" + app.SERVER_AUTH_COOKIE + "'"),
     'server.mjs et budget-app.html doivent parler du même cookie');
-  assert.ok(/'Set-Cookie': authInfoCookie\(req, auth\)/.test(serverSource),
+  assert.ok(/'Set-Cookie': \[authInfoCookie\(req, auth\)\]/.test(serverSource),
     'le serveur doit déposer le cookie en servant la page (200 comme 304)');
 
   const info = {
@@ -1145,6 +1145,19 @@ check('Droits tenus par le serveur : l’administrateur règle les droits dans P
     app.__setAuthPermissionsIdForTest(null);
     app.__clearServerSession();
   }
+});
+
+check('Déconnexion : identifié par l’annuaire, le bouton passe par /deconnexion (28/09/2026)', () => {
+  // Basic n'a pas de déconnexion : seul un 401 du serveur fait oublier au
+  // navigateur ses identifiants. Le bouton doit donc y mener, et rester visible.
+  assert.ok(/if \(serverSession\) \{\s*location\.href = '\/deconnexion';/.test(appSource),
+    'en mode serveur, « Déconnexion » doit mener à /deconnexion');
+  assert.ok(/signOutButton\.hidden = !user;/.test(appSource), 'le bouton reste visible pour une personne de l’annuaire');
+  const serverSource = readFileSync(join(root, '..', 'server.mjs'), 'utf8');
+  assert.ok(/url\.pathname === '\/deconnexion'[\s\S]{0,120}handleLogout\(req, res\)/.test(serverSource),
+    'server.mjs doit traiter /deconnexion avant le contrôle d’accès');
+  assert.ok(/res\.writeHead\(401, \{\s*'WWW-Authenticate': 'Basic realm="Budget Manager"/.test(serverSource),
+    '/deconnexion doit répondre 401 dans le même domaine d’authentification');
 });
 
 check('Paramètres : ses rubriques ne sont jamais retirées par la matrice des droits', () => {

@@ -3412,7 +3412,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-09-28.2';
+const APP_BUILD = '2026-09-28.3';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -9176,9 +9176,7 @@ function renderNavPermissions() {
   const signOutButton = document.getElementById('signout-button');
   if (signOutButton) {
     const user = authEnabled() ? currentUser() : null;
-    // Identifié par le serveur : se déconnecter se fait en fermant le
-    // navigateur, l'application n'a pas la main sur l'authentification.
-    signOutButton.hidden = !user || Boolean(serverSession);
+    signOutButton.hidden = !user;
     if (user) signOutButton.textContent = 'Déconnexion (' + user.username + ')';
   }
   // Les six boutons Administration ont rejoint le panneau latéral du compte
@@ -29970,6 +29968,12 @@ function hidePasswordChange() {
 }
 
 document.getElementById('signout-button').addEventListener('click', function () {
+  // Identifié par le serveur (annuaire) : c'est au serveur de faire oublier
+  // ses identifiants au navigateur (voir `handleLogout`, server.mjs).
+  if (serverSession) {
+    location.href = '/deconnexion';
+    return;
+  }
   signOut();
   hideLogin();
   showLogin('Vous êtes déconnecté.');

@@ -216,6 +216,51 @@ function authInfoCookie(req, auth) {
   return `${AUTH_INFO_COOKIE}=${value}; Path=/; SameSite=Strict` + (https ? '; Secure' : '');
 }
 
+/* ---------------- Déconnexion ----------------
+
+   L'authentification Basic n'a pas de déconnexion : le navigateur garde
+   l'identifiant et le mot de passe et les renvoie seul. Le seul moyen de
+   les lui faire oublier est de répondre 401 à une requête qui les porte —
+   il les retire alors de sa mémoire et redemande. `/deconnexion` fait
+   exactement cela, une fois : le cookie `bm-deco` marque la déconnexion en
+   cours, pour que les identifiants saisis dans la fenêtre qui suit soient
+   acceptés (sinon la fenêtre reviendrait en boucle). */
+const LOGOUT_COOKIE = 'bm-deco';
+const LOGOUT_PAGE = '<!doctype html><html lang="fr"><head><meta charset="utf-8" />' +
+  '<meta name="viewport" content="width=device-width, initial-scale=1" /><title>Déconnecté — Budget Manager</title>' +
+  '<style>body{font-family:system-ui,sans-serif;background:#f6f3ec;color:#2d3320;display:grid;place-items:center;' +
+  'min-height:100vh;margin:0}main{background:#fff;border-radius:12px;padding:32px 40px;box-shadow:0 2px 12px #0001;' +
+  'max-width:420px;text-align:center}a{color:#2d3320;font-weight:600}</style></head><body><main>' +
+  '<h1 style="font-size:20px">Vous êtes déconnecté(e)</h1>' +
+  '<p>Vous pouvez fermer cet onglet, ou vous reconnecter avec un autre compte.</p>' +
+  '<p><a href="/">Se reconnecter</a></p></main></body></html>';
+
+function hasLogoutCookie(req) {
+  return new RegExp('(?:^|;\\s*)' + LOGOUT_COOKIE + '=1(?:;|$)').test(String(req.headers.cookie || ''));
+}
+
+async function handleLogout(req, res) {
+  const header = String(req.headers.authorization || '');
+  if (header && hasLogoutCookie(req)) {
+    // Identifiants saisis dans la fenêtre qui a suivi la déconnexion : si
+    // ce sont de bons identifiants, on rentre.
+    const auth = await authenticate(req);
+    if (auth.status === 0) {
+      res.writeHead(303, { Location: '/', 'Set-Cookie': LOGOUT_COOKIE + '=; Path=/; Max-Age=0; SameSite=Strict' });
+      return res.end();
+    }
+  }
+  // Une connexion LDAP mémorisée ne doit pas survivre à la déconnexion.
+  if (header) ldapCache.delete(createHash('sha256').update(header).digest('base64url'));
+  res.writeHead(401, {
+    'WWW-Authenticate': 'Basic realm="Budget Manager", charset="UTF-8"',
+    'Content-Type': 'text/html; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'Set-Cookie': LOGOUT_COOKIE + '=1; Path=/; Max-Age=120; SameSite=Strict; HttpOnly',
+  });
+  return res.end(req.method === 'HEAD' ? undefined : LOGOUT_PAGE);
+}
+
 const DENIED = {
   401: 'Authentification requise\n',
   429: 'Trop d’essais : réessayez dans quelques minutes\n',
@@ -370,6 +415,10 @@ async function handle(req, res) {
     return res.end('ok\n');
   }
 
+  if (url.pathname === '/deconnexion' && (req.method === 'GET' || req.method === 'HEAD')) {
+    return handleLogout(req, res);
+  }
+
   const api = url.pathname === API_PREFIX || url.pathname.startsWith(API_PREFIX + '/');
   if (req.method !== 'GET' && req.method !== 'HEAD' && !(api && (req.method === 'PUT' || req.method === 'DELETE'))) {
     res.writeHead(405, { Allow: api ? 'GET, PUT, DELETE' : 'GET, HEAD' });
@@ -413,7 +462,10 @@ async function handle(req, res) {
     'Last-Modified': app.lastModified,
     Vary: 'Accept-Encoding',
     // Aussi sur un 304 : la page reste en cache, mais l'identité change.
-    'Set-Cookie': authInfoCookie(req, auth),
+    // Une déconnexion restée en suspens (fenêtre fermée) est oubliée : sans
+    // cela, la prochaine déconnexion ramènerait tout droit sur le site.
+    'Set-Cookie': [authInfoCookie(req, auth)].concat(hasLogoutCookie(req)
+      ? [LOGOUT_COOKIE + '=; Path=/; Max-Age=0; SameSite=Strict'] : []),
   };
   if (req.headers['if-none-match'] === app.etag) {
     res.writeHead(304, headers);
