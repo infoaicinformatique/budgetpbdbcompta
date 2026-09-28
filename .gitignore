@@ -4,3 +4,4 @@ dist/
 *.local
 .env
 npm-debug.log*
+CLAUDE.local.md
