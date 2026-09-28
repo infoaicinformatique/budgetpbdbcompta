@@ -1,13 +1,16 @@
 # Déploiement Docker dans /opt/docker/budgetpbdbcompta (même modèle que anemo) :
 #   cp .env.example .env   (renseigner BASIC_AUTH_USER / BASIC_AUTH_PASSWORD)
-#   docker compose up -d --build
+#   docker compose pull && docker compose up -d
 # Nginx Proxy Manager : budgetpbdbcompta.aic-informatique.net → http://192.168.100.236:3000
 services:
   budgetpbdbcompta:
+    # Image construite par GitHub Actions à chaque changement de main
+    # (.github/workflows/docker-image.yml) et mise à jour par Watchtower.
+    # `docker compose up -d --build` reste possible pour construire sur place.
+    image: ghcr.io/infoaicinformatique/budgetpbdbcompta:latest
     build:
       context: .
       dockerfile: Dockerfile
-    image: budgetpbdbcompta:latest
     container_name: budgetpbdbcompta
     restart: unless-stopped
     ports:
@@ -34,6 +37,9 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    labels:
+      # Seuls les conteneurs portant ce label sont mis à jour par Watchtower.
+      - com.centurylinklabs.watchtower.enable=true
     networks:
       - budgetnet
 

@@ -49,8 +49,12 @@ cd /opt/docker/budgetpbdbcompta
 sudo cp .env.example .env
 sudo nano .env                       # décommenter et renseigner BASIC_AUTH_USER / BASIC_AUTH_PASSWORD
 sudo chmod 600 .env
-sudo docker compose up -d --build
+sudo docker login ghcr.io -u <utilisateur-github>   # une fois, jeton read:packages (voir 3.)
+sudo docker compose pull && sudo docker compose up -d
 ```
+
+(`sudo docker compose up -d --build` construit l'image sur place, sans passer
+par GHCR.)
 
 Les lignes `BASIC_AUTH_USER` et `BASIC_AUTH_PASSWORD` de `.env` ne doivent pas
 commencer par `#` : sinon l'application est publique, sans mot de passe.
@@ -144,42 +148,55 @@ curl -I https://budgetpbdbcompta.aic-informatique.net   # 401 attendu
 
 ## 3. Mise à jour
 
+Automatique avec Watchtower (ci-dessous). À la main :
+
 ```bash
-cd /opt/docker/budgetpbdbcompta && sudo git pull && sudo docker compose up -d --build
+cd /opt/docker/budgetpbdbcompta && sudo git pull && sudo docker compose pull && sudo docker compose up -d
 ```
 
 La copie du serveur doit suivre la branche `main` (`sudo git checkout main`).
 Rien à changer dans NPM.
 
-### Déploiement automatique (watcher)
+### Mise à jour automatique (Watchtower)
 
-Un timer systemd vérifie `main` sur GitHub **toutes les 2 minutes**. Quand elle
-a avancé, `deploy/auto-deploy.sh` avance la copie locale (fast-forward
-uniquement, jamais d'écrasement), reconstruit l'image, recrée le conteneur et
-attend qu'il soit « healthy ». Mettre à jour la production = fusionner une pull
-request dans `main`.
+1. À chaque changement de `main`, GitHub Actions (`.github/workflows/docker-image.yml`)
+   construit l'image et la publie sur `ghcr.io/infoaicinformatique/budgetpbdbcompta:latest`.
+2. Sur le serveur, **Watchtower** vérifie ce registre toutes les 5 minutes ; si
+   l'image a changé, il la télécharge et recrée le conteneur `budgetpbdbcompta`
+   avec les mêmes réglages (`.env`, port, réseau).
 
-Installation (une fois) :
+Mettre à jour la production = fusionner une pull request dans `main`.
+
+Watchtower ne touche qu'aux conteneurs portant le label
+`com.centurylinklabs.watchtower.enable=true` (déclaré dans `docker-compose.yml`) :
+NPM, anemo, etc. ne sont pas mis à jour tant qu'on ne leur ajoute pas ce label.
+
+**Installation (une fois).** Le dépôt étant privé, l'image l'est aussi : le
+serveur doit s'identifier sur GHCR avec un jeton GitHub *classic* limité au
+droit `read:packages` (GitHub → Settings → Developer settings → Personal access
+tokens → Tokens (classic)).
 
 ```bash
+# 1. Identification GHCR (crée /root/.docker/config.json, lu par Watchtower)
+sudo docker login ghcr.io -u <utilisateur-github>        # mot de passe = le jeton
+
+# 2. Application : passer sur l'image publiée
 cd /opt/docker/budgetpbdbcompta && sudo git checkout main && sudo git pull
-sudo cp deploy/budgetpbdbcompta-deploy.service deploy/budgetpbdbcompta-deploy.timer /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now budgetpbdbcompta-deploy.timer
-sudo systemctl start budgetpbdbcompta-deploy.service     # premier passage immédiat
+sudo docker compose pull && sudo docker compose up -d
+
+# 3. Watchtower
+sudo mkdir -p /opt/docker/watchtower
+sudo cp deploy/watchtower/docker-compose.yml /opt/docker/watchtower/
+cd /opt/docker/watchtower && sudo docker compose up -d
+sudo docker logs watchtower --tail 20
 ```
 
-Suivi :
+Suivi : `sudo docker logs -f watchtower`. Construction de l'image : onglet
+**Actions** du dépôt GitHub. Suspendre : `sudo docker stop watchtower`.
 
-```bash
-systemctl list-timers budgetpbdbcompta-deploy.timer      # prochain passage
-journalctl -u budgetpbdbcompta-deploy -n 50 --no-pager   # historique des déploiements
-```
-
-Le déploiement s'arrête (et l'erreur apparaît dans le journal) si la copie du
-serveur a été modifiée à la main : `sudo git status` pour voir quoi, puis
-`sudo git checkout -- .` pour revenir à la version du dépôt (`.env` n'est pas
-touché). Suspendre : `sudo systemctl stop budgetpbdbcompta-deploy.timer`.
+Le `docker-compose.yml` et le `.env` du serveur ne sont **pas** mis à jour par
+Watchtower (il ne remplace que l'image) : après un changement de
+`docker-compose.yml`, faire `sudo git pull && sudo docker compose up -d`.
 
 ## 4. Dépannage
 
@@ -192,6 +209,8 @@ touché). Suspendre : `sudo systemctl stop budgetpbdbcompta-deploy.timer`.
 | Page « Default Site / Congratulations » de NPM | l'hôte est hors ligne : vider l'onglet Advanced, vérifier le certificat dans l'onglet SSL, Save (ou ⋮ → Enable) ; `sudo docker exec npm ls /data/nginx/proxy_host/` doit lister `4.conf` |
 | HTTPS : `unrecognized name` | aucun certificat pour ce domaine dans NPM |
 | `docker compose build` : `open Dockerfile` ou `"/server.mjs": not found` | copie incomplète : recloner le dépôt et recopier `.env` |
+| `docker compose pull` / Watchtower : `unauthorized` ou `denied` | `sudo docker login ghcr.io` avec un jeton `read:packages` valide ; puis `sudo docker restart watchtower` |
+| Watchtower ne met rien à jour | l'action GitHub a-t-elle réussi (onglet Actions) ? le conteneur porte-t-il le label ? `sudo docker logs watchtower` |
 | Application ouverte sans mot de passe (200 au lieu de 401) | `grep '^BASIC_AUTH_' .env` doit afficher 2 lignes, puis `sudo docker compose up -d --force-recreate` |
 | 502 Bad Gateway | conteneur démarré (`sudo docker ps`) ; IP / port du Proxy Host ; depuis la machine NPM : `curl -I http://<IP hôte Docker>:3000` → 401 |
 | Page d'un autre site | nom de domaine exact dans le Proxy Host |
