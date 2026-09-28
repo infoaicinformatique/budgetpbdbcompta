@@ -27,9 +27,13 @@ recommandée : l'application embarque le plan comptable et les budgets).
 Internet ──▶ 77.159.204.155 (ports 80 / 443)
           ──▶ Nginx Proxy Manager — 192.168.100.236 (admin : http://192.168.100.236:81)
                · certificat Let's Encrypt, HTTPS forcé
-          ──▶ conteneur Docker budgetpbdbcompta — <IP de l'hôte Docker>:3000
+          ──▶ conteneur Docker budgetpbdbcompta — 192.168.100.236:3000
                · /opt/docker/budgetpbdbcompta, authentification Basic
 ```
+
+NPM (conteneur `npm`, compose dans `/opt/docker/npm`) et l'application tournent
+sur la même machine, AIServer (192.168.100.236). La box redirige les ports 80
+et 443 vers cette machine.
 
 Nginx Proxy Manager (NPM) est le seul point d'entrée public : il porte le
 certificat HTTPS et transmet les requêtes à l'application en HTTP sur le réseau
@@ -45,15 +49,24 @@ cd /opt/docker/budgetpbdbcompta
 sudo cp .env.example .env
 sudo nano .env                       # décommenter et renseigner BASIC_AUTH_USER / BASIC_AUTH_PASSWORD
 sudo chmod 600 .env
-sudo docker compose up -d --build
+sudo docker login ghcr.io -u <utilisateur-github>   # une fois, jeton read:packages (voir 3.)
+sudo docker compose pull && sudo docker compose up -d
 ```
 
-Vérification :
+(`sudo docker compose up -d --build` construit l'image sur place, sans passer
+par GHCR.)
+
+Les lignes `BASIC_AUTH_USER` et `BASIC_AUTH_PASSWORD` de `.env` ne doivent pas
+commencer par `#` : sinon l'application est publique, sans mot de passe.
+
+Vérification — **attendre quelques secondes** après le démarrage : le serveur
+compresse `budget-app.html` avant d'accepter les connexions (un `curl` lancé
+immédiatement répond « Could not connect », ce n'est pas une panne).
 
 ```bash
-sudo docker ps --filter name=budgetpbdbcompta   # (healthy) après ~20 s
-curl -I http://127.0.0.1:3000                  # 401 : mot de passe demandé
-hostname -I                                    # IP locale à indiquer dans NPM
+sudo docker ps --filter name=budgetpbdbcompta                   # (healthy) après ~20 s
+sudo docker logs budgetpbdbcompta 2>&1 | grep Authentification  # « activée »
+curl -I http://127.0.0.1:3000                                  # 401 : mot de passe demandé
 ```
 
 L'image ne contient que `server.mjs` et `budget-app.html` ; le conteneur tourne
@@ -68,13 +81,42 @@ sudo ufw allow from 192.168.100.236 to any port 3000 proto tcp
 
 ## 2. Nginx Proxy Manager
 
+### Prérequis : NPM doit pouvoir résoudre les noms de domaine
+
+Le conteneur NPM doit joindre `acme-v02.api.letsencrypt.org` pour obtenir et
+renouveler les certificats. Son compose (`/opt/docker/npm/docker-compose.yml`)
+fixe donc ses serveurs DNS :
+
+```yaml
+    volumes:
+      - ./data:/data
+      - ./letsencrypt:/etc/letsencrypt
+    dns:
+      - 192.168.100.226
+      - 1.1.1.1
+```
+
+Sans ce bloc, Docker fige les DNS de la machine **au moment de la création** du
+conteneur : si le réseau n'était pas prêt (démarrage de la machine), le
+conteneur garde `NO EXTERNAL NAMESERVERS DEFINED` et certbot échoue avec
+`Temporary failure in name resolution`. Contrôle :
+
+```bash
+sudo docker exec npm getent hosts acme-v02.api.letsencrypt.org   # doit afficher une IP
+```
+
+Après modification : `cd /opt/docker/npm && sudo docker compose up -d --force-recreate`
+(les hôtes et certificats sont conservés dans `./data` et `./letsencrypt`).
+
+### Proxy Host
+
 Dans http://192.168.100.236:81 → **Hosts → Proxy Hosts → Add Proxy Host** :
 
 | Onglet | Champ | Valeur |
 | --- | --- | --- |
 | Details | Domain Names | `budgetpbdbcompta.aic-informatique.net` |
 | Details | Scheme | `http` |
-| Details | Forward Hostname / IP | IP locale de l'hôte Docker (`hostname -I`) |
+| Details | Forward Hostname / IP | `192.168.100.236` |
 | Details | Forward Port | `3000` |
 | Details | Block Common Exploits | ✔ |
 | Details | Websockets Support | inutile |
@@ -82,9 +124,17 @@ Dans http://192.168.100.236:81 → **Hosts → Proxy Hosts → Add Proxy Host** 
 | SSL | Force SSL · HTTP/2 Support · HSTS Enabled | ✔ |
 | SSL | Email / I Agree | votre e-mail, accepter |
 
-Si l'application tourne **sur la même machine que NPM**, indiquer
-`192.168.100.236` et non `127.0.0.1` : dans le conteneur NPM, `127.0.0.1`
-désigne le conteneur lui-même.
+Ne pas indiquer `127.0.0.1` : dans le conteneur NPM, `127.0.0.1` désigne le
+conteneur NPM lui-même, pas la machine.
+
+Laisser l'onglet **Advanced** vide. Si la validation Let's Encrypt échoue
+parce que `/.well-known/acme-challenge/` arrive jusqu'à l'application (réponse
+« Introuvable »), on peut y ajouter **temporairement**
+`include conf.d/include/letsencrypt-acme-challenge.conf;` pour obtenir le
+certificat, puis **la retirer aussitôt** : une fois le certificat en place, NPM
+ajoute lui-même cette ligne ; en double, nginx refuse la configuration, NPM
+retire l'hôte (`4.conf` disparaît de `/data/nginx/proxy_host/`) et le domaine
+affiche la page « Default Site » de NPM.
 
 L'authentification est assurée par l'application (`BASIC_AUTH_*`) : ne pas
 ajouter en plus une *Access List* NPM, sinon deux mots de passe sont demandés.
@@ -92,28 +142,82 @@ ajouter en plus une *Access List* NPM, sinon deux mots de passe sont demandés.
 Vérification depuis l'extérieur :
 
 ```bash
+curl -I http://budgetpbdbcompta.aic-informatique.net    # 301 vers https://
 curl -I https://budgetpbdbcompta.aic-informatique.net   # 401 attendu
 ```
 
 ## 3. Mise à jour
 
+Automatique avec Watchtower (ci-dessous). À la main :
+
 ```bash
-cd /opt/docker/budgetpbdbcompta && sudo git pull && sudo docker compose up -d --build
+cd /opt/docker/budgetpbdbcompta && sudo git pull && sudo docker compose pull && sudo docker compose up -d
 ```
 
+La copie du serveur doit suivre la branche `main` (`sudo git checkout main`).
 Rien à changer dans NPM.
+
+### Mise à jour automatique (Watchtower)
+
+1. À chaque changement de `main`, GitHub Actions (`.github/workflows/docker-image.yml`)
+   construit l'image et la publie sur `ghcr.io/infoaicinformatique/budgetpbdbcompta:latest`.
+2. Sur le serveur, **Watchtower** vérifie ce registre toutes les 5 minutes ; si
+   l'image a changé, il la télécharge et recrée le conteneur `budgetpbdbcompta`
+   avec les mêmes réglages (`.env`, port, réseau).
+
+Mettre à jour la production = fusionner une pull request dans `main`.
+
+Watchtower ne touche qu'aux conteneurs portant le label
+`com.centurylinklabs.watchtower.enable=true` (déclaré dans `docker-compose.yml`) :
+NPM, anemo, etc. ne sont pas mis à jour tant qu'on ne leur ajoute pas ce label.
+
+**Installation (une fois).** Le dépôt étant privé, l'image l'est aussi : le
+serveur doit s'identifier sur GHCR avec un jeton GitHub *classic* limité au
+droit `read:packages` (GitHub → Settings → Developer settings → Personal access
+tokens → Tokens (classic)).
+
+```bash
+# 1. Identification GHCR (crée /root/.docker/config.json, lu par Watchtower)
+sudo docker login ghcr.io -u <utilisateur-github>        # mot de passe = le jeton
+
+# 2. Application : passer sur l'image publiée
+cd /opt/docker/budgetpbdbcompta && sudo git checkout main && sudo git pull
+sudo docker compose pull && sudo docker compose up -d
+
+# 3. Watchtower
+sudo mkdir -p /opt/docker/watchtower
+sudo cp deploy/watchtower/docker-compose.yml /opt/docker/watchtower/
+cd /opt/docker/watchtower && sudo docker compose up -d
+sudo docker logs watchtower --tail 20
+```
+
+Suivi : `sudo docker logs -f watchtower`. Construction de l'image : onglet
+**Actions** du dépôt GitHub. Suspendre : `sudo docker stop watchtower`.
+
+Le `docker-compose.yml` et le `.env` du serveur ne sont **pas** mis à jour par
+Watchtower (il ne remplace que l'image) : après un changement de
+`docker-compose.yml`, faire `sudo git pull && sudo docker compose up -d`.
 
 ## 4. Dépannage
 
 | Symptôme | Vérification |
 | --- | --- |
-| NPM : « Internal Error » à la demande de certificat | ports 80 et 443 de la box redirigés vers 192.168.100.236 ; pas d'enregistrement DNS `AAAA` pour le domaine (`dig +short budgetpbdbcompta.aic-informatique.net AAAA` doit être vide) |
+| NPM : « Internal Error » à la demande de certificat | cause exacte : `sudo docker logs npm --tail 60 2>&1 \| grep -iA3 -E "error\|certbot"` |
+| certbot : `Temporary failure in name resolution` | DNS du conteneur NPM : voir « Prérequis » ci-dessus (`dns:` puis `--force-recreate`) |
+| certbot : `Timeout during connect` / `Connection refused` | ports 80 et 443 de la box redirigés vers 192.168.100.236 ; pas d'enregistrement DNS `AAAA` pour le domaine |
+| `/.well-known/acme-challenge/…` répond « Introuvable » | la validation arrive à l'application : ligne `include` temporaire dans Advanced (voir ci-dessus) |
+| Page « Default Site / Congratulations » de NPM | l'hôte est hors ligne : vider l'onglet Advanced, vérifier le certificat dans l'onglet SSL, Save (ou ⋮ → Enable) ; `sudo docker exec npm ls /data/nginx/proxy_host/` doit lister `4.conf` |
+| HTTPS : `unrecognized name` | aucun certificat pour ce domaine dans NPM |
+| `docker compose build` : `open Dockerfile` ou `"/server.mjs": not found` | copie incomplète : recloner le dépôt et recopier `.env` |
+| `docker compose pull` / Watchtower : `unauthorized` ou `denied` | `sudo docker login ghcr.io` avec un jeton `read:packages` valide ; puis `sudo docker restart watchtower` |
+| Watchtower ne met rien à jour | l'action GitHub a-t-elle réussi (onglet Actions) ? le conteneur porte-t-il le label ? `sudo docker logs watchtower` |
+| Application ouverte sans mot de passe (200 au lieu de 401) | `grep '^BASIC_AUTH_' .env` doit afficher 2 lignes, puis `sudo docker compose up -d --force-recreate` |
 | 502 Bad Gateway | conteneur démarré (`sudo docker ps`) ; IP / port du Proxy Host ; depuis la machine NPM : `curl -I http://<IP hôte Docker>:3000` → 401 |
 | Page d'un autre site | nom de domaine exact dans le Proxy Host |
 | Mot de passe refusé | valeurs de `.env`, puis `sudo docker compose up -d` pour les recharger |
 
-Journaux : `sudo docker logs budgetpbdbcompta --tail 50`, et dans NPM le
-journal du Proxy Host.
+Journaux : `sudo docker logs budgetpbdbcompta --tail 50`, `sudo docker logs npm`,
+et le journal certbot de NPM dans `/opt/docker/npm/data/logs/letsencrypt.log`.
 
 ## Annexe — sans Docker
 
