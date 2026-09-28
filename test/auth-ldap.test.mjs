@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { InvalidCredentialsError } from 'ldapts';
 import {
   ldapConfigFromEnv, ldapAuthenticate, escapeFilterValue, LdapUnavailableError, publicLdapInfo,
+  ldapAuthenticateEntry, ldapListGroupMembers,
 } from '../auth-ldap.mjs';
 
 const PEOPLE = 'ou=people,dc=pb,dc=fr';
@@ -169,4 +170,64 @@ test('publicLdapInfo : chiffrement, mode et périmètre, jamais le compte de ser
   assert.equal(enc({ LDAP_URL: 'ldaps://a:636' }), 'ldaps');
   assert.equal(enc({ LDAP_URL: 'ldap://a ldaps://b' }), 'partiel');
   assert.equal(enc({ LDAP_URL: 'ldap://a', LDAP_STARTTLS: 'true' }), 'starttls');
+});
+
+/** Petit annuaire AD : entrées avec attributs, groupe avec `member`. */
+function adDirectory() {
+  const USER = 'CN=Prénom Nom,OU=UniversalUsers,DC=pb,DC=org';
+  const OTHER = 'CN=Autre,OU=UniversalUsers,DC=pb,DC=org';
+  const GRP = 'CN=budgetpbdbcompta,OU=Groupes,DC=pb,DC=org';
+  const entries = {
+    [USER]: { dn: USER, sAMAccountName: 'Prenom.Nom', displayName: 'Prénom Nom' },
+    [OTHER]: { dn: OTHER, sAMAccountName: 'autre', cn: 'Autre' },
+    [GRP]: { dn: GRP, member: [USER, OTHER, 'CN=Supprimé,DC=pb,DC=org'] },
+  };
+  class AdClient {
+    async bind(dn, password) {
+      if (!((dn === SERVICE && password === 'svcpass') || (dn === USER && password === 'secret'))) {
+        throw new InvalidCredentialsError('bad', 49);
+      }
+    }
+    async search(base, opts) {
+      if (opts.scope === 'sub') {
+        return { searchEntries: /Prenom\.Nom|prenom\.nom/i.test(opts.filter) ? [entries[USER]] : [] };
+      }
+      if (base === GRP && opts.filter.startsWith('(|')) {
+        return { searchEntries: opts.filter.includes(escapeFilterValue(USER)) ? [{ dn: GRP }] : [] };
+      }
+      if (!entries[base]) throw new Error('No Such Object');
+      return { searchEntries: [entries[base]] };
+    }
+    async unbind() {}
+  }
+  const config = ldapConfigFromEnv({
+    LDAP_URL: 'ldap://dc', LDAP_SEARCH_BASE: 'OU=UniversalUsers,DC=pb,DC=org',
+    LDAP_BIND_DN: SERVICE, LDAP_BIND_PASSWORD: 'svcpass', LDAP_GROUP_DN: GRP,
+  });
+  return { AdClient, config, USER, OTHER };
+}
+
+test('ldapAuthenticateEntry : identifiant canonique et nom affiché lus dans l’annuaire', async () => {
+  const { AdClient, config, USER } = adDirectory();
+  assert.deepEqual(await ldapAuthenticateEntry(config, 'prenom.nom@pb.org', 'secret', AdClient),
+    { dn: USER, account: 'prenom.nom', displayName: 'Prénom Nom' });
+  assert.equal(await ldapAuthenticate(config, 'prenom.nom', 'secret', AdClient), USER, 'ldapAuthenticate rend toujours le DN');
+  assert.equal(await ldapAuthenticateEntry(config, 'prenom.nom', 'faux', AdClient), null);
+});
+
+test('ldapAuthenticateEntry en bind direct : identifiant saisi sans son domaine', async () => {
+  const { FakeClient } = fakeDirectory();
+  const entry = await ldapAuthenticateEntry(direct(), 'alice', 'secret', FakeClient);
+  assert.deepEqual(entry, { dn: ALICE, account: 'alice', displayName: '' });
+});
+
+test('ldapListGroupMembers : membres du groupe, même ceux qu’on ne peut pas lire', async () => {
+  const { AdClient, config, USER, OTHER } = adDirectory();
+  const members = await ldapListGroupMembers(config, AdClient);
+  assert.deepEqual(members, [
+    { dn: OTHER, account: 'autre', displayName: 'Autre' },
+    { dn: 'CN=Supprimé,DC=pb,DC=org', account: '', displayName: '' },
+    { dn: USER, account: 'prenom.nom', displayName: 'Prénom Nom' },
+  ], 'triés par nom affiché, à défaut par identifiant puis DN');
+  assert.deepEqual(await ldapListGroupMembers(search(), AdClient), [], 'sans groupe configuré : liste vide');
 });

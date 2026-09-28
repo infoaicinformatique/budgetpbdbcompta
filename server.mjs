@@ -3,7 +3,8 @@
  *
  * Sert uniquement `budget-app.html` (l'application tient dans ce fichier) :
  * aucun autre fichier du dépôt n'est exposé — ni le document de reprise,
- * ni le plan comptable Excel, ni les scripts.
+ * ni le plan comptable Excel, ni les scripts. Seule autre adresse :
+ * `/api/droits`, les droits des personnes de l'annuaire (voir rights.mjs).
  *
  * Node ≥ 22 ; seule dépendance : `ldapts`, pour l'authentification LDAP.
  *
@@ -16,6 +17,9 @@
  *   LDAP_*               authentification par annuaire : voir auth-ldap.mjs et .env.example
  *   TRUST_PROXY          true derrière Nginx Proxy Manager : l'adresse du client
  *                        est lue dans X-Real-IP (limitation des essais)
+ *   RIGHTS_FILE          fichier des droits (défaut ./data/droits.json)
+ *   RIGHTS_ADMINS        identifiants de l'annuaire toujours administrateurs
+ *                        des droits (« prenom.nom, autre.nom »)
  *
  * Sans compte local ni LDAP, l'application est publique.
  */
@@ -26,8 +30,10 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  ldapConfigFromEnv, describeLdapConfig, publicLdapInfo, ldapAuthenticate, LdapUnavailableError,
+  ldapConfigFromEnv, describeLdapConfig, publicLdapInfo, ldapAuthenticateEntry, ldapListGroupMembers,
+  LdapUnavailableError,
 } from './auth-ldap.mjs';
+import { createRightsStore, parseAdminList, normalizeAccount, RightsError } from './rights.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const HOST = process.env.HOST || '127.0.0.1';
@@ -48,6 +54,10 @@ try {
   process.exit(1);
 }
 const authEnabled = localAuthEnabled || ldapConfig !== null;
+
+const RIGHTS_FILE = process.env.RIGHTS_FILE || join(root, 'data', 'droits.json');
+const RIGHTS_ADMINS = parseAdminList(process.env.RIGHTS_ADMINS);
+const rights = createRightsStore(RIGHTS_FILE, RIGHTS_ADMINS);
 
 const appPath = join(root, 'budget-app.html');
 
@@ -79,7 +89,7 @@ const expectedLocalAuth = localAuthEnabled
 // Un compte désactivé dans l'annuaire perd donc l'accès au plus tard après
 // ce délai.
 const LDAP_CACHE_MS = (Number(process.env.LDAP_CACHE_SECONDS) || 300) * 1000;
-const ldapCache = new Map(); // condensat de l'en-tête → { expires, username, dn }
+const ldapCache = new Map(); // condensat de l'en-tête → { expires, username, account, displayName, dn }
 
 // Limitation des essais : au-delà de MAX_FAILURES échecs en FAILURE_WINDOW_MS
 // depuis une même adresse, les demandes sont refusées (429) jusqu'à la fin
@@ -123,24 +133,28 @@ function parseBasic(header) {
 
 /**
  * Contrôle d'accès : compte local d'abord, puis annuaire LDAP. Renvoie
- * `{ status, method, username, dn }` : `status` est le code HTTP à répondre
- * en cas de refus (401 identifiants refusés, 429 trop d'essais, 503
- * annuaire indisponible), ou 0 si l'accès est accordé ; `method` dit par
- * quelle voie (`ldap`, `local`, `none` quand l'accès est libre).
+ * `{ status, method, username, account, displayName, dn }` : `status` est
+ * le code HTTP à répondre en cas de refus (401 identifiants refusés, 429
+ * trop d'essais, 503 annuaire indisponible), ou 0 si l'accès est accordé ;
+ * `method` dit par quelle voie (`ldap`, `local`, `none` quand l'accès est
+ * libre) ; `account` est l'identifiant canonique, clé des droits.
  */
 async function authenticate(req) {
   if (!authEnabled) return { status: 0, method: 'none' };
   const header = String(req.headers.authorization || '');
   const given = Buffer.from(header);
   if (expectedLocalAuth && given.length === expectedLocalAuth.length && timingSafeEqual(given, expectedLocalAuth)) {
-    return { status: 0, method: 'local', username: AUTH_USER };
+    return { status: 0, method: 'local', username: AUTH_USER, account: normalizeAccount(AUTH_USER) || 'local' };
   }
   if (!ldapConfig || !header) return { status: 401 };
 
   const key = createHash('sha256').update(header).digest('base64url');
   const cached = ldapCache.get(key);
   if (cached && cached.expires > Date.now()) {
-    return { status: 0, method: 'ldap', username: cached.username, dn: cached.dn };
+    return {
+      status: 0, method: 'ldap', username: cached.username, account: cached.account,
+      displayName: cached.displayName, dn: cached.dn,
+    };
   }
   if (cached) ldapCache.delete(key);
 
@@ -149,24 +163,27 @@ async function authenticate(req) {
 
   const credentials = parseBasic(header);
   if (!credentials) return { status: 401 };
-  let dn;
+  let entry;
   try {
-    dn = await ldapAuthenticate(ldapConfig, credentials.username, credentials.password);
+    entry = await ldapAuthenticateEntry(ldapConfig, credentials.username, credentials.password);
   } catch (err) {
     if (!(err instanceof LdapUnavailableError)) throw err;
     console.error(err.message);
     return { status: 503 };
   }
-  if (!dn) {
+  if (!entry) {
     recordFailure(address);
     console.warn(`Connexion LDAP refusée : « ${credentials.username} » depuis ${address}`);
     return { status: 401 };
   }
   failures.delete(address);
   if (ldapCache.size > 1000) ldapCache.clear();
-  ldapCache.set(key, { expires: Date.now() + LDAP_CACHE_MS, username: credentials.username, dn });
-  console.log(`Connexion LDAP : « ${credentials.username} » (${dn}) depuis ${address}`);
-  return { status: 0, method: 'ldap', username: credentials.username, dn };
+  const identity = {
+    username: credentials.username, account: entry.account, displayName: entry.displayName, dn: entry.dn,
+  };
+  ldapCache.set(key, Object.assign({ expires: Date.now() + LDAP_CACHE_MS }, identity));
+  console.log(`Connexion LDAP : « ${credentials.username} » (${entry.dn}) depuis ${address}`);
+  return Object.assign({ status: 0, method: 'ldap' }, identity);
 }
 
 // Rubrique LDAP de Paramètres. L'application s'interdit tout appel réseau
@@ -182,7 +199,8 @@ function authInfoCookie(req, auth) {
   const info = {
     v: 1,
     method: auth.method,
-    username: auth.username || '',
+    username: auth.account || auth.username || '',
+    displayName: auth.displayName || '',
     dn: auth.dn || '',
     local: localAuthEnabled,
     ldap: ldapPublicInfo,
@@ -204,6 +222,138 @@ const DENIED = {
   503: 'Annuaire indisponible : réessayez plus tard\n',
 };
 
+/* ---------------- /api/droits ----------------
+
+   GET    /api/droits/moi        mes droits (toute personne connectée)
+   GET    /api/droits            membres du groupe + toutes les fiches (administrateurs)
+   PUT    /api/droits/<compte>   enregistre la fiche d'un compte (administrateurs)
+   DELETE /api/droits/<compte>   retire l'accès d'un compte (administrateurs)
+
+   Administrateur : fiche marquée `isAdmin`, compte de RIGHTS_ADMINS, ou le
+   compte local de secours (qui doit pouvoir tout rattraper si l'annuaire
+   ou le fichier des droits fait défaut). */
+const API_PREFIX = '/api/droits';
+const API_BODY_MAX = 64 * 1024;
+
+/** Droits de la personne connectée, ou `null` (aucun accès). */
+function rightsOf(auth) {
+  if (auth.method === 'local') {
+    return {
+      role: 'controleur', isAdmin: true, permissions: null,
+      allowedCompanies: null, allowedCostCenters: null, environmentIds: [],
+    };
+  }
+  if (auth.method !== 'ldap') return null;
+  return rights.effective(auth.account);
+}
+
+function sendJson(res, status, body) {
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+  res.end(JSON.stringify(body));
+}
+
+/**
+ * Une écriture ne peut venir que de la page elle-même. Le navigateur
+ * renvoie l'en-tête Basic à tout le monde, y compris à un site tiers qui
+ * forgerait la requête : on exige donc le JSON (qui impose une requête
+ * préalable CORS à laquelle ce serveur ne répond pas) et, quand le
+ * navigateur les fournit, une origine identique.
+ */
+function sameOriginWrite(req) {
+  if (!/^application\/json\b/i.test(String(req.headers['content-type'] || ''))) return false;
+  const site = req.headers['sec-fetch-site'];
+  if (site && site !== 'same-origin') return false;
+  const origin = req.headers.origin;
+  if (origin) {
+    try {
+      if (new URL(origin).host !== req.headers.host) return false;
+    } catch (e) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function readJsonBody(req) {
+  return new Promise(function (resolve, reject) {
+    const chunks = [];
+    let size = 0;
+    req.on('data', function (chunk) {
+      size += chunk.length;
+      if (size > API_BODY_MAX) {
+        reject(new RightsError('Requête trop volumineuse.', 413));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', function () {
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || 'null'));
+      } catch (e) {
+        reject(new RightsError('JSON invalide.'));
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+async function handleApi(req, res, url, auth) {
+  if (auth.method === 'none') return sendJson(res, 404, { error: 'Droits centralisés inactifs : le site est ouvert sans authentification.' });
+  const own = rightsOf(auth);
+  const rest = url.pathname.slice(API_PREFIX.length);
+  try {
+    if (rest === '/moi' && req.method === 'GET') {
+      return sendJson(res, 200, {
+        method: auth.method, account: auth.account, displayName: auth.displayName || '', rights: own,
+      });
+    }
+    if (!own || own.isAdmin !== true) return sendJson(res, 403, { error: 'Réservé aux administrateurs des droits.' });
+
+    if (rest === '' && req.method === 'GET') {
+      let members = [];
+      let membersError = null;
+      if (ldapConfig && ldapConfig.groupDn) {
+        try {
+          members = await ldapListGroupMembers(ldapConfig);
+        } catch (err) {
+          if (!(err instanceof LdapUnavailableError)) throw err;
+          membersError = err.message;
+        }
+      }
+      return sendJson(res, 200, Object.assign(rights.all(), {
+        groupDn: ldapConfig ? ldapConfig.groupDn : '', members: members, membersError: membersError,
+      }));
+    }
+
+    let requested = '';
+    try {
+      requested = decodeURIComponent(rest.replace(/^\//, ''));
+    } catch (e) {
+      return sendJson(res, 400, { error: 'Identifiant invalide.' });
+    }
+    const account = normalizeAccount(requested);
+    if (!rest.startsWith('/') || !account || rest.slice(1).includes('/')) return sendJson(res, 404, { error: 'Introuvable.' });
+    if (!sameOriginWrite(req)) return sendJson(res, 403, { error: 'Requête refusée : origine non vérifiée.' });
+    const by = auth.account || auth.username || '?';
+    if (req.method === 'PUT') {
+      const saved = rights.set(account, await readJsonBody(req), by);
+      console.log(`Droits enregistrés pour « ${account} » par « ${by} »`);
+      return sendJson(res, 200, { account: account, rights: saved });
+    }
+    if (req.method === 'DELETE') {
+      const removed = rights.remove(account, by);
+      if (removed) console.log(`Accès retiré à « ${account} » par « ${by} »`);
+      return sendJson(res, 200, { account: account, removed: removed });
+    }
+    return sendJson(res, 405, { error: 'Méthode non prise en charge.' });
+  } catch (err) {
+    if (err instanceof RightsError) return sendJson(res, err.status, { error: err.message });
+    console.error('Droits :', err);
+    return sendJson(res, 500, { error: 'Erreur serveur sur les droits.' });
+  }
+}
+
 const baseHeaders = {
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
@@ -220,8 +370,9 @@ async function handle(req, res) {
     return res.end('ok\n');
   }
 
-  if (req.method !== 'GET' && req.method !== 'HEAD') {
-    res.writeHead(405, { Allow: 'GET, HEAD' });
+  const api = url.pathname === API_PREFIX || url.pathname.startsWith(API_PREFIX + '/');
+  if (req.method !== 'GET' && req.method !== 'HEAD' && !(api && (req.method === 'PUT' || req.method === 'DELETE'))) {
+    res.writeHead(405, { Allow: api ? 'GET, PUT, DELETE' : 'GET, HEAD' });
     return res.end();
   }
 
@@ -234,6 +385,8 @@ async function handle(req, res) {
     res.writeHead(denied, headers);
     return res.end(DENIED[denied]);
   }
+
+  if (api) return handleApi(req, res, url, auth);
 
   if (url.pathname === '/budget-app.html') {
     res.writeHead(301, { Location: '/' });
@@ -296,6 +449,7 @@ server.listen(PORT, HOST, () => {
   console.log('Authentification Basic : ' + (authEnabled ? 'activée' : 'désactivée'));
   console.log('  compte local : ' + (localAuthEnabled ? 'oui' : 'non'));
   console.log('  annuaire LDAP : ' + (ldapConfig ? describeLdapConfig(ldapConfig) : 'non'));
+  console.log('Droits : ' + RIGHTS_FILE + ' ; administrateurs désignés : ' + (RIGHTS_ADMINS.join(', ') || 'aucun'));
 });
 
 for (const sig of ['SIGINT', 'SIGTERM']) {

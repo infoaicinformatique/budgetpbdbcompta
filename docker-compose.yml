@@ -27,11 +27,16 @@ services:
       # (limitation des essais de mot de passe). Suppose que seul NPM joint
       # le port 3000 (voir README, ufw).
       - TRUST_PROXY=true
-    # Autorité de certification de l'annuaire LDAP, si elle est interne :
-    # déposer le fichier à côté de ce compose, décommenter, et renseigner
-    # LDAP_CA_FILE=/certs/ldap-ca.pem dans .env.
-    # volumes:
-    #   - ./ldap-ca.pem:/certs/ldap-ca.pem:ro
+    volumes:
+      # Droits d'accès de chacun (Paramètres › Droits d'accès) : volume nommé,
+      # créé au premier lancement avec les bons droits d'écriture et conservé
+      # quand le conteneur est recréé (Watchtower, docker compose up).
+      # Lire ou sauvegarder : docker exec budgetpbdbcompta cat /data/droits.json
+      - droits:/data
+      # Autorité de certification de l'annuaire LDAP, si elle est interne :
+      # déposer le fichier à côté de ce compose, décommenter, et renseigner
+      # LDAP_CA_FILE=/certs/ldap-ca.pem dans .env.
+      # - ./ldap-ca.pem:/certs/ldap-ca.pem:ro
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/healthz"]
       interval: 30s
@@ -55,3 +60,6 @@ services:
 networks:
   budgetnet:
     driver: bridge
+
+volumes:
+  droits:

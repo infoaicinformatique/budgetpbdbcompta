@@ -10,7 +10,12 @@ WORKDIR /app
 # Dépendances de production seulement (ldapts, pour l'authentification LDAP).
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
-COPY server.mjs auth-ldap.mjs budget-app.html ./
+COPY server.mjs auth-ldap.mjs rights.mjs budget-app.html ./
+
+# Droits d'accès (Paramètres › Droits d'accès) : seul dossier inscriptible
+# d'un conteneur en lecture seule, monté en volume par docker-compose.yml.
+ENV RIGHTS_FILE=/data/droits.json
+RUN mkdir -p /data && chown node:node /data
 
 USER node
 EXPOSE 3000
