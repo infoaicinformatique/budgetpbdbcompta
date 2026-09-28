@@ -55,6 +55,12 @@ Comportement :
   refuse de démarrer (`sudo docker logs budgetpbdbcompta`) ;
 - mot de passe vide et identifiants hors `[A-Za-z0-9._@-]` refusés sans
   interroger l'annuaire.
+- l'état de la connexion s'affiche dans l'application, **Paramètres › LDAP**
+  (lecture seule) : voie de connexion (annuaire ou compte local), identifiant,
+  entrée de l'annuaire, serveurs, chiffrement, OU de recherche, groupe. Le
+  serveur le dépose dans le cookie `bm-auth` en servant la page (l'application
+  n'a pas le droit d'appeler le réseau) ; jamais le compte de service ni un
+  mot de passe.
 
 Préférer `ldaps://` ou `LDAP_STARTTLS=true` : en `ldap://` simple, les mots de
 passe traversent le réseau en clair. Pour une autorité de certification

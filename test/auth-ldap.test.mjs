@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { InvalidCredentialsError } from 'ldapts';
 import {
-  ldapConfigFromEnv, ldapAuthenticate, escapeFilterValue, LdapUnavailableError,
+  ldapConfigFromEnv, ldapAuthenticate, escapeFilterValue, LdapUnavailableError, publicLdapInfo,
 } from '../auth-ldap.mjs';
 
 const PEOPLE = 'ou=people,dc=pb,dc=fr';
@@ -155,4 +155,18 @@ test('options TLS transmises au client pour ldaps:// seulement', async () => {
   const { FakeClient: F2, log: log2 } = fakeDirectory({ down: ['ldap://a'] });
   await ldapAuthenticate(config, 'alice', 'secret', F2);
   assert.deepEqual(log2.find((e) => e[0] === 'new' && e[1] === 'ldaps://b')[2], { rejectUnauthorized: true });
+});
+
+test('publicLdapInfo : chiffrement, mode et périmètre, jamais le compte de service', () => {
+  const info = publicLdapInfo(search({ LDAP_GROUP_DN: GROUP }));
+  assert.deepEqual(info, {
+    urls: ['ldap://a'], encryption: 'aucun', mode: 'recherche', base: PEOPLE, group: GROUP,
+  });
+  assert.ok(!JSON.stringify(info).includes('svcpass') && !JSON.stringify(info).includes(SERVICE));
+  assert.equal(publicLdapInfo(direct()).mode, 'direct');
+  assert.equal(publicLdapInfo(direct()).base, 'uid={username},' + PEOPLE);
+  const enc = (env) => publicLdapInfo(ldapConfigFromEnv(Object.assign({ LDAP_USER_DN: '{username}@pb.fr' }, env))).encryption;
+  assert.equal(enc({ LDAP_URL: 'ldaps://a:636' }), 'ldaps');
+  assert.equal(enc({ LDAP_URL: 'ldap://a ldaps://b' }), 'partiel');
+  assert.equal(enc({ LDAP_URL: 'ldap://a', LDAP_STARTTLS: 'true' }), 'starttls');
 });

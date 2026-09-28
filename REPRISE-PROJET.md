@@ -77,6 +77,38 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Paramètres : rubrique LDAP (28/09/2026)
+
+Demande : « dans les Paramètres merci de rajouter la rubrique LDAP »
+(build `2026-09-28.1`). Rubrique en **lecture seule**, choisie plutôt
+qu'une configuration modifiable : l'annuaire se règle dans le `.env` du
+serveur, et une configuration éditable demanderait une API serveur, un
+stockage persistant (conteneur en lecture seule) et casserait le « zéro
+réseau ».
+
+Elle montre la voie de connexion au site (annuaire LDAP, compte local de
+secours ou accès libre), l'identifiant et l'entrée de l'annuaire, puis la
+configuration publique : serveurs, chiffrement (alerte si `ldap://` en
+clair), OU de recherche ou modèle de bind direct, groupe requis, présence
+du compte local. Présente connecté ou non à un compte de l'application :
+les deux contrôles d'accès restent distincts, la rubrique le rappelle.
+
+Comment l'information arrive : le SAS réseau interdit d'interroger le
+serveur, donc `server.mjs` la dépose dans le cookie `bm-auth` (non
+HttpOnly, SameSite=Strict, Secure derrière HTTPS) en servant la page, 200
+comme 304. Un cookie plutôt qu'une injection dans le HTML : la page reste
+compressée une seule fois au démarrage. `authenticate()` renvoie
+désormais l'identité, mémorisée avec le cache LDAP ; `publicLdapInfo()`
+(auth-ldap.mjs) ne livre jamais le compte de service ni un mot de passe.
+Sans cookie (fichier ouvert en local), la rubrique l'explique.
+
+Contrôles : « Paramètres : rubrique LDAP lue dans le cookie… » (même nom
+de cookie des deux côtés, relecture, cookie illisible ou méthode inconnue
+ignorés, contenu échappé, alerte en clair seulement hors LDAPS, rubrique
+présente sans compte) et « … présente pour un utilisateur connecté » ;
+test `publicLdapInfo` dans `npm test`. Retirer l'échappement fait échouer
+le contrôle. 509 contrôles, 15 onglets, 16 tests serveur.
+
 ### Prio : scénarios × charges liées, devises de l'export Consolidation (24/09/2026)
 
 Alexis : « fait les prio » (build `2026-09-24.75`).
@@ -9854,7 +9886,7 @@ excel-grid/
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
     "typescript": "^5.6.3",
-    "vite": "^5.4.11"
+    "vite": "^5.4.12"
   }
 }
 ```
@@ -9896,9 +9928,14 @@ excel-grid/
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
+// Domaine public (enregistrement A → 77.159.204.155) : Vite refuse par
+// défaut les requêtes dont l'en-tête Host n'est pas localhost.
+const publicHost = 'budgetpbdbcompta.aic-informatique.net';
+
 export default defineConfig({
   plugins: [react()],
-  server: { port: 5173, open: true },
+  server: { port: 5173, open: true, host: true, allowedHosts: [publicHost] },
+  preview: { port: 4173, host: true, allowedHosts: [publicHost] },
 });
 ```
 
@@ -10435,8 +10472,9 @@ const app = await importApp(
     '  calculatorRecallHistory,\n' +
     '  recomputeRateLinkedLines, recomputeAllRateLinkedLines,\n' +
     '  rateLinkRefAccountResults, rateLinkSourceLineOptions, rateLinkSourceLabel,\n' +
-    '  rateLinkExpenseCategoryMonths, rateLinkRevenueCategoryMonths, rateLinkCategoryLabel,\n' +
-    '  openRateLinkModal, closeRateLinkModal, saveRateLink, detachRateLink,\n' +
+    '  rateLinkExpenseCategoryMonths, rateLinkRevenueCategoryMonths, rateLinkOneRevenueCategoryMonths,\n' +
+    '  rateLinkCategoryLabel, rateLinkCategoryIdsOf,\n' +
+    '  openRateLinkModal, closeRateLinkModal, saveRateLink, detachRateLink, rateLinkModalHtml,\n' +
     '  formatRateValue,\n' +
     '  openMoveLineModal, closeMoveLineModal, moveLineTargetResults, moveLineToAccount,\n' +
     '  openNoteEditing, deleteNote, isComputedLine,\n' +
@@ -10450,9 +10488,6 @@ const app = await importApp(
     '  payrollMonthlyCost, payrollYearlyCost, payrollSummaryLabel, isPayrollAccount,\n' +
     '  activeScenario, setActiveScenario, addScenario, deleteScenario,\n' +
     '  scenarioAdjustedLines, summarizeForDisplay, scenarioSummaryLabel,\n' +
-    '  variablePartOf, setVariablePart, breakEvenAnalysis, breakEvenDay, dayOfYearLabel,\n' +
-    '  variableAmountOf, setVariableAmount, variableShareOf, variableRateOf,\n' +
-    '  openBreakEvenDetail, closeBreakEvenDetail,\n' +
     '  saveTemplate, applyTemplate, deleteTemplate,\n' +
     '  readWorkbookFromFile, parsePcgWorkbook, importPlanFromFile, deletePlan, setPlanView, renamePlan,\n' +
     '  planById, accountsForPlan, accountIndexForPlan, resolveAccountForLine, exportXlsx, CENTER_OVERRIDES,\n' +
@@ -10494,7 +10529,6 @@ const app = await importApp(
     'export function __getFormError() { return formError; }\n' +
     'export function __summarize(lines) { return summarize(lines, resolveAccountForLine); }\n' +
     'export function __getPnlFullscreen() { return pnlFullscreen; }\n' +
-    'export function __getBreakEvenDetailKey() { return breakEvenDetailKey; }\n' +
     'export { parseDateCell, parseAmountCell, parseDailyRevenueRows, parseDelimitedText,\n' +
     '  daysInMonth, isLeapYear, dateKey, dailyRevenueOf, setDailyRevenue, clearDailyRevenue,\n' +
     '  lastActualDay, dailyBudgetOf, forecastModel, importDailyRevenue, setForecastMonth,\n' +
@@ -10504,7 +10538,6 @@ const app = await importApp(
     '  updateCaSeason, seasonContainsDay, seasonCoefficientFor, caDayWeight, weekdayOf };\n' +
     'export { forecastRealizedMatrixSheet, downloadForecastRealizedMatrix, parseForecastRealizedMatrixRows,\n' +
     '  importForecastRealizedMatrixFile };\n' +
-    'export function __getBreakEvenOpen() { return breakEvenOpen; }\n' +
     'export function __setPanelOpen(id, open) { setPanelOpen(id, open); }\n' +
     'export function __undoHistoryBytes() { return undoHistoryBytes(); }\n' +
     'export function __UNDO_MAX() { return UNDO_MAX; }\n' +
@@ -10519,7 +10552,8 @@ const app = await importApp(
     '  toggleEmployeeDetail, resetStateIndexes, viewPayroll,\n' +
     '  saveEmployeeFromForm, deleteEmployee, syncPayrollLines,\n' +
     '  togglePayrollMatrixDetail, payrollLockedRates, payrollRateLocked, payrollLockedRateValue,\n' +
-    '  setPayrollLockedRate, employeeRateOf, bonusGrossFromNet,\n' +
+    '  setPayrollLockedRate, payrollLockScopeCompanies, lockPayrollRateFromPanel, unlockPayrollRateFromPanel,\n' +
+    '  employeeRateOf, bonusGrossFromNet,\n' +
     '  monthlyLeaveCharge, companyLeaveRelease, setCompanyLeaveRelease, leaveReleaseIsManual,\n' +
     '  PAYROLL_LOCKABLE_RATES,\n' +
     '  employeeRateFieldHtml, payrollLockPanel, employeeEditorHtml,\n' +
@@ -10589,7 +10623,8 @@ const app = await importApp(
     '  clearSignInAttempts, randomBytes, randomHex, exportedPayloadIsEncrypted };\n' +
     'export { setUserScope, allowedCompanyIds, allowedCostCenterIds, isCompanyAllowed,\n' +
     '  visibleCompanies, enforceCompanyPermission, rawLinesOf,\n' +
-    '  isCenterAllowed, visibleCostCenters, enforceCenterPermission,\n' +
+    '  isCenterAllowed, visibleCostCenters, canEditLineStructure,\n' +
+    '  scopeCenterRowsHtml, applyRoleDefaultCentersToEditor, DIRECTEUR_DEFAULT_COST_CENTERS,\n' +
     '  companyIdsInSuperGroupRaw, companyIdsInEnvironments, userEnvironmentIds, environmentById,\n' +
     '  availableEnvironments, canSeeAllEnvironments, activeEnvironmentId, setActiveEnvironment,\n' +
     '  enforceEnvironmentPermission, normalizeEnvironmentIds, scopeEnvironmentRowsHtml,\n' +
@@ -10602,7 +10637,7 @@ const app = await importApp(
     '  welcomeCompanyCardsHtml, environmentColorHex, goBackToWelcomeEnvironmentStep,\n' +
     '  isSecureServerContext, requireServerMode, serverModeStatusHtml };\n' +
     'export { viewSecurite, securiteBody, affichageBody, autorisationsBody,\n' +
-    '  viewParametres };\n' +
+    '  viewParametres, serverAuthInfo, parametresLdapBody, SERVER_AUTH_COOKIE };\n' +
     'export function __setAuthEditingId(v) { authEditingId = v; }\n' +
     'export function __setAuthPermissionsId(v) { authPermissionsId = v; }\n' +
     'export { toggleSocieteSelection, setSocieteSelection, clearSocieteSelection,\n' +
@@ -10654,7 +10689,9 @@ const app = await importApp(
     'export { MATRIX_SERVICES, normalizeServiceMatrix, serviceMatrixOf, serviceMatrixValue,\n' +
     '  setServiceMatrixValue, matrixDayKeys, matrixServiceRevenue, matrixTotalCovers,\n' +
     '  matrixTotalRevenue, weekTotal, matrixOverallTicket, matrixYearTotals, matrixMonthlySeries,\n' +
-    '  setMatrixMonth };\n' +
+    '  setMatrixMonth, mergeBreakfastIntoLunch, caMatrixWorkbookSheets, downloadCaMatrix,\n' +
+    '  parseCaMatrixRows, applyCaMatrixImport, importCaMatrixSheets, importCaMatrixFromFile,\n' +
+    '  caMatrixNorm, caMatrixCellNumber, xlsxWorkbookFiles, CA_MATRIX_SHEET_SERVICES };\n' +
     'export function __getMatrixMonth() { return matrixMonth; }\n' +
     'export function __setMatrixMonth(v) { matrixMonth = v; }\n' +
     'export { OBJECTIVE_SCOPES, objectiveScope, objectivesOf, canEditObjectives,\n' +
@@ -10676,6 +10713,11 @@ const app = await importApp(
     'export function __setState(v) { state = v; }\n' +
     'export { currentModalContainer, focusableIn, trapModalTab };\n' +
     'export { importIssuesSummaryText, importSummaryMessage };\n' +
+    'export { changeCompanyYear, shiftDateKey, shiftCompanyDates, purgeCompanyData, COMPANY_KEYED_STATE,\n' +
+    '  UNDO_PRESERVED_KEYS };\n' +
+    'export { playModalExit, MODAL_EXIT_MS };\n' +
+    'export { markWelcomeChoice };\n' +
+    'export { styledPnlSheet };\n' +
     'export { VALIDATION_STALE_DAYS, canSubmitCompanyValidation, canValidateCompanyBudget,\n' +
     '  submitCompanyForValidation, validateCompanyBudget, revertCompanyValidationToDraft,\n' +
     '  validationBadgeHtml };\n' +
@@ -10935,10 +10977,6 @@ check('Échap : câblée globalement, revient à l’écran des environnements s
   );
   assert.ok(/escapeGoBack\(\)/.test(appSource), 'le clic Échap devrait appeler escapeGoBack()');
   assert.ok(
-    /if \(breakEvenDetailKey\) \{ closeBreakEvenDetail\(\); return true; \}/.test(appSource),
-    'Échap devrait aussi fermer le détail du point mort (breakEvenDetailKey)',
-  );
-  assert.ok(
     /welcomeOpen && welcomeCompanyStepActive[\s\S]{0,80}goBackToWelcomeEnvironmentStep\(\)/.test(appSource),
     'Échap devrait revenir aux environnements via goBackToWelcomeEnvironmentStep() (même fonction que le bouton « ‹ Environnements »)',
   );
@@ -10969,7 +11007,9 @@ await checkAsync('Échap sur le premier écran de l’accueil : escapeGoBack() r
     app.__setWelcomeOpen(true);
     assert.equal(app.escapeGoBack(), true, 'Échap devrait refermer l’accueil rouvert sur son premier écran');
     assert.equal(app.__getWelcomeClosing(), true, 'le fondu de sortie devrait avoir démarré immédiatement');
-    await new Promise((resolve) => setTimeout(resolve, 260));
+    // WELCOME_CLOSE_MS : 330 ms depuis le 24/09/2026 (mise en avant de la
+    // carte choisie + fondu de sortie), 230 ms avant.
+    await new Promise((resolve) => setTimeout(resolve, 380));
     assert.equal(app.__getWelcomeOpen(), false, 'une fois le fondu terminé, l’accueil devrait être bien refermé');
   } finally {
     app.__setWelcomeOpen(savedOpen);
@@ -11078,6 +11118,60 @@ await checkAsync('Paramètres : le bloc « Mon compte » propose la photo sans p
       '« Retirer la photo » doit apparaître dès qu’une photo existe');
     assert.ok(htmlAvecPhoto.includes('<img src="data:image/png;base64,AAAA" alt="" class="header-menu-avatar-photo" />'),
       'l’aperçu de Paramètres doit reprendre la photo posée');
+  } finally {
+    app.state.users = saved.users; app.state.authLog = saved.authLog; app.signOut();
+  }
+});
+
+check('Paramètres : rubrique LDAP lue dans le cookie déposé par le serveur (28/09/2026)', () => {
+  // Même nom de cookie des deux côtés : sinon la rubrique reste vide sans erreur.
+  const serverSource = readFileSync(join(root, '..', 'server.mjs'), 'utf8');
+  assert.ok(serverSource.includes("const AUTH_INFO_COOKIE = '" + app.SERVER_AUTH_COOKIE + "'"),
+    'server.mjs et budget-app.html doivent parler du même cookie');
+  assert.ok(/'Set-Cookie': authInfoCookie\(req, auth\)/.test(serverSource),
+    'le serveur doit déposer le cookie en servant la page (200 comme 304)');
+
+  const info = {
+    v: 1, method: 'ldap', username: 'prenom.nom', dn: 'CN=Prénom Nom,OU=UniversalUsers,DC=pbcannes,DC=org',
+    local: true,
+    ldap: { urls: ['ldap://192.168.100.226:389'], encryption: 'aucun', mode: 'recherche',
+      base: 'OU=UniversalUsers,DC=pbcannes,DC=org', group: '' },
+  };
+  const cookie = 'autre=1; ' + app.SERVER_AUTH_COOKIE + '=' + encodeURIComponent(JSON.stringify(info)) + '; x=2';
+  assert.deepEqual(app.serverAuthInfo(cookie), info, 'le cookie est relu tel que le serveur l’a écrit');
+  assert.equal(app.serverAuthInfo(''), null, 'pas de cookie : pas d’information');
+  assert.equal(app.serverAuthInfo(app.SERVER_AUTH_COOKIE + '=%7Bpas-du-json'), null, 'cookie illisible ignoré');
+  assert.equal(app.serverAuthInfo(app.SERVER_AUTH_COOKIE + '=' + encodeURIComponent('{"method":"root"}')), null,
+    'une méthode inconnue n’est pas affichée');
+
+  const body = app.parametresLdapBody(info);
+  for (const expected of ['Annuaire LDAP', 'prenom.nom', 'CN=Prénom Nom,OU=UniversalUsers,DC=pbcannes,DC=org',
+    'ldap://192.168.100.226:389', 'Recherche des comptes dans', 'en clair', 'Lecture seule']) {
+    assert.ok(body.includes(expected), 'rubrique LDAP : « ' + expected + ' » manquant');
+  }
+  const chiffre = app.parametresLdapBody(Object.assign({}, info, { ldap: Object.assign({}, info.ldap, { encryption: 'ldaps' }) }));
+  assert.ok(!chiffre.includes('class="alert"'), 'pas d’alerte « en clair » quand l’annuaire est en LDAPS');
+
+  const piege = app.parametresLdapBody(Object.assign({}, info, { username: '<img src=x onerror=alert(1)>' }));
+  assert.ok(!piege.includes('<img src=x'), 'le contenu du cookie est échappé avant affichage');
+
+  assert.ok(app.parametresLdapBody({ v: 1, method: 'local', username: 'alexis', local: true, ldap: null })
+    .includes('Aucun annuaire LDAP n’est configuré'), 'compte local sans annuaire : dit clairement l’absence de LDAP');
+  assert.ok(app.parametresLdapBody(null).includes('Aucune information du serveur'),
+    'fichier ouvert en local : la rubrique l’explique au lieu de rester vide');
+
+  // La rubrique figure dans Paramètres, connecté ou non à un compte de l'application.
+  app.signOut();
+  assert.ok(app.viewParametres().includes('data-panel="parametres-ldap"'), 'rubrique LDAP absente sans compte connecté');
+});
+
+await checkAsync('Paramètres : rubrique LDAP présente pour un utilisateur connecté', async () => {
+  const saved = { users: (app.state.users || []).slice(), authLog: (app.state.authLog || []).slice() };
+  try {
+    authFixture();
+    await app.createUser({ username: 'dir_ldap_ui', role: 'directeur', password: 'MotDePasse1!xyz' });
+    await app.signIn('dir_ldap_ui', 'MotDePasse1!xyz');
+    assert.ok(app.viewParametres().includes('data-panel="parametres-ldap"'), 'rubrique LDAP absente de Paramètres');
   } finally {
     app.state.users = saved.users; app.state.authLog = saved.authLog; app.signOut();
   }
@@ -11799,259 +11893,525 @@ check('Scénarios : lecture pondérée du P&L, budget saisi jamais modifié', ()
   }
 });
 
-check('Seuil de rentabilité : charges fixes ÷ marge sur coûts variables', () => {
-  const savedLines = app.state.lines.slice();
-  const savedCompanies = app.state.companies.slice();
-  const savedActive = app.state.activeCompany;
-  const savedParts = Object.assign({}, app.state.variableParts || {});
-
-  const company = { id: 'be_c', name: 'Point mort Test', currency: 'EUR', year: 2026, groupId: null };
-  app.state.companies = [company];
-  app.state.activeCompany = company.id;
-  // 12 000 € de CA, 3 600 € de denrées (F&B, variable), 2 400 € de loyer (fixe).
-  const rent = ts.ACCOUNTS.find((a) => a.kind === 'charge' && a.center && a.center !== 'F&B');
-  app.state.lines = [
-    { id: 'be_l1', companyId: company.id, account: '70105100', name: 'CA', amounts: months(1000) },
-    { id: 'be_l2', companyId: company.id, account: '60103100', name: 'Denrées', amounts: months(300) },
-    { id: 'be_l3', companyId: company.id, account: rent.account, name: 'Loyer', amounts: months(200) },
+check('Seuil de rentabilité / point mort : la fonctionnalité a bien été retirée (24/09/2026)', () => {
+  // Alexis : « retire toute la partie seuil de rentabilité point mort etc
+  // stp ». Suppression complète : moteur (variableParts/variableAmounts,
+  // breakEvenAnalysis, breakEvenDay), UI (bloc P&L, carte Ajustements,
+  // modale de détail) et handlers associés. Ce test ne vérifie pas un
+  // comportement, mais l'ABSENCE : si l'un de ces symboles ou attributs
+  // réapparaît par erreur dans une évolution future (copier-coller d'un
+  // ancien bout de code, revert partiel...), le test échoue et le signale
+  // aussitôt — même précaution que pour la suppression de caSplit.
+  const removedSymbols = [
+    'breakEvenAnalysis', 'breakEvenDay', 'breakEvenBlock', 'breakEvenDetailKey',
+    'breakEvenOpen', 'openBreakEvenDetail', 'closeBreakEvenDetail',
+    'breakEvenDetailContent', 'breakEvenDetailModalHtml', 'variablePartsCard',
+    'DEFAULT_VARIABLE_PARTS', 'variablePartOf', 'setVariablePart',
+    'variableAmountOf', 'setVariableAmount', 'variableShareOf', 'variableRateOf',
+    'dayOfYearLabel', 'data-dblclick-breakeven', 'data-breakeven-details',
+    'data-close-breakeven-detail', 'variableParts', 'variableAmounts',
   ];
+  for (const symbol of removedSymbols) {
+    assert.ok(!appSource.includes(symbol), 'le symbole « ' + symbol + ' » du point mort ne devrait plus exister dans budget-app.html');
+  }
+  // `DAYS_IN_MONTH` et `formulaLine` sont réutilisés ailleurs (daysInMonth()
+  // pour le Forecast, formulaLine() pour le détail Payroll) : ils ont donc
+  // été déplacés, pas supprimés — une seule définition de chacun doit
+  // subsister, sinon la relocalisation a laissé un doublon.
+  assert.equal((appSource.match(/const DAYS_IN_MONTH = /g) || []).length, 1,
+    'DAYS_IN_MONTH doit être défini une seule fois (relocalisé, pas dupliqué)');
+  assert.equal((appSource.match(/function formulaLine\(/g) || []).length, 1,
+    'formulaLine doit être défini une seule fois (relocalisé, pas dupliqué)');
+  assert.equal(typeof app.daysInMonth, 'function', 'daysInMonth (Forecast) doit continuer à fonctionner');
+  assert.equal(app.daysInMonth(2026, 0), 31, 'daysInMonth doit toujours donner le bon nombre de jours');
+});
 
+/* --- Correctifs de l'audit de bugs du 24/09/2026 ------------------------ */
+
+/** Photographie complète de l'état, restaurée à la fin de chaque test ci-dessous. */
+function snapshotAppState() {
+  return { state: JSON.stringify(app.state), session: app.__getAuthSession() };
+}
+function restoreAppState(saved) {
+  app.__setState(JSON.parse(saved.state));
+  app.__setAuthSession(saved.session);
+  app.resetStateIndexes();
+  app.resetUndoHistory();
+  answerConfirmations(true);
+  app.render();
+}
+const yearTotal = (lines) => lines.reduce((sum, l) => sum + app.total(l.amounts), 0);
+
+check('Correctif : changer l’exercice décale le CA jour par jour, la matrice et les contrats (après confirmation)', () => {
+  const saved = snapshotAppState();
   try {
-    // Par défaut, seul le F&B est variable.
-    assert.equal(app.variablePartOf('F&B'), 1, 'le F&B est variable à 100 % par défaut');
-    assert.equal(app.variablePartOf(rent.center), 0, 'les autres centres sont fixes par défaut');
+    assert.equal(app.shiftDateKey('2026-05-10', 1), '2027-05-10');
+    assert.equal(app.shiftDateKey('2024-02-29', 1), '2025-02-28', 'un 29 février sans équivalent rejoint le 28');
+    assert.equal(app.shiftDateKey('pas une date', 1), 'pas une date');
 
-    const summary = app.__summarize(app.linesOf(company.id));
-    const a = app.breakEvenAnalysis(summary);
-    assert.equal(Math.round(a.revenue), 12000);
-    assert.equal(Math.round(a.variable), 3600, 'les denrées sont variables');
-    assert.equal(Math.round(a.fixed), 2400, 'le loyer est fixe');
-    // Marge = 1 − 3600/12000 = 0,7 ; point mort = 2400 / 0,7 ≈ 3428,57.
-    assert.ok(Math.abs(a.margin - 0.7) < 1e-9, 'marge sur coûts variables de 70 %');
-    assert.ok(Math.abs(a.breakEven - 2400 / 0.7) < 0.01, 'point mort = charges fixes ÷ marge');
-    assert.ok(a.revenue > a.breakEven, 'ce budget passe le point mort');
+    const company = { id: 'fix_year', name: 'Exercice Test', currency: 'EUR', devise: 'EUR', year: 2026, groupId: null };
+    app.state.companies.push(company);
+    app.addCaLine(company.id, '70105100', 'CA Food');
+    for (let d = 1; d <= 28; d++) app.setDailyCa(company.id, '70105100', '2026-02-' + String(d).padStart(2, '0'), 100);
+    app.setDailyCa(company.id, '70105100', '2026-03-01', 0); // jour fermé
+    app.setServiceMatrixValue(company.id, 'covers', 'lunch', '2026-02-10', 40);
+    app.state.employees.push({ id: 'fix_year_e', companyId: company.id, name: 'A', role: 'Serveur', center: 'F&B',
+      grossMonthly: 2000, employerRate: 0.42, employeeRate: 0.22, startDate: '2026-03-11', endDate: '',
+      raises: [], bonuses: [], leaveAccrualPerMonth: 2.5, leaveTaken: 0 });
+    app.render();
+    const caTotal = () => yearTotal(app.rawLinesOf(company.id).filter((l) => l.caLink));
+    assert.equal(caTotal(), 2800);
 
-    // Rendre le loyer variable à 50 % déplace le point mort.
-    app.setVariablePart(rent.center, 50);
-    const b = app.breakEvenAnalysis(summary);
-    assert.equal(Math.round(b.fixed), 1200, 'la moitié du loyer devient variable');
-    assert.ok(b.breakEven < a.breakEven, 'moins de charges fixes abaisse le point mort');
+    // Refus : rien ne bouge.
+    answerConfirmations(false);
+    app.changeCompanyYear(company.id, 2027);
+    assert.equal(company.year, 2026, 'sans confirmation, l’exercice ne change pas');
+    assert.equal(caTotal(), 2800);
 
-    // Point mort exprimé en jours : CA à plat (1000 €/mois), point mort à
-    // 3428,57 € → atteint en avril (cumul janv.-mars = 3000, +1000 en
-    // avril). Jour 90 (fin mars) + 42,857 % d’avril (30 j) ≈ jour 103.
-    const day = app.breakEvenDay(a, summary);
-    assert.equal(day, 103, 'le point mort en jours doit suivre le cumul mensuel réel, pas une moyenne à plat');
-    assert.equal(app.dayOfYearLabel(day), '13 avril', 'le jour doit se traduire en date lisible');
+    // Confirmation : tout ce qui est daté suit. Avant le correctif, le CA
+    // tombait à 0 (il restait daté de 2026).
+    answerConfirmations(true);
+    app.changeCompanyYear(company.id, 2027);
+    assert.equal(company.year, 2027);
+    assert.equal(caTotal(), 2800, 'le CA doit suivre le nouvel exercice, pas tomber à 0');
+    const days = app.state.dailyBudgetRevenue[company.id]['70105100'];
+    assert.equal(days['2027-02-01'], 100);
+    assert.equal(days['2027-03-01'], 0, 'un jour fermé reste fermé');
+    assert.equal(days['2026-02-01'], undefined, 'plus rien sur l’ancienne année');
+    assert.ok(app.serviceMatrixOf(company.id).covers['2027-02-10'], 'la matrice suit aussi');
+    assert.equal(app.state.employees.find((e) => e.id === 'fix_year_e').startDate, '2027-03-11');
   } finally {
-    app.state.lines = savedLines;
-    app.state.companies = savedCompanies;
-    app.state.activeCompany = savedActive;
-    app.state.variableParts = savedParts;
+    restoreAppState(saved);
+  }
+});
+
+check('Correctif : dupliquer recopie collaborateurs, comptes CA, CA jour par jour et matrice, coefficient compris', () => {
+  const saved = snapshotAppState();
+  try {
+    const company = { id: 'fix_dup', name: 'Dup Test', currency: 'EUR', devise: 'EUR', year: 2026, groupId: null,
+      validationStatus: 'valide', validationHistory: [{ status: 'valide', by: 'x', at: '2026-01-01' }] };
+    app.state.companies.push(company);
+    app.state.employees.push({ id: 'fix_dup_e', companyId: company.id, name: 'Marie', role: 'Chef', center: 'F&B',
+      grossMonthly: 2000, employerRate: 0.42, employeeRate: 0.22, startDate: '2026-03-11', endDate: '',
+      raises: [], bonuses: [], leaveAccrualPerMonth: 2.5, leaveTaken: 0 });
+    app.addCaLine(company.id, '70105100', 'CA Food');
+    app.setDailyCa(company.id, '70105100', '2026-01-15', 10000);
+    app.setDailyCa(company.id, '70105100', '2026-01-16', 0); // jour fermé
+    app.setServiceMatrixValue(company.id, 'covers', 'lunch', '2026-01-15', 50);
+    app.setServiceMatrixValue(company.id, 'ticket', 'lunch', '2026-01-15', 20);
+    app.state.lines.push({ id: 'fix_dup_l', companyId: company.id, account: '60103100', name: 'Achats',
+      amounts: new Array(12).fill(1000), note: '' });
+    app.render();
+    const caSource = app.rawLinesOf(company.id).find((l) => l.caLink);
+    caSource.note = 'hypothèse CA';
+    app.state.lines.push({ id: 'fix_dup_rate', companyId: company.id, account: '62260000', name: 'Commission',
+      amounts: new Array(12).fill(0), note: '', rateLink: { rate: 0.1, sourceLineId: caSource.id } });
+    app.render();
+    const payrollSource = yearTotal(app.rawLinesOf(company.id).filter((l) => l.payrollCenterLink));
+    assert.ok(payrollSource > 0, 'la source doit avoir une masse salariale');
+
+    const copy = app.duplicateCompany(company.id, 'Dup Copy', 2027, 10, false);
+    app.render();
+    const lines = app.rawLinesOf(copy.id);
+
+    const employees = app.employeesOf(copy.id);
+    assert.equal(employees.length, 1, 'le collaborateur doit être recopié (0 avant le correctif)');
+    assert.equal(employees[0].grossMonthly, 2200, 'brut × 1,10');
+    assert.equal(employees[0].startDate, '2027-03-11', 'date d’entrée décalée sur le nouvel exercice');
+    assert.equal(app.caLinesOf(copy.id).length, 1, 'le compte CA suivi doit être recopié');
+    assert.equal(app.state.dailyBudgetRevenue[copy.id]['70105100']['2027-01-15'], 11000, 'CA jour × 1,10, date décalée');
+    assert.equal(app.state.dailyBudgetRevenue[copy.id]['70105100']['2027-01-16'], 0, 'jour fermé conservé');
+
+    const caLine = lines.find((l) => l.caLink);
+    assert.ok(caLine, 'la ligne CA doit rester une ligne calculée (pas un montant figé)');
+    assert.equal(app.total(caLine.amounts), 11000);
+    assert.equal(caLine.note, 'hypothèse CA', 'la note de la ligne calculée est reprise');
+    assert.equal(yearTotal(lines.filter((l) => !l.caLink && !l.payrollCenterLink && !l.rateLink)), 13200, 'saisie × 1,10');
+    const payrollCopy = yearTotal(lines.filter((l) => l.payrollCenterLink));
+    assert.ok(Math.abs(payrollCopy - payrollSource * 1.1) < 5,
+      `masse salariale recalculée depuis les collaborateurs × 1,10 (${payrollCopy} contre ${payrollSource})`);
+    const rateLine = lines.find((l) => l.rateLink && l.name === 'Commission');
+    assert.equal(rateLine.rateLink.sourceLineId, caLine.id, 'le multiplicateur vise la ligne CA de la COPIE');
+    assert.equal(app.total(rateLine.amounts), 1100);
+
+    const matrix = app.serviceMatrixOf(copy.id);
+    assert.equal(matrix.covers['2027-01-15'].lunch, 50, 'couverts identiques');
+    assert.equal(matrix.ticket['2027-01-15'].lunch, 22, 'ticket moyen × 1,10');
+
+    assert.equal(copy.validationStatus, 'brouillon', 'une copie n’est ni soumise ni validée');
+    assert.deepEqual(copy.validationHistory, []);
+    assert.notStrictEqual(copy.validationHistory, company.validationHistory, 'aucun tableau partagé avec la source');
+
+    // Mode « nouvel exercice » : structure reprise, montants à 0.
+    const blank = app.duplicateCompany(company.id, 'Dup Blank', 2027, 0, true);
+    app.render();
+    const blankEmployees = app.employeesOf(blank.id);
+    assert.equal(blankEmployees.length, 1, 'l’équipe est de la structure : elle est reprise');
+    assert.equal(blankEmployees[0].grossMonthly, 0);
+    assert.equal(app.caLinesOf(blank.id).length, 1);
+    assert.deepEqual(app.state.dailyBudgetRevenue[blank.id]['70105100'], { '2027-01-16': 0 },
+      'seuls les jours fermés passent dans un nouvel exercice');
+    assert.equal(yearTotal(app.rawLinesOf(blank.id)), 0);
+  } finally {
+    restoreAppState(saved);
+  }
+});
+
+check('Correctif : supprimer une société ne laisse plus aucune donnée orpheline', () => {
+  const saved = snapshotAppState();
+  try {
+    const company = { id: 'fix_del', name: 'Del Test', currency: 'EUR', devise: 'EUR', year: 2026, groupId: null };
+    app.state.companies.push(company);
+    for (const key of app.COMPANY_KEYED_STATE) {
+      if (!app.state[key] || typeof app.state[key] !== 'object') app.state[key] = {};
+      app.state[key][company.id] = { témoin: 1 };
+    }
+    app.addCaLine(company.id, '70105100', 'CA');
+    app.state.employees.push({ id: 'fix_del_e', companyId: company.id, name: 'X', center: 'F&B', grossMonthly: 1000,
+      employerRate: 0.4, employeeRate: 0.2, raises: [], bonuses: [] });
+    app.state.objectives.push({ id: 'fix_del_o', companyId: company.id, scope: 'revenue', target: 1 });
+    app.state.caEvents.push({ id: 'fix_del_ev', companyIds: [company.id], name: 'Solo', startDate: '2026-05-01', endDate: '2026-05-02' });
+    const other = app.state.companies.find((c) => c.id !== company.id);
+    app.state.caEvents.push({ id: 'fix_del_ev2', companyIds: [company.id, other.id], name: 'Partagé', startDate: '2026-05-01', endDate: '2026-05-02' });
+
+    answerConfirmations(true);
+    app.deleteCompany(company.id);
+
+    const leftovers = [];
+    const walk = (value, path) => {
+      if (value === company.id) leftovers.push(path);
+      else if (Array.isArray(value)) value.forEach((v, i) => walk(v, path + '[' + i + ']'));
+      else if (value && typeof value === 'object') {
+        for (const k of Object.keys(value)) {
+          if (k === company.id) leftovers.push(path + '.' + k);
+          walk(value[k], path + '.' + k);
+        }
+      }
+    };
+    for (const key of Object.keys(app.state)) if (key !== 'versions') walk(app.state[key], 'state.' + key);
+    assert.deepEqual(leftovers, [], 'plus aucune référence à la société supprimée');
+    assert.ok(app.state.caEvents.some((e) => e.id === 'fix_del_ev2'), 'un événement partagé survit, pour les autres sociétés');
+  } finally {
+    restoreAppState(saved);
+  }
+});
+
+await checkAsync('Correctif : Ctrl+Z ne rend jamais un droit retiré ni n’efface le journal, même après changement d’utilisateur', async () => {
+  const saved = snapshotAppState();
+  try {
+    app.state.users = [];
+    app.state.authLog = [];
+    await app.createUser({ username: 'fix_cdg', role: 'controleur', password: 'MotDePasse1!xyz', isAdmin: true });
+    const dir = await app.createUser({ username: 'fix_dir', role: 'directeur', password: 'MotDePasse1!xyz' });
+    await app.signIn('fix_cdg', 'MotDePasse1!xyz');
+    app.__forceUndoStep();
+    app.setUserPermissions(dir.id, { directeur: ['directeur-kpi'] });
+    app.save();
+    app.__forceUndoStep();
+    const director = () => app.state.users.find((u) => u.username === 'fix_dir');
+    assert.equal(app.canAccessTab(director(), 'saisie'), false, 'droit retiré par le contrôleur');
+
+    // Même session : annuler ne rend pas non plus le droit (les comptes sont hors annulation).
+    app.undo();
+    assert.equal(app.canAccessTab(director(), 'saisie'), false, 'Ctrl+Z n’annule pas un changement de droits');
+
+    app.signOut();
+    await app.signIn('fix_dir', 'MotDePasse1!xyz');
+    for (let i = 0; i < 5; i++) app.undo();
+    assert.equal(app.canAccessTab(director(), 'saisie'), false,
+      'le directeur ne doit pas récupérer l’onglet retiré à coups de Ctrl+Z (c’était le cas avant le correctif)');
+    const events = app.state.authLog.map((e) => e.type || e.action);
+    assert.ok(events.includes('sign-out'), 'la déconnexion reste dans le journal');
+    assert.ok(events.filter((e) => e === 'sign-in').length >= 2, 'les deux connexions restent dans le journal');
+  } finally {
+    app.signOut();
+    restoreAppState(saved);
+  }
+});
+
+check('Correctif : figer le taux de charges salariales garde le net saisi et recalcule le brut', () => {
+  const saved = snapshotAppState();
+  try {
+    const company = { id: 'fix_rate', name: 'Taux Test', currency: 'EUR', devise: 'EUR', year: 2026, groupId: null };
+    app.state.companies.push(company);
+    app.state.employees.push({ id: 'fix_rate_e', companyId: company.id, name: 'B', role: 'Chef', center: 'F&B',
+      grossMonthly: 2000, employerRate: 0.42, employeeRate: 0.22, startDate: '', endDate: '',
+      raises: [{ month: 6, grossMonthly: 2440 }], bonuses: [], leaveAccrualPerMonth: 2.5, leaveTaken: 0 });
+    const employee = () => app.state.employees.find((e) => e.id === 'fix_rate_e');
+    const netBefore = app.employeeMonth(employee(), 2026, 0).netBeforeTax;
+    const raiseNetBefore = app.employeeMonth(employee(), 2026, 6).netBeforeTax;
+
+    app.setPayrollLockedRate(company.id, 'employeeRate', 0.25);
+    assert.equal(employee().employeeRate, 0.25);
+    assert.ok(Math.abs(app.employeeMonth(employee(), 2026, 0).netBeforeTax - netBefore) < 1,
+      'le net ne bouge pas quand on fige un autre taux salarial (il baissait avant le correctif)');
+    assert.equal(employee().grossMonthly, Math.round((2000 / 1.22) * 1.25), 'le brut est recalculé depuis le net');
+    assert.ok(Math.abs(app.employeeMonth(employee(), 2026, 6).netBeforeTax - raiseNetBefore) < 1,
+      'l’augmentation garde aussi son net');
+
+    // Le taux patronal ne touche pas au brut.
+    const grossAfter = employee().grossMonthly;
+    app.setPayrollLockedRate(company.id, 'employerRate', 0.45);
+    assert.equal(employee().grossMonthly, grossAfter, 'figer le taux patronal ne change pas le brut');
+  } finally {
+    restoreAppState(saved);
+  }
+});
+
+check('Visuel : aucune variable CSS utilisée sans être définie (sinon la bordure/couleur disparaît)', () => {
+  // Audit visuel du 24/09/2026 : `var(--border)` était utilisé sans exister.
+  // Une variable inconnue sans valeur de repli invalide TOUTE la déclaration
+  // (ex. `border: 1px solid var(--border)` → aucune bordure) : les cadres de
+  // la fiche collaborateur et les pastilles « Mois travaillés » disparaissaient.
+  const defined = new Set([...html.matchAll(/(--[a-zA-Z0-9-]+)\s*:/g)].map((m) => m[1]));
+  const missing = [...new Set([...html.matchAll(/var\((--[a-zA-Z0-9-]+)\s*\)/g)].map((m) => m[1]))]
+    .filter((name) => !defined.has(name));
+  assert.deepEqual(missing, [], 'variables CSS utilisées sans définition ni valeur de repli');
+});
+
+check('Visuel : les messages (toasts) passent au-dessus des fenêtres et du panneau latéral', () => {
+  const zOf = (selector) => {
+    const m = html.match(new RegExp('\\n\\s*' + selector.replace('.', '\\.') + '\\s*\\{[^}]*?z-index:\\s*(\\d+)'));
+    assert.ok(m, 'z-index introuvable pour ' + selector);
+    return Number(m[1]);
+  };
+  const toast = zOf('.toast');
+  assert.ok(toast > zOf('.modal-backdrop'), 'un message émis fenêtre ouverte doit rester lisible (au-dessus des fenêtres)');
+  assert.ok(toast > zOf('.account-panel'), 'un message émis depuis le panneau latéral doit rester lisible');
+  assert.ok(toast < zOf('.lock'), 'mais jamais par-dessus l’écran de verrouillage');
+});
+
+check('Mouvement adouci (24/09/2026) : durées plus longues, courbes douces, accueil toujours réactif et synchronisé', () => {
+  const token = (name) => {
+    const m = html.match(new RegExp(name + ':\\s*([^;]+);'));
+    assert.ok(m, 'token absent : ' + name);
+    return m[1].trim();
+  };
+  const ms = (name) => Number(token(name).replace('ms', ''));
+  // Alexis : « améliore toutes les transitions rend tout plus doux et smooth ».
+  assert.ok(ms('--motion-fast') >= 160 && ms('--motion-base') >= 240 && ms('--motion-slow') >= 360,
+    'l’échelle doit rester rallongée (plus aucun effet sec à 120/180/280 ms)');
+  assert.equal(token('--ease-out'), 'cubic-bezier(.22, 1, .36, 1)', 'courbe de sortie douce');
+  assert.equal(token('--ease-move'), 'cubic-bezier(.65, 0, .35, 1)', 'courbe de déplacement symétrique douce');
+  // L'accueil garde des crans courts (demande du 27/08 : pas de délai au clic)…
+  assert.ok(ms('--motion-welcome-step') <= 200 && ms('--motion-welcome-close') <= 260,
+    'l’accueil doit rester réactif');
+  // … et les délais JavaScript qui attendent ces effets ne doivent jamais
+  // couper l'animation avant sa fin (sinon saut visible).
+  const jsConst = (name) => Number((appSource.match(new RegExp('const ' + name + ' = (\\d+);')) || [])[1]);
+  assert.ok(jsConst('WELCOME_STEP_MS') >= ms('--motion-welcome-step'), 'bascule d’étape coupée avant la fin du fondu');
+  assert.ok(jsConst('WELCOME_CLOSE_MS') >= ms('--motion-welcome-close'), 'fermeture coupée avant la fin du fondu');
+  assert.ok(!/setTimeout\([^)]*,\s*(110|190)\)/.test(appSource), 'plus aucun délai d’accueil en dur désynchronisé');
+});
+
+check('Transitions v2 : les fenêtres sortent en fondu via une copie inerte, invisible du clavier', () => {
+  // Fausse fenêtre : juste ce que `playModalExit` touche.
+  const made = (classes) => {
+    const cls = new Set(classes);
+    const attrs = new Map([['id', 'x']]);
+    const children = [{ removed: false, removeAttribute(name) { if (name === 'id') this.removed = true; } }];
+    return {
+      classList: { contains: (c) => cls.has(c), add: (c) => cls.add(c), remove: (c) => cls.delete(c), has: (c) => cls.has(c) },
+      attrs, children, listeners: {},
+      setAttribute(k, v) { attrs.set(k, v); }, removeAttribute(k) { attrs.delete(k); },
+      querySelectorAll() { return children; },
+      addEventListener(type, fn) { this.listeners[type] = fn; },
+      cloneNode() { const c = made([...cls]); return c; },
+      parentNode: null,
+    };
+  };
+  const appended = [];
+  const savedAppend = document.body.appendChild;
+  document.body.appendChild = (el) => { appended.push(el); el.parentNode = { removeChild() {} }; };
+  try {
+    app.playModalExit(made(['modal-backdrop']));
+    assert.equal(appended.length, 1, 'la fenêtre qui se ferme doit laisser une copie qui s’efface');
+    const ghost = appended[0];
+    assert.ok(ghost.classList.has('modal-ghost'), 'classe de sortie posée');
+    assert.ok(!ghost.classList.has('modal-backdrop'),
+      'la copie ne doit JAMAIS garder .modal-backdrop : le piège du clavier et Échap la prendraient pour une vraie fenêtre');
+    assert.ok(!ghost.attrs.has('id') && ghost.children.every((c) => c.removed), 'plus aucun id dans la copie');
+    assert.equal(ghost.attrs.get('aria-hidden'), 'true');
+    assert.ok(ghost.attrs.has('inert'), 'copie inerte (aucun clic, aucun focus)');
+    app.playModalExit(made(['account-panel']));
+    assert.equal(appended.length, 1, 'seule une vraie fenêtre (.modal-backdrop) a une sortie animée');
+  } finally {
+    document.body.appendChild = savedAppend;
+  }
+  // Branché dans render() : on ne joue la sortie que s'il y a une fenêtre DE MOINS.
+  assert.ok(/querySelectorAll\('\.modal-backdrop'\)\.length < backdropsBefore\.length\) \{\s*\n\s*playModalExit\(topBackdropBefore\);/.test(appSource),
+    'render() doit jouer la sortie de la fenêtre du dessus quand elle disparaît');
+  const css = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
+  const ghostZ = Number((css.match(/\.modal-ghost \{[^}]*?z-index:\s*(\d+)/) || [])[1]);
+  assert.ok(ghostZ > 950 && ghostZ < 960, 'la copie passe sous une fenêtre qui s’ouvrirait aussitôt (960), au-dessus du panneau (950)');
+  const base = Number((css.match(/--motion-base:\s*(\d+)ms/) || [])[1]);
+  assert.ok(app.MODAL_EXIT_MS >= base, 'la copie ne doit pas disparaître avant la fin de son fondu');
+});
+
+check('Transitions v2 : rubriques qui se replient en douceur, Accueil qui se remplit à l’arrivée', () => {
+  const css = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
+  assert.ok(/details\.panel \{ interpolate-size: allow-keywords; \}/.test(css), 'hauteur auto interpolable');
+  const closed = (css.match(/details\.panel::details-content \{[^}]*\}/) || [''])[0];
+  assert.ok(/block-size: 0/.test(closed) && /transition: block-size var\(--motion-base\)/.test(closed) && /allow-discrete/.test(closed),
+    'le repli doit animer la hauteur jusqu’à 0');
+  const open = (css.match(/details\.panel\[open\]::details-content \{[^}]*\}/) || [''])[0];
+  assert.ok(/overflow: visible/.test(open) && /transition: none/.test(open),
+    'rubrique ouverte : aucun rognage (menus « ⋯ » qui débordent) et ouverture en fondu seulement');
+  assert.ok(!/@keyframes (dir-bar-grow|dir-gauge-fill) \{[^}]*transform/.test(css), 'aucune transform dans l’arbre défilable');
+  assert.ok(/#view-inner:is\(\.view-fade[^)]*\) \.dir-bar > span \{\s*animation: dir-bar-grow/.test(css),
+    'les barres ne se remplissent qu’à l’arrivée sur l’onglet (pas à chaque frappe)');
+  assert.ok(/#view-inner:is\(\.view-fade[^)]*\) \.dir-gauge \.fill \{\s*animation: dir-gauge-fill/.test(css),
+    'la jauge ne se remplit qu’à l’arrivée sur l’onglet');
+  // 238.8 = circonférence réelle de la jauge (r = 38 dans dirGauge).
+  assert.ok(Math.abs(2 * Math.PI * 38 - 238.8) < 0.1 && /from \{ stroke-dashoffset: 238\.8; \}/.test(css));
+});
+
+check('Accueil : transitions de la sélection environnement / société (cascade, carte choisie, bascules synchronisées)', () => {
+  const css = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
+  const ms = (name) => Number((css.match(new RegExp(name + ':\\s*(\\d+)ms')) || [])[1]);
+  const jsConst = (name) => Number((appSource.match(new RegExp('const ' + name + ' = (\\d+);')) || [])[1]);
+  // Les délais JS ne coupent jamais un effet avant sa fin.
+  assert.ok(jsConst('WELCOME_CHOICE_MS') >= ms('--motion-welcome-choice') + ms('--motion-welcome-step'),
+    'bascule vers les sociétés coupée avant la fin (mise en avant + fondu)');
+  assert.ok(jsConst('WELCOME_CLOSE_MS') >= ms('--motion-welcome-choice') + ms('--motion-welcome-close'),
+    'fermeture coupée avant la fin (mise en avant + fondu)');
+  assert.ok(jsConst('WELCOME_STEP_MS') >= ms('--motion-welcome-step'), 'retour aux environnements coupé avant la fin');
+  // Cascade : `backwards` (pas `both`/`forwards`), sinon le survol ne soulève plus la carte.
+  assert.ok(/\.welcome-splash-box\.cards-enter \.welcome-env-card \{ animation: welcome-card-in [^;]*backwards; \}/.test(css),
+    'cascade d’entrée des cartes, sans figer leur état final');
+  // Une seule fois par écran : un re-rendu ne rejoue pas la cascade.
+  app.__setWelcomeOpen(true);
+  try {
+    const first = app.welcomeModalHtml();
+    const second = app.welcomeModalHtml();
+    if (/welcome-env-card/.test(first)) {
+      assert.ok(/welcome-splash-box[^"]*cards-enter/.test(first), 'première apparition : cascade');
+      assert.ok(!/cards-enter/.test(second), 're-rendu du même écran : pas de nouvelle cascade');
+    }
+  } finally {
+    app.__setWelcomeOpen(false);
+  }
+  // Carte choisie : mise en avant, les autres s'effacent.
+  const cls = (list) => { const set = new Set(list); return { add: (c) => set.add(c), has: (c) => set.has(c) }; };
+  const grid = { classList: cls([]) };
+  const card = { classList: cls(['welcome-env-card']), parentNode: grid };
+  app.markWelcomeChoice(card);
+  assert.ok(card.classList.has('is-chosen') && grid.classList.has('has-choice'), 'la carte cliquée est mise en avant');
+  assert.ok(/\.welcome-env-grid\.has-choice \.welcome-env-card:not\(\.is-chosen\) \{[^}]*opacity: \.25/.test(css),
+    'les autres cartes s’estompent');
+  for (const handler of ["markWelcomeChoice(environmentCard);\n      const box", "markWelcomeChoice(environmentCard);\n    closeWelcomeImmersive", "markWelcomeChoice(companyCard);\n    closeWelcomeImmersive"]) {
+    assert.ok(appSource.includes(handler), 'chaque clic de carte doit mettre la carte en avant : ' + handler.split('\n')[0]);
+  }
+});
+
+check('Mini-bugs (24/09/2026) : exports en euros, tailles minimales, couleurs d’environnement, surlignage, code mort', () => {
+  // Exports multi-sociétés : titrés « montants en euros », ils doivent
+  // convertir comme la Consolidation.
+  const exportFn = appSource.slice(appSource.indexOf('function handleExport('), appSource.indexOf('function handleExport(') + 2500);
+  assert.ok(/const selectedLines = linesOfAllConverted\(selected\);/.test(exportFn), 'export : montants convertis en euros');
+  const viewFn = appSource.slice(appSource.indexOf('function viewExport('), appSource.indexOf('function viewExport(') + 600);
+  assert.ok(/const lines = linesOfAllConverted\(selected\);/.test(viewFn), 'aperçu de l’export : mêmes montants que le fichier');
+  // Aucune taille de texte en ligne sous le plancher de l'échelle (11 px).
+  const tiny = [...appSource.matchAll(/font-size:\s*(\d+)px/g)].filter((m) => Number(m[1]) < 11);
+  assert.deepEqual(tiny.map((m) => m[0]), [], 'textes en ligne sous 11 px');
+  // Plus de vert olive figé : il doit suivre la couleur de l'environnement.
+  // Seules exceptions légitimes : la couleur par défaut d'environnement et
+  // la palette des graphiques, qui sont des déclarations, pas des styles.
+  const styled = appSource.split('\n').filter((l) => !/DEFAULT_NAVY_COLOR = |CHART_COLORS = /.test(l)).join('\n');
+  assert.ok(!/#3f4a24|#eef1e6|#6b8e23/i.test(styled),
+    'couleur olive écrite en dur (ne suit pas la couleur de l’environnement)');
+  const css = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
+  assert.ok(/tr\.row-highlight > td \{/.test(css), 'la ligne mise en avant (environnement affiché) doit avoir un style');
+  assert.ok(!appSource.includes("querySelector('[data-close-auth-button]')"), 'code mort retiré');
+});
+
+check('Export P&L : la masse salariale y figure, et les charges exportées retombent sur Total Expenses', () => {
+  // Bug du 24/09/2026 : la ligne Payroll manquait au CSV et à l'onglet
+  // « Synthèse » de l'Excel — 2,93 M€ de charges invisibles sur LPM test.
+  // Société témoin avec un collaborateur : l'état partagé de la suite peut
+  // ne plus contenir de masse salariale à ce stade, le contrôle doit porter
+  // sur un cas réel, pas passer à vide.
+  const savedState = JSON.stringify(app.state);
+  const fixture = { id: 'pay_exp', name: 'Paie Export', currency: 'EUR', devise: 'EUR', year: 2026, groupId: null };
+  app.state.companies.push(fixture);
+  app.state.lines.push({ id: 'pay_exp_ca', companyId: fixture.id, account: '70105100', name: 'CA', amounts: new Array(12).fill(20000), note: '' });
+  app.state.employees.push({ id: 'pay_exp_e', companyId: fixture.id, name: 'X', role: 'Chef', center: 'F&B', grossMonthly: 2500,
+    employerRate: 0.42, employeeRate: 0.22, startDate: '', endDate: '', raises: [], bonuses: [], leaveAccrualPerMonth: 2.5, leaveTaken: 0 });
+  app.render();
+  let checked = 0;
+  try {
+  for (const c of app.state.companies) {
+    const summary = app.summarizeForDisplay(app.linesOf(c.id));
+    const payroll = Math.round(app.total(summary.payroll));
+    if (!payroll) continue;
+    checked++;
+    // CSV
+    const rows = app.pnlRows(summary, c.name);
+    const start = rows.findIndex((r) => r[0] === 'Revenue');
+    const end = rows.findIndex((r) => r[0] === 'Total Expenses');
+    const payrollRow = rows.find((r) => r[0] === 'Payroll');
+    assert.ok(payrollRow, c.name + ' : ligne Payroll absente du CSV');
+    assert.equal(payrollRow[1], payroll, c.name + ' : montant Payroll du CSV');
+    let sum = 0;
+    for (let i = start + 1; i < end; i++) if (rows[i] && typeof rows[i][1] === 'number') sum += rows[i][1];
+    assert.ok(Math.abs(sum - rows[end][1]) <= 12,
+      c.name + ' : charges exportées (' + sum + ') ≠ Total Expenses (' + rows[end][1] + ')');
+    // Excel (onglet Synthèse)
+    const sheet = app.styledPnlSheet(summary, 'Test', 'Test');
+    const label = (r) => r && r[0] && (r[0].v !== undefined ? r[0].v : r[0]);
+    const xRow = sheet.rows.find((r) => label(r) === 'Payroll');
+    assert.ok(xRow, c.name + ' : ligne Payroll absente de l’Excel');
+    assert.equal(xRow[1].v !== undefined ? xRow[1].v : xRow[1], payroll, c.name + ' : montant Payroll de l’Excel');
+  }
+  assert.ok(checked >= 1, 'au moins une société avec masse salariale doit avoir été contrôlée');
+  } finally {
+    app.__setState(JSON.parse(savedState));
+    app.resetStateIndexes();
     app.render();
   }
 });
 
-check('Point mort : la part variable se règle en euros (montant annuel), le pourcentage n’est plus qu’un repère déduit', () => {
-  // Alexis, vague 3 point 4 : « la part variable des charges passe des
-  // pourcentages aux montants en euros », en montant ANNUEL par centre.
-  // L'ancien réglage en pourcentage reste la valeur de repli tant qu'aucun
-  // montant n'a été saisi — un budget existant ne bouge donc pas tout seul.
-  const savedLines = app.state.lines.slice();
-  const savedCompanies = app.state.companies.slice();
-  const savedActive = app.state.activeCompany;
-  const savedParts = Object.assign({}, app.state.variableParts);
-  const savedAmounts = Object.assign({}, app.state.variableAmounts);
-
-  const company = { id: 'be_eur_c', name: 'Part variable €', currency: 'EUR', year: 2026, groupId: null };
-  app.state.companies = [company];
-  app.state.activeCompany = company.id;
-  // 12 000 € de CA, 3 600 € de denrées (F&B), 2 400 € de loyer.
-  const rent = ts.ACCOUNTS.find((a) => a.kind === 'charge' && a.center && a.center !== 'F&B');
-  app.state.lines = [
-    { id: 'be_eur_l1', companyId: company.id, account: '70105100', name: 'CA', amounts: months(1000) },
-    { id: 'be_eur_l2', companyId: company.id, account: '60103100', name: 'Denrées', amounts: months(300) },
-    { id: 'be_eur_l3', companyId: company.id, account: rent.account, name: 'Loyer', amounts: months(200) },
-  ];
-
+check('Prio (24/09/2026) : les charges liées au CA suivent le scénario, l’export Consolidation est en euros', () => {
+  const saved = JSON.stringify(app.state);
   try {
-    app.state.variableParts = {};
-    app.state.variableAmounts = {};
-    const summary = app.__summarize(app.linesOf(company.id));
-
-    // Rien de saisi : on retombe exactement sur l'ancien comportement
-    // (F&B variable à 100 %, le reste fixe) — pas de migration, pas de
-    // point mort qui change au premier chargement.
-    assert.strictEqual(app.variableAmountOf('F&B'), null, 'aucun montant saisi au départ');
-    const before = app.breakEvenAnalysis(summary);
-    assert.equal(Math.round(before.variable), 3600, 'sans montant saisi, le pourcentage historique s’applique');
-    assert.equal(Math.round(before.fixed), 2400);
-
-    // Un montant en euros prend la main sur le pourcentage.
-    app.setVariableAmount(rent.center, 1200);
-    assert.equal(app.variableAmountOf(rent.center), 1200, 'le montant saisi est retenu');
-    const withAmount = app.breakEvenAnalysis(summary);
-    assert.equal(Math.round(withAmount.variable), 3600 + 1200, 'les 1 200 € du loyer passent en variable');
-    assert.equal(Math.round(withAmount.fixed), 2400 - 1200, 'le reste du centre demeure fixe');
-    assert.ok(withAmount.breakEven < before.breakEven, 'moins de charges fixes abaisse le point mort');
-
-    // Le pourcentage devient une valeur DÉDUITE du montant.
-    assert.ok(Math.abs(app.variableRateOf(rent.center, 2400) - 0.5) < 1e-9,
-      '1 200 € sur un centre à 2 400 € font 50 %, déduits et non saisis');
-
-    // Montant au-dessus du budget du centre : plafonné, jamais de part
-    // fixe négative (qui rendrait le point mort faussement optimiste).
-    app.setVariableAmount(rent.center, 99999);
-    assert.equal(Math.round(app.variableShareOf(rent.center, 2400)), 2400,
-      'un montant supérieur au budget du centre est plafonné à ce budget');
-    const capped = app.breakEvenAnalysis(summary);
-    assert.equal(Math.round(capped.fixed), 0, 'la part fixe ne descend jamais sous zéro');
-
-    // Case vidée : retour au réglage en pourcentage.
-    app.setVariableAmount(rent.center, '');
-    assert.strictEqual(app.variableAmountOf(rent.center), null, 'vider la case efface le montant');
-    const cleared = app.breakEvenAnalysis(summary);
-    assert.equal(Math.round(cleared.fixed), 2400, 'sans montant, le centre repasse sur son pourcentage');
-
-    // La carte d'Ajustements affiche le champ en euros, le budget du
-    // centre en regard et l'aperçu immédiat du point mort.
-    const savedTab = app.__getTab();
-    app.__setTab('ajustements');
+    const t = (a) => Math.round(app.total(a));
+    const chargeAcc = app.state.lines.find((l) => {
+      const a = app.resolveAccountForLine(l); return a && a.kind === 'charge' && !l.payrollCenterLink && !l.rateLink;
+    }).account;
+    const c = { id: 'prio_c', name: 'Prio', currency: 'EUR', devise: 'EUR', year: 2026, groupId: null };
+    app.state.companies.push(c);
+    app.state.lines.push({ id: 'prio_ca', companyId: c.id, account: '70105100', name: 'CA', amounts: new Array(12).fill(10000), note: '' });
+    app.state.lines.push({ id: 'prio_com', companyId: c.id, account: chargeAcc, name: 'Commission', amounts: new Array(12).fill(0), note: '',
+      rateLink: { rate: 0.1, sourceLineId: 'prio_ca' } });
+    app.state.lines.push({ id: 'prio_cat', companyId: c.id, account: chargeAcc, name: 'SACEM', amounts: new Array(12).fill(0), note: '',
+      rateLink: { rate: 0.02, categoryKind: 'revenue', categoryIds: ['food'] } });
+    app.state.lines.push({ id: 'prio_fix', companyId: c.id, account: chargeAcc, name: 'Loyer', amounts: new Array(12).fill(1000), note: '' });
+    app.resetStateIndexes();
     app.render();
-    const rendered = document.getElementById('view').innerHTML;
-    assert.ok(rendered.includes('data-variable-amount="F&amp;B"'), 'un champ en euros par centre');
-    assert.ok(rendered.includes('data-variable-amount="PAYROLL"'), 'la masse salariale a aussi son champ');
-    assert.ok(!rendered.includes('data-variable-part='), 'l’ancien champ en pourcentage ne doit plus être saisissable');
-    assert.ok(rendered.includes('Part variable (€/an)'), 'l’en-tête doit annoncer des euros par an');
-    assert.ok(rendered.includes('Point mort'), 'la carte doit donner l’aperçu immédiat du point mort');
-    app.__setTab(savedTab);
+    const lines = app.linesOf(c.id);
+    const byId = (list, id) => list.find((l) => l.id === id);
+    const scenario = { revenueFactor: 0.9, expenseFactor: 1.05 };
+    const adjusted = app.applyScenarioToLines(lines, scenario);
+    const commission = t(byId(lines, 'prio_com').amounts);
+    assert.equal(commission, 12000, 'base : 10 % de 120 000 €');
+    assert.equal(t(byId(adjusted, 'prio_com').amounts), Math.round(commission * 0.9),
+      'la commission liée au CA suit le coefficient du CA (−10 %), pas celui des charges');
+    const sacem = t(byId(lines, 'prio_cat').amounts);
+    assert.ok(Math.abs(t(byId(adjusted, 'prio_cat').amounts) - sacem * 0.9) <= 12,
+      'une charge liée à une catégorie de CA suit aussi le coefficient du CA');
+    assert.equal(t(byId(adjusted, 'prio_fix').amounts), Math.round(12000 * 1.05), 'une charge fixe garde le coefficient des charges');
+
+    // Export Consolidation : budget d'une société en devise converti en euros.
+    app.state.exchangeRates = Object.assign({}, app.state.exchangeRates, { USD: 0.5 });
+    c.devise = 'USD';
+    const totals = app.caEbitdaTotals([c]);
+    const row = (totals.rows || totals.rowsData || []).find((r) => r.name === 'Prio') ||
+      (totals.items || []).find((r) => r.name === 'Prio');
+    const caBudget = row ? row.caBudget : totals.totalCaBudget;
+    assert.equal(Math.round(caBudget), 60000, 'CA budget de 120 000 USD à 0,5 € → 60 000 € dans l’export Consolidation');
   } finally {
-    app.state.lines = savedLines;
-    app.state.companies = savedCompanies;
-    app.state.activeCompany = savedActive;
-    app.state.variableParts = savedParts;
-    app.state.variableAmounts = savedAmounts;
-    app.render();
-  }
-});
-
-check('Seuil de rentabilité : la masse salariale (Payroll) pèse dans le calcul', () => {
-  const savedLines = app.state.lines.slice();
-  const savedCompanies = app.state.companies.slice();
-  const savedActive = app.state.activeCompany;
-  const savedParts = Object.assign({}, app.state.variableParts || {});
-
-  const company = { id: 'be_payroll_c', name: 'Point mort Payroll Test', currency: 'EUR', year: 2026, groupId: null };
-  app.state.companies = [company];
-  app.state.activeCompany = company.id;
-  // 12 000 € de CA, 2 400 € de loyer (fixe, hors F&B), 24 000 € de salaires
-  // (compte 6411, exclu de byCenter depuis le 03/08/2026 — voir summarize()).
-  const rent = ts.ACCOUNTS.find((a) => a.kind === 'charge' && a.center && a.center !== 'F&B');
-  app.state.lines = [
-    { id: 'be_p_l1', companyId: company.id, account: '70105100', name: 'CA', amounts: months(1000) },
-    { id: 'be_p_l2', companyId: company.id, account: rent.account, name: 'Loyer', amounts: months(200) },
-    { id: 'be_p_l3', companyId: company.id, account: '64110100', name: 'Salaires F&B', amounts: months(2000) },
-  ];
-
-  try {
-    // Par défaut la masse salariale est entièrement fixe, comme les autres
-    // centres hors F&B.
-    assert.equal(app.variablePartOf('PAYROLL'), 0, 'le Payroll est fixe par défaut');
-
-    const summary = app.__summarize(app.linesOf(company.id));
-    assert.equal(Math.round(ts.total(summary.payroll)), 24000, 'la masse salariale doit apparaître sur la ligne Payroll');
-
-    const a = app.breakEvenAnalysis(summary);
-    // Sans le correctif, les charges fixes ne compteraient que le loyer
-    // (2400 €) et ignoreraient les 24000 € de salaires.
-    assert.equal(Math.round(a.fixed), 26400, 'les charges fixes doivent inclure le Payroll (loyer + salaires)');
-    assert.equal(Math.round(a.variable), 0, 'aucune charge variable dans ce budget');
-
-    // Rendre le Payroll variable à 50 % déplace le point mort, comme pour
-    // n'importe quel centre.
-    app.setVariablePart('PAYROLL', 50);
-    const b = app.breakEvenAnalysis(summary);
-    assert.equal(Math.round(b.fixed), 14400, 'la moitié du Payroll devient variable');
-    assert.equal(Math.round(b.variable), 12000, 'la moitié du Payroll (12000 €) doit être comptée en charges variables');
-  } finally {
-    app.state.lines = savedLines;
-    app.state.companies = savedCompanies;
-    app.state.activeCompany = savedActive;
-    app.state.variableParts = savedParts;
-    app.render();
-  }
-});
-
-check('Seuil de rentabilité : double-clic sur une carte ouvre le détail du calcul', () => {
-  const savedTab = app.__getTab();
-  const savedLines = app.state.lines.slice();
-  const savedCompanies = app.state.companies.slice();
-  const savedActive = app.state.activeCompany;
-
-  const company = { id: 'be_modal_c', name: 'Détail SR Test', currency: 'EUR', year: 2026, groupId: null };
-  app.state.companies = [company];
-  app.state.activeCompany = company.id;
-  const rent = ts.ACCOUNTS.find((a) => a.kind === 'charge' && a.center && a.center !== 'F&B');
-  app.state.lines = [
-    { id: 'be_modal_l1', companyId: company.id, account: '70105100', name: 'CA', amounts: months(1000) },
-    { id: 'be_modal_l2', companyId: company.id, account: '60103100', name: 'Denrées', amounts: months(300) },
-    { id: 'be_modal_l3', companyId: company.id, account: rent.account, name: 'Loyer', amounts: months(200) },
-  ];
-
-  try {
-    app.__setTab('pnl');
-    app.render();
-    let rendered = document.getElementById('view').innerHTML;
-    assert.ok(rendered.includes('data-dblclick-breakeven="fixed"'), 'la carte « Charges fixes » doit être doublement cliquable');
-    assert.ok(rendered.includes('data-dblclick-breakeven="breakeven"'), 'la carte « Point mort » doit être doublement cliquable');
-    assert.equal(app.__getBreakEvenDetailKey(), null, 'aucun détail ouvert par défaut');
-
-    assert.equal(app.__getBreakEvenOpen(), false, 'le panneau Seuil de rentabilité est fermé par défaut');
-    app.openBreakEvenDetail('breakeven');
-    assert.equal(app.__getBreakEvenDetailKey(), 'breakeven');
-    // Le panneau <details> doit rester ouvert au re-render déclenché par
-    // l'ouverture du détail : sinon il se referme sous les yeux de
-    // l'utilisateur (c'était le bug « pas fluide »).
-    assert.equal(app.__getBreakEvenOpen(), true, 'ouvrir un détail doit garder le panneau déplié');
-    rendered = document.getElementById('view').innerHTML;
-    assert.ok(rendered.includes('data-breakeven-details="1" open') || rendered.includes('open data-breakeven-details="1"'),
-      'le panneau doit se re-rendre avec l’attribut open');
-    assert.ok(rendered.includes('Point mort — détail du calcul'), 'le détail du point mort devrait afficher son titre');
-    assert.ok(rendered.includes('data-close-breakeven-detail="1"'), 'un moyen de fermer le détail doit être présent');
-    assert.ok(rendered.includes('CA cumulé'), 'le détail du point mort devrait montrer le cumul mensuel');
-    assert.ok(rendered.includes('class="formula"'), 'la formule du calcul doit être affichée en toutes lettres');
-    assert.ok(rendered.includes('Charges fixes') && rendered.includes('÷') && rendered.includes('Marge sur coûts variables'),
-      'la formule du point mort doit montrer le signe de division');
-    assert.ok(rendered.includes('modal-box-wide'), 'la fenêtre de détail doit être agrandie');
-
-    app.closeBreakEvenDetail();
-    assert.equal(app.__getBreakEvenDetailKey(), null, 'fermer devrait vider le détail ouvert');
-    assert.equal(app.__getBreakEvenOpen(), true, 'fermer le détail ne doit pas replier le panneau qui était ouvert');
-    rendered = document.getElementById('view').innerHTML;
-    assert.ok(!rendered.includes('Point mort — détail du calcul'), 'le détail fermé ne devrait plus apparaître');
-
-    // Vérifie les autres formules / opérateurs.
-    app.openBreakEvenDetail('fixed');
-    rendered = document.getElementById('view').innerHTML;
-    // Depuis le passage de la part variable en euros (20/08/2026), le détail
-    // des charges fixes se lit « Total du centre − Part variable (€) = … » :
-    // c'est une soustraction, plus une multiplication par un pourcentage.
-    assert.ok(rendered.includes('−') && rendered.includes('<td class="op">='),
-      'la formule des charges fixes doit montrer − et =');
-    assert.ok(rendered.includes('Part variable (€)'),
-      'le détail doit annoncer une part variable en euros, pas en pourcentage');
-    app.openBreakEvenDetail('margin');
-    rendered = document.getElementById('view').innerHTML;
-    assert.ok(rendered.includes('÷') && rendered.includes('−'), 'la formule de la marge doit montrer ÷ et −');
-    app.openBreakEvenDetail('safety');
-    rendered = document.getElementById('view').innerHTML;
-    assert.ok(rendered.includes('class="formula"'), 'la formule de la marge de sécurité doit être affichée');
-  } finally {
-    app.closeBreakEvenDetail();
-    app.state.lines = savedLines;
-    app.state.companies = savedCompanies;
-    app.state.activeCompany = savedActive;
-    app.__setTab(savedTab);
+    app.__setState(JSON.parse(saved));
+    app.resetStateIndexes();
     app.render();
   }
 });
@@ -14862,7 +15222,7 @@ check('saveRateLink crée une nouvelle dépense calculée sur la ligne de réfé
     // recherche fait la même chose : `rateLinkModal.refAccount = ...`).
     app.openRateLinkModal(target.account, null);
     assert.deepEqual(app.__getRateLinkModal(),
-      { account: target.account, editingLineId: null, refKind: 'line', categoryId: null, refAccountQuery: '', refAccount: null });
+      { account: target.account, editingLineId: null, refKind: 'line', categoryIds: [], refAccountQuery: '', refAccount: null });
     app.__getRateLinkModal().refAccount = source.account;
 
     // Étape 2 : la ligne de référence EXACTE, parmi les lignes du compte de
@@ -14884,7 +15244,7 @@ check('saveRateLink crée une nouvelle dépense calculée sur la ligne de réfé
     // nouvelle ligne de référence exacte, nouveau multiplicateur.
     app.openRateLinkModal(target.account, created.id);
     assert.deepEqual(app.__getRateLinkModal(),
-      { account: target.account, editingLineId: created.id, refKind: 'line', categoryId: null, refAccountQuery: '', refAccount: source.account });
+      { account: target.account, editingLineId: created.id, refKind: 'line', categoryIds: [], refAccountQuery: '', refAccount: source.account });
     app.__getRateLinkModal().refAccount = otherSource.account;
     document.getElementById('ratelink-source-line').value = 'save_rl_other';
     document.getElementById('ratelink-rate').value = '0.02';
@@ -15038,7 +15398,7 @@ check('saveRateLink : lier une dépense au total d’un centre de coûts entier 
     const modal = app.__getRateLinkModal();
     assert.equal(modal.refKind, 'line', 'le mode par défaut à l’ouverture reste « ligne précise »');
     modal.refKind = 'expenseCategory';
-    modal.categoryId = centerId;
+    modal.categoryIds = [centerId];
     document.getElementById('ratelink-name').value = 'Quote-part IT';
     document.getElementById('ratelink-rate').value = '0.1';
     app.saveRateLink();
@@ -15047,7 +15407,7 @@ check('saveRateLink : lier une dépense au total d’un centre de coûts entier 
     created = app.state.lines.find((l) =>
       l.companyId === company.id && l.account === target.account && l.rateLink && l.name === 'Quote-part IT');
     assert.ok(created, 'la nouvelle ligne calculée est introuvable');
-    assert.deepEqual(created.rateLink, { rate: 0.1, categoryKind: 'expense', categoryId: centerId });
+    assert.deepEqual(created.rateLink, { rate: 0.1, categoryKind: 'expense', categoryIds: [centerId] });
     assert.equal(created.amounts[0], 40, '0,1 × 400 (total du centre IT) devrait valoir 40');
 
     // Une deuxième dépense apparaît dans le centre : le total suit, sans
@@ -15092,7 +15452,7 @@ check('saveRateLink : lier un coût à une catégorie de CA — exemple d’Alex
     app.openRateLinkModal(target.account, null);
     const modal = app.__getRateLinkModal();
     modal.refKind = 'revenueCategory';
-    modal.categoryId = 'beverage';
+    modal.categoryIds = ['beverage'];
     document.getElementById('ratelink-name').value = 'Beverage Cost';
     document.getElementById('ratelink-rate').value = '0.2';
     app.saveRateLink();
@@ -15100,7 +15460,7 @@ check('saveRateLink : lier un coût à une catégorie de CA — exemple d’Alex
     created = app.state.lines.find((l) =>
       l.companyId === company.id && l.account === target.account && l.rateLink && l.name === 'Beverage Cost');
     assert.ok(created, 'la nouvelle ligne calculée est introuvable');
-    assert.deepEqual(created.rateLink, { rate: 0.2, categoryKind: 'revenue', categoryId: 'beverage' });
+    assert.deepEqual(created.rateLink, { rate: 0.2, categoryKind: 'revenue', categoryIds: ['beverage'] });
     assert.equal(created.amounts[0], 40, '0,2 × 200 (CA Beverage janvier) devrait valoir 40');
     assert.equal(app.rateLinkCategoryLabel('revenue', 'beverage'), 'Beverage (CA)');
     assert.equal(app.rateLinkCategoryLabel('expense', 'IT'), 'Informatique & technologie');
@@ -15120,6 +15480,185 @@ check('saveRateLink : lier un coût à une catégorie de CA — exemple d’Alex
     app.state.dailyBudgetRevenue = savedDaily;
     app.state.serviceMatrix = savedMatrix;
     app.closeRateLinkModal();
+  }
+});
+
+/* ==================================================================
+   MULTIPLICATEUR : ADDITIONNER PLUSIEURS CATÉGORIES (23/09/2026)
+
+   Alexis : « dans saisie fait en sorte que si je veux multiplier
+   l'addition de deux lignes je puisse — par exemple pour calculer la
+   sacem c'est la somme du CA food et bev multiplié par un pourcentage ».
+   `line.rateLink.categoryIds` (tableau) remplace le `categoryId` unique :
+   plusieurs catégories cochées voient leurs totaux additionnés AVANT
+   d'appliquer le multiplicateur. `categoryId` (ancien format, une seule
+   catégorie) reste lu par tolérance sur les multiplicateurs déjà
+   enregistrés — voir `rateLinkCategoryIdsOf`.
+   ================================================================== */
+
+check('rateLinkExpenseCategoryMonths / rateLinkRevenueCategoryMonths : plusieurs catégories cochées s’additionnent', () => {
+  const company = app.state.companies.find((c) => c.name === 'Palm Beach Test') || app.state.companies[0];
+  const companyLines = app.state.lines.filter((l) => l.companyId === company.id);
+  const used = new Set(companyLines.map((l) => l.account));
+  const accIT = ts.ACCOUNTS.find((a) =>
+    a.center === 'IT' && a.kind === 'charge' && !used.has(a.account) && !/^(6411|6412|645)/.test(a.account));
+  const accMark = ts.ACCOUNTS.find((a) =>
+    a.center === 'MARK' && a.kind === 'charge' && !used.has(a.account) && !/^(6411|6412|645)/.test(a.account));
+  assert.ok(accIT && accMark, 'comptes libres introuvables pour ce contrôle');
+
+  const lineIT = { id: 'multicat_it', companyId: company.id, account: accIT.account, name: 'Logiciels', amounts: months(300) };
+  const lineMark = { id: 'multicat_mark', companyId: company.id, account: accMark.account, name: 'Pub', amounts: months(700) };
+  app.state.lines.push(lineIT, lineMark);
+  const savedCatVent = app.state.caCategoryVentilation;
+  const savedMatrix = app.state.serviceMatrix;
+  app.state.caCategoryVentilation = {};
+  app.state.serviceMatrix = {};
+  try {
+    const planIndex = app.accountIndexForPlan(company.planId);
+
+    // Un seul id (tableau à un élément) : comportement historique inchangé.
+    const oneCenter = app.rateLinkExpenseCategoryMonths(app.rawLinesOf(company.id), ['IT'], planIndex);
+    assert.equal(oneCenter[0], 300, 'un seul centre coché doit se comporter comme avant');
+
+    // Deux centres cochés : les deux totaux s'additionnent.
+    const twoCenters = app.rateLinkExpenseCategoryMonths(app.rawLinesOf(company.id), ['IT', 'MARK'], planIndex);
+    assert.equal(twoCenters[0], 1000, 'IT (300) + MARK (700) doivent s’additionner');
+
+    // Même principe côté CA : Food + Beverage de la matrice.
+    const y = company.year;
+    const serviceId = app.MATRIX_SERVICES[0].id;
+    app.setServiceMatrixValue(company.id, 'covers', serviceId, y + '-01-05', '10');
+    app.setServiceMatrixValue(company.id, 'ticket', serviceId, y + '-01-05', '100'); // 1000 € de CA matrice
+    app.setCaCategoryVentilationPercent(company.id, 'food', 60);
+    app.setCaCategoryVentilationPercent(company.id, 'beverage', 40);
+    const foodBev = app.rateLinkRevenueCategoryMonths(company.id, app.rawLinesOf(company.id), ['food', 'beverage']);
+    assert.ok(Math.abs(foodBev[0] - 1000) < 0.01,
+      'CA Food (60 %) + CA Bev (40 %) doivent reconstituer 100 % du CA matrice (exemple SACEM)');
+  } finally {
+    app.state.lines = app.state.lines.filter((l) => !['multicat_it', 'multicat_mark'].includes(l.id));
+    app.state.caCategoryVentilation = savedCatVent;
+    app.state.serviceMatrix = savedMatrix;
+  }
+});
+
+check('rateLinkCategoryLabel : plusieurs catégories jointes par « + », rétrocompatible avec un id seul', () => {
+  assert.equal(app.rateLinkCategoryLabel('revenue', ['food', 'beverage']), 'Food (CA) + Beverage (CA)');
+  assert.equal(app.rateLinkCategoryLabel('expense', ['IT', 'MARK']), 'Informatique & technologie + Marketing');
+  // Id seul (pas dans un tableau) : comportement historique conservé.
+  assert.equal(app.rateLinkCategoryLabel('revenue', 'beverage'), 'Beverage (CA)');
+  // Ancien format `categoryId` (avant le 23/09/2026) toujours lisible via rateLinkCategoryIdsOf.
+  assert.deepEqual(app.rateLinkCategoryIdsOf({ rate: 0.2, categoryKind: 'revenue', categoryId: 'beverage' }), ['beverage']);
+  assert.deepEqual(app.rateLinkCategoryIdsOf({ rate: 0.2, categoryKind: 'revenue', categoryIds: ['food', 'beverage'] }),
+    ['food', 'beverage']);
+  assert.deepEqual(app.rateLinkCategoryIdsOf(null), []);
+  assert.deepEqual(app.rateLinkCategoryIdsOf({ rate: 1, sourceLineId: 'x' }), [],
+    'un multiplicateur sur une ligne précise n’a pas de catégorie');
+});
+
+check('rateLinkModalHtml : cases à cocher pour plusieurs catégories, dont l’état reflète rateLinkModal.categoryIds', () => {
+  app.__setTab('saisie');
+  const company = app.state.companies.find((c) => c.name === 'Palm Beach Test') || app.state.companies[0];
+  const used = new Set(app.state.lines.filter((l) => l.companyId === company.id).map((l) => l.account));
+  const target = ts.ACCOUNTS.find((a) => a.kind === 'charge' && !used.has(a.account));
+  assert.ok(target, 'compte libre introuvable pour ce contrôle');
+  try {
+    app.openRateLinkModal(target.account, null);
+    const modal = app.__getRateLinkModal();
+    modal.refKind = 'revenueCategory';
+    modal.categoryIds = ['food'];
+    let rendered = app.rateLinkModalHtml();
+    assert.ok(/data-ratelink-category="food"[^>]*checked/.test(rendered), 'Food doit être coché');
+    assert.ok(!/data-ratelink-category="beverage"[^>]*checked/.test(rendered), 'Beverage ne doit pas être coché');
+    assert.ok(!rendered.includes('disabled'), 'une catégorie déjà cochée doit permettre d’enregistrer (bouton actif)');
+
+    modal.categoryIds = [];
+    rendered = app.rateLinkModalHtml();
+    assert.ok(rendered.includes('disabled'), 'aucune catégorie cochée : le bouton Enregistrer doit rester désactivé');
+  } finally {
+    app.closeRateLinkModal();
+  }
+});
+
+check('saveRateLink : au moins une catégorie exigée, exemple SACEM = (CA Food + CA Bev) × pourcentage', () => {
+  app.__setTab('saisie');
+  const company = app.state.companies.find((c) => c.name === 'Palm Beach Test') || app.state.companies[0];
+  const used = new Set(app.state.lines.filter((l) => l.companyId === company.id).map((l) => l.account));
+  const target = ts.ACCOUNTS.find((a) => a.kind === 'charge' && !used.has(a.account));
+  assert.ok(target, 'compte libre introuvable pour ce contrôle');
+  const savedCatVent = app.state.caCategoryVentilation;
+  const savedMatrix = app.state.serviceMatrix;
+  app.state.caCategoryVentilation = {};
+  app.state.serviceMatrix = {};
+  const y = company.year;
+  const serviceId = app.MATRIX_SERVICES[0].id;
+
+  // CA matrice de janvier : 10 couverts × 200 € = 2000 €, réparti 60 % Food / 40 % Bev.
+  app.setServiceMatrixValue(company.id, 'covers', serviceId, y + '-01-05', '10');
+  app.setServiceMatrixValue(company.id, 'ticket', serviceId, y + '-01-05', '200');
+  app.setCaCategoryVentilationPercent(company.id, 'food', 60);
+  app.setCaCategoryVentilationPercent(company.id, 'beverage', 40);
+
+  let created = null;
+  try {
+    app.openRateLinkModal(target.account, null);
+    const modal = app.__getRateLinkModal();
+    modal.refKind = 'revenueCategory';
+
+    // Aucune catégorie cochée : refus explicite, aucune ligne créée.
+    document.getElementById('ratelink-name').value = 'SACEM';
+    document.getElementById('ratelink-rate').value = '0.0175';
+    const beforeCount = app.state.lines.length;
+    app.saveRateLink();
+    assert.equal(app.state.lines.length, beforeCount, 'aucune catégorie cochée : rien ne doit être créé');
+    assert.ok(app.__getRateLinkModal(), 'la fenêtre doit rester ouverte tant qu’aucune catégorie n’est cochée');
+
+    // Food ET Beverage cochés : leurs deux totaux s'additionnent avant le multiplicateur.
+    modal.categoryIds = ['food', 'beverage'];
+    app.saveRateLink();
+    assert.equal(app.__getRateLinkModal(), null, 'la fenêtre devrait se fermer après enregistrement');
+
+    created = app.state.lines.find((l) =>
+      l.companyId === company.id && l.account === target.account && l.rateLink && l.name === 'SACEM');
+    assert.ok(created, 'la nouvelle ligne calculée est introuvable');
+    assert.deepEqual(created.rateLink, { rate: 0.0175, categoryKind: 'revenue', categoryIds: ['food', 'beverage'] });
+    assert.ok(Math.abs(created.amounts[0] - 35) < 0.01,
+      '0,0175 × 2000 (CA Food + CA Bev, 100 % du CA matrice de janvier) devrait valoir 35');
+
+    // Une seule catégorie cochée en modification : redevient le comportement historique.
+    app.openRateLinkModal(target.account, created.id);
+    const editModal = app.__getRateLinkModal();
+    assert.deepEqual(editModal.categoryIds, ['food', 'beverage'], 'la modification doit repartir des catégories déjà cochées');
+    editModal.categoryIds = ['beverage'];
+    app.saveRateLink();
+    assert.deepEqual(created.rateLink, { rate: 0.0175, categoryKind: 'revenue', categoryIds: ['beverage'] });
+    assert.ok(Math.abs(created.amounts[0] - 14) < 0.01, '0,0175 × 800 (CA Bev seul, 40 % de 2000) devrait valoir 14');
+  } finally {
+    app.state.lines = app.state.lines.filter((l) => !(created && l.id === created.id));
+    app.state.caCategoryVentilation = savedCatVent;
+    app.state.serviceMatrix = savedMatrix;
+    app.closeRateLinkModal();
+  }
+});
+
+check('recomputeRateLinkedLines : un multiplicateur enregistré avant le 23/09/2026 (categoryId singulier) continue de se recalculer', () => {
+  const company = app.state.companies.find((c) => c.name === 'Palm Beach Test') || app.state.companies[0];
+  const used = new Set(app.state.lines.filter((l) => l.companyId === company.id).map((l) => l.account));
+  const centerId = 'MARK';
+  const centerAccount = ts.ACCOUNTS.find((a) =>
+    a.center === centerId && a.kind === 'charge' && !used.has(a.account) && !/^(6411|6412|645)/.test(a.account));
+  const targetAccount = ts.ACCOUNTS.find((a) => a.kind === 'charge' && a.center !== centerId && !used.has(a.account));
+  assert.ok(centerAccount && targetAccount, 'comptes libres introuvables pour ce contrôle');
+
+  const base = { id: 'legacycat_base', companyId: company.id, account: centerAccount.account, name: 'Pub', amounts: months(500) };
+  // Ancien format : `categoryId` singulier, pas `categoryIds`.
+  const legacy = { id: 'legacycat_line', companyId: company.id, account: targetAccount.account, name: 'Quote-part (ancien format)',
+    amounts: months(0), rateLink: { rate: 0.1, categoryKind: 'expense', categoryId: centerId } };
+  app.state.lines.push(base, legacy);
+  try {
+    app.recomputeRateLinkedLines(company.id);
+    assert.equal(legacy.amounts[0], 50, 'un ancien multiplicateur categoryId doit encore se recalculer correctement (0,1 × 500)');
+  } finally {
+    app.state.lines = app.state.lines.filter((l) => !['legacycat_base', 'legacycat_line'].includes(l.id));
   }
 });
 
@@ -16032,6 +16571,14 @@ check('PnL : Food Revenue + Beverage Revenue retombent exactement sur Couverts �
   assert.ok(Math.abs(split.food[1] - 50) < 1e-9 && Math.abs(split.beverage[1] - 50) < 1e-9,
     'sans proportion connue, le partage devrait être 50/50');
 
+  // Mois SANS couverts dans la matrice (audit du 24/09/2026) : on garde le
+  // CA Food/Bev de la Saisie. Avant, ces lignes tombaient à 0 € sous un
+  // Revenue juste (7,2 M€ de Food affichés 0 € sur LPM test).
+  const empty = app.activityRevenueSplit([7000, 0], [3000, 0], { covers: [0, 0], ticket: [0, 0] });
+  assert.equal(empty.food[0], 7000, 'sans matrice, Food Revenue doit rester celui de la Saisie (pas 0)');
+  assert.equal(empty.beverage[0], 3000, 'sans matrice, Beverage Revenue doit rester celui de la Saisie (pas 0)');
+  assert.equal(empty.food[1] + empty.beverage[1], 0, 'mois vide partout : 0, pas un partage inventé');
+
   // Puis vérifié dans le tableau réellement rendu, pas seulement dans la
   // fonction en isolation : la colonne « Année » de Food + Beverage doit
   // sommer au total de Couverts × Ticket moyen affiché juste au-dessus.
@@ -16061,8 +16608,13 @@ check('PnL : Food Revenue + Beverage Revenue retombent exactement sur Couverts �
     // c'est la somme, mois par mois, de couverts × ticket — exactement ce
     // que fait `activityRevenueSplit` en interne. On recalcule donc cette
     // même somme via le même chemin que l'écran, plutôt qu'une approximation.
+    // Mois sans couverts : Food + Bev reprennent la Saisie (24/09/2026).
     const realActivity = app.applyScenarioToActivity(app.matrixMonthlySeries([company]), app.activeScenario());
-    const impliedTotal = realActivity.covers.reduce(function (sum, c, i) { return sum + c * realActivity.ticket[i]; }, 0);
+    const saisieSplit = app.summarizeForDisplay(app.linesOf(company.id)).revenueSplit;
+    const impliedTotal = realActivity.covers.reduce(function (sum, c, i) {
+      const implied = c * realActivity.ticket[i];
+      return sum + (implied > 0 ? implied : (Number(saisieSplit.food[i]) || 0) + (Number(saisieSplit.beverage[i]) || 0));
+    }, 0);
     // Chaque ligne est arrondie séparément à l'écran (money() par ligne) :
     // la somme des deux arrondis peut différer de 1 ou 2 du total exact.
     assert.ok(Math.abs((foodTotal + bevTotal) - impliedTotal) <= 2,
@@ -17053,7 +17605,7 @@ check('l’onglet Plan comptable liste les plans importés et permet d’en chan
   }
 });
 
-check('l’onglet Ajustements regroupe scénarios, part variable et ratios personnalisés, hors du Plan comptable', () => {
+check('l’onglet Ajustements regroupe scénarios et ratios personnalisés, hors du Plan comptable', () => {
   const savedTab = app.__getTab();
   try {
     app.__setTab('ajustements');
@@ -17061,15 +17613,12 @@ check('l’onglet Ajustements regroupe scénarios, part variable et ratios perso
     let rendered = document.getElementById('view').innerHTML;
     assert.ok(rendered.includes('>Ajustements<'), 'le titre de l’onglet Ajustements est absent');
     assert.ok(rendered.includes('data-add-scenario='), 'la carte scénarios devrait vivre dans Ajustements');
-    assert.ok(rendered.includes('data-variable-amount='),
-      'la carte part variable (en euros depuis le 20/08/2026) devrait vivre dans Ajustements');
     assert.ok(rendered.includes('Ratios personnalisés'), 'la carte ratios personnalisés devrait vivre dans Ajustements');
 
     app.__setTab('plan');
     app.render();
     rendered = document.getElementById('view').innerHTML;
     assert.ok(!rendered.includes('data-add-scenario='), 'la carte scénarios ne devrait plus apparaître dans Plan comptable');
-    assert.ok(!rendered.includes('data-variable-part='), 'la carte part variable ne devrait plus apparaître dans Plan comptable');
     assert.ok(!rendered.includes('Ratios personnalisés'), 'la carte ratios personnalisés ne devrait plus apparaître dans Plan comptable');
   } finally {
     app.__setTab(savedTab);
@@ -17163,17 +17712,17 @@ check('une rubrique dépliée le reste au re-rendu, et s’affiche en entier', (
     app.render();
     // Replier une rubrique ouverte par défaut, puis re-rendre : elle doit
     // rester repliée (sinon l'écran « saute » à chaque changement d'état).
-    app.__setPanelOpen('ajustements-parts', false);
+    app.__setPanelOpen('ajustements-ratios', false);
     app.render();
     let rendered = document.getElementById('view').innerHTML;
-    let match = rendered.match(/<details class="card panel" data-panel="ajustements-parts"[^>]*>/);
-    assert.ok(match, 'volet « Part variable » introuvable');
+    let match = rendered.match(/<details class="card panel" data-panel="ajustements-ratios"[^>]*>/);
+    assert.ok(match, 'volet « Ratios personnalisés » introuvable');
     assert.ok(!match[0].includes(' open'), 'un volet replié devrait le rester au re-rendu');
 
-    app.__setPanelOpen('ajustements-parts', true);
+    app.__setPanelOpen('ajustements-ratios', true);
     app.render();
     rendered = document.getElementById('view').innerHTML;
-    match = rendered.match(/<details class="card panel" data-panel="ajustements-parts"[^>]*>/);
+    match = rendered.match(/<details class="card panel" data-panel="ajustements-ratios"[^>]*>/);
     assert.ok(match[0].includes(' open'), 'un volet déplié devrait le rester au re-rendu');
 
     // Aucune hauteur maximale ne tronque une rubrique dépliée : les
@@ -17462,6 +18011,176 @@ check('Forecast : l’objectif du jour suit la pondération jour de semaine, la 
     app.state.companies = savedCompanies;
     app.state.lines = savedLines;
     app.state.caWeighting = savedWeighting;
+  }
+});
+
+/* ---------------------------------------------------------------------
+ * Matrice CA officielle (23/09/2026) — Alexis : « ajoute-moi un bouton
+ * pour exporter cette matrice et l'importer dans l'onglet CA du côté
+ * directeur et CDG, fais en sorte que la matrice comme nous l'avons
+ * retravaillée soit la matrice officielle ».
+ * ------------------------------------------------------------------- */
+
+check('Matrice officielle : trois services MIDI / SOIR / EVENT, Breakfast retiré', () => {
+  assert.deepEqual(app.MATRIX_SERVICES.map((s) => s.id), ['lunch', 'dinner', 'event'],
+    'les identifiants internes restent lunch/dinner/event (données existantes lisibles), sans breakfast');
+  assert.deepEqual(app.MATRIX_SERVICES.map((s) => s.label), ['Midi', 'Soir', 'Event']);
+  assert.deepEqual(app.CA_MATRIX_SHEET_SERVICES.map((s) => s.label), ['MIDI', 'SOIR', 'EVENT'],
+    'libellés du classeur officiel, dans l’ordre des blocs');
+});
+
+check('Migration matrixMidiSoir2026 : Breakfast fusionné dans le Midi, CA inchangé au centime', () => {
+  const raw = {
+    companies: [{ id: 'mig_bf', name: 'Mig BF', currency: 'EUR', year: 2026, groupId: null }],
+    activeCompany: 'mig_bf', lines: [],
+    serviceMatrix: { mig_bf: {
+      covers: { '2026-01-05': { breakfast: 10, lunch: 20, dinner: 30 }, '2026-01-06': { breakfast: 8 } },
+      ticket: { '2026-01-05': { breakfast: 15, lunch: 40, dinner: 60 }, '2026-01-06': { breakfast: 12 } },
+    } },
+  };
+  const before = { d5: 10 * 15 + 20 * 40, d6: 8 * 12 };
+  const adopted = app.adoptState(JSON.parse(JSON.stringify(raw)));
+  const m = adopted.serviceMatrix.mig_bf;
+  assert.ok(adopted.migrations.matrixMidiSoir2026, 'le drapeau de migration doit être posé');
+  assert.equal(m.covers['2026-01-05'].lunch, 30, 'couverts breakfast + midi additionnés');
+  assert.ok(Math.abs(m.covers['2026-01-05'].lunch * m.ticket['2026-01-05'].lunch - before.d5) < 1e-9,
+    'CA du midi = CA breakfast + CA midi d’avant, au centime');
+  assert.equal(m.covers['2026-01-05'].dinner, 30, 'le soir ne bouge pas');
+  assert.equal(m.ticket['2026-01-05'].dinner, 60, 'le soir ne bouge pas');
+  assert.ok(Math.abs(m.covers['2026-01-06'].lunch * m.ticket['2026-01-06'].lunch - before.d6) < 1e-9,
+    'un jour sans midi reprend le breakfast tel quel');
+  assert.ok(!JSON.stringify(m).includes('breakfast'), 'plus aucune trace de breakfast');
+
+  // Rejouée sur un état déjà migré, elle ne refait rien.
+  const again = app.adoptState(JSON.parse(JSON.stringify(adopted)));
+  assert.deepEqual(again.serviceMatrix.mig_bf, m, 'migration jouée une seule fois');
+});
+
+await checkAsync('Matrice officielle : export Excel pré-rempli, puis réimport fidèle (aller-retour par le vrai fichier)', async () => {
+  const company = { id: 'camx_co', name: 'Anna Cannes', currency: 'EUR', year: 2027, groupId: null };
+  const saved = {
+    companies: app.state.companies.slice(), active: app.state.activeCompany,
+    matrix: app.state.serviceMatrix, tab: app.__getTab(),
+  };
+  app.state.companies = [company];
+  app.state.activeCompany = company.id;
+  app.state.serviceMatrix = {};
+  dom.blobs.length = 0;
+  try {
+    // 10/07/2027 (un samedi) : midi 96 × 46, soir 120 × 78, event 30 × 50.
+    app.setServiceMatrixValue(company.id, 'covers', 'lunch', '2027-07-10', 96);
+    app.setServiceMatrixValue(company.id, 'ticket', 'lunch', '2027-07-10', 46);
+    app.setServiceMatrixValue(company.id, 'covers', 'dinner', '2027-07-10', 120);
+    app.setServiceMatrixValue(company.id, 'ticket', 'dinner', '2027-07-10', 78);
+    app.setServiceMatrixValue(company.id, 'covers', 'event', '2027-07-10', 30);
+    app.setServiceMatrixValue(company.id, 'ticket', 'event', '2027-07-10', 50);
+    // Un autre mois, pour vérifier qu'un import partiel ne l'efface pas.
+    app.setServiceMatrixValue(company.id, 'covers', 'lunch', '2027-03-02', 40);
+    app.setServiceMatrixValue(company.id, 'ticket', 'lunch', '2027-03-02', 30);
+
+    // Bouton dans l'onglet CA, pour tous les rôles (pas de garde de rôle).
+    const card = app.directorMatrixCard(company);
+    assert.ok(card.includes('data-export-ca-matrix'), 'bouton « Exporter la matrice » présent dans l’onglet CA');
+    assert.ok(card.includes('id="ca-matrix-import-button"') && card.includes('id="ca-matrix-import-input"'),
+      'bouton « Importer la matrice » et son sélecteur de fichier présents');
+
+    app.downloadCaMatrix();
+    assert.equal(dom.blobs.length, 1, 'un fichier doit être produit');
+    const buffer = Buffer.from(await dom.blobs[0].arrayBuffer());
+    if (process.env.CA_MATRIX_DUMP) writeFileSync(process.env.CA_MATRIX_DUMP, buffer);
+
+    const sheets = await app.readWorkbookFromFile(new File([buffer], 'm.xlsx'));
+    assert.deepEqual([...sheets.keys()], ['Mode d’emploi', 'Matrice CA 2027', 'Synthèse annuelle'],
+      'trois feuilles : mode d’emploi, la matrice (12 mois sur une feuille), la synthèse');
+    const rows = sheets.get('Matrice CA 2027');
+    const flat = rows.map((r) => r.join('|')).join('\n');
+    for (const month of ['JANVIER', 'FEVRIER', 'JUILLET', 'DECEMBRE']) {
+      assert.ok(rows.some((r) => app.caMatrixNorm(r[0]) === month), 'bloc ' + month + ' présent sur la même feuille');
+    }
+    assert.ok(flat.includes('TOTAL CA MIDI + SOIR'), 'ligne de total du modèle');
+    assert.ok(!/BUDGET|Variance/i.test(flat), 'plus de ligne BUDGET / Variance');
+    assert.ok(!/BREAKFAST/i.test(flat), 'plus de service Breakfast');
+    const julyHead = rows.findIndex((r) => app.caMatrixNorm(r[0]) === 'JUILLET');
+    const col10 = rows[julyHead].findIndex((v) => v === '10');
+    assert.equal(rows[julyHead + 1][col10], 'SAMEDI', 'le 10 juillet 2027 est bien un samedi');
+    assert.equal(rows[julyHead + 3][0], 'MIDI');
+    assert.equal(rows[julyHead + 3][1], 'Prix Moy');
+    assert.equal(rows[julyHead + 3][col10], '46', 'prix moyen du midi pré-rempli');
+    assert.equal(rows[julyHead + 4][col10], '96', 'couverts du midi pré-remplis');
+
+    // Le CA est une formule (couverts × prix), pas une valeur figée.
+    const files = app.xlsxWorkbookFiles(app.caMatrixWorkbookSheets(company));
+    const matrixXml = files.find((f) => f.name === 'xl/worksheets/sheet2.xml').content;
+    assert.ok(/<f>[A-Z]+\d+\*[A-Z]+\d+<\/f>/.test(matrixXml), 'la ligne CA est une formule prix × couverts');
+    assert.ok(files.find((f) => f.name === 'xl/workbook.xml').content.includes('fullCalcOnLoad="1"'),
+      'le classeur se recalcule à l’ouverture');
+
+    // Réimport : on vide juillet, on réimporte le fichier → restauré.
+    for (const svc of ['lunch', 'dinner', 'event']) {
+      app.setServiceMatrixValue(company.id, 'covers', svc, '2027-07-10', 0);
+      app.setServiceMatrixValue(company.id, 'ticket', svc, '2027-07-10', 0);
+    }
+    await app.importCaMatrixFromFile(new File([buffer], 'Matrice_CA_Anna_Cannes.xlsx'));
+    const m = app.serviceMatrixOf(company.id);
+    assert.equal(app.serviceMatrixValue(m, 'covers', 'lunch', '2027-07-10'), 96, 'couverts midi restaurés');
+    assert.equal(app.serviceMatrixValue(m, 'ticket', 'dinner', '2027-07-10'), 78, 'prix moyen soir restauré');
+    assert.equal(app.serviceMatrixValue(m, 'covers', 'event', '2027-07-10'), 30, 'couverts event restaurés');
+    assert.equal(app.serviceMatrixValue(m, 'covers', 'lunch', '2027-03-02'), 40, 'mars intact');
+  } finally {
+    app.state.companies = saved.companies; app.state.activeCompany = saved.active;
+    app.state.serviceMatrix = saved.matrix;
+    app.resetStateIndexes();
+    app.__setTab(saved.tab);
+    app.render();
+  }
+});
+
+check('Matrice officielle : un mois rempli remplace, un mois vide ne touche à rien, les cases illisibles sont comptées', () => {
+  const company = { id: 'camx_imp', name: 'Import Test', currency: 'EUR', year: 2027, groupId: null };
+  const saved = { companies: app.state.companies.slice(), matrix: app.state.serviceMatrix };
+  app.state.companies = [company];
+  app.state.serviceMatrix = {};
+  try {
+    app.setServiceMatrixValue(company.id, 'covers', 'lunch', '2027-02-03', 50);   // février : sera remplacé
+    app.setServiceMatrixValue(company.id, 'ticket', 'lunch', '2027-02-03', 20);
+    app.setServiceMatrixValue(company.id, 'covers', 'dinner', '2027-05-04', 70);  // mai : absent du fichier → intact
+    const head = ['FÉVRIER', ''].concat(Array.from({ length: 28 }, (_, i) => String(i + 1)));
+    const rows = [
+      ['FÉVRIER 2027'],
+      head,
+      ['', ''].concat(Array(28).fill('LUNDI')),
+      [],
+      ['MIDI', 'Prix Moy', '', '18,50'],            // 2 février : 18,50 € (virgule française)
+      ['', 'Nbr de couv', '', '1 200'],             // 2 février : 1 200 couverts (espace des milliers)
+      ['', 'CA', '', ''],
+      [],
+      ['SOIR', 'Prix Moy', 'abc'],                  // 1er février : illisible
+      ['', 'Nbr de couv', '-5'],                    // 1er février : négatif
+      ['JANVIER', ''],                              // en-tête sans numéros de jour : ignoré
+    ];
+    const parsed = app.parseCaMatrixRows(rows, 2027);
+    assert.equal(parsed.headers, 1, 'un seul bloc reconnu (février)');
+    assert.equal(parsed.rejected, 2, 'deux cases illisibles comptées');
+    const result = app.applyCaMatrixImport(company.id, parsed);
+    assert.deepEqual(result.months, [1], 'seul février est repris');
+    const m = app.serviceMatrixOf(company.id);
+    assert.equal(app.serviceMatrixValue(m, 'ticket', 'lunch', '2027-02-02'), 18.5, 'virgule décimale acceptée');
+    assert.equal(app.serviceMatrixValue(m, 'covers', 'lunch', '2027-02-02'), 1200, 'espace des milliers accepté');
+    assert.equal(app.serviceMatrixValue(m, 'covers', 'lunch', '2027-02-03'), 0,
+      'une case vide d’un mois rempli efface l’ancienne valeur (jour fermé)');
+    assert.equal(app.serviceMatrixValue(m, 'covers', 'dinner', '2027-05-04'), 70, 'un mois absent du fichier reste intact');
+
+    // Un bloc vide ne compte pas comme rempli.
+    const empty = app.parseCaMatrixRows([['MARS', ''].concat(['1', '2', '3']), ['MIDI', 'Prix Moy'], ['', 'Nbr de couv']], 2027);
+    assert.deepEqual(app.applyCaMatrixImport(company.id, empty).months, [], 'mois vide : rien n’est remplacé');
+
+    // Fichier qui n'a rien à voir : erreur claire, pas d'import silencieux.
+    assert.throws(() => app.importCaMatrixSheets(company.id, new Map([['Feuil1', [['Date', 'Montant'], ['01/01', '12']]]])),
+      /matrice CA officielle/, 'un fichier étranger doit être refusé avec un message clair');
+  } finally {
+    app.state.companies = saved.companies;
+    app.state.serviceMatrix = saved.matrix;
+    app.resetStateIndexes();
   }
 });
 
@@ -17829,8 +18548,11 @@ check('Payroll : décomposition brut / charges patronales / salariales / coût e
     assert.equal(detail.presenceDays, 31, 'présent tout janvier');
     assert.equal(detail.ratio, 1, 'présence pleine');
     assert.equal(detail.paidGross, 2000, 'brut payé = brut de base');
-    assert.equal(Math.round(detail.employeeCharges), 440, '2000 × 22 %');
-    assert.equal(Math.round(detail.netBeforeTax), 1560, 'brut − charges salariales');
+    // Depuis le 24/09/2026, le net se déduit du brut par ÷ (1 + taux) —
+    // l'inverse exact de `grossFromNet` (brut = net × (1 + taux)) — et non
+    // plus par × (1 − taux) : 2000 ÷ 1,22 ≈ 1639,34 €, pas 1560 €.
+    assert.equal(Math.round(detail.netBeforeTax), 1639, '2000 ÷ 1,22');
+    assert.equal(Math.round(detail.employeeCharges), 361, '2000 − (2000 ÷ 1,22)');
     // Congés payés du mois : 10 % du brut payé (Alexis, 17/09/2026), et ils
     // PÈSENT sur le coût employeur — c'était l'autre demande de la direction.
     assert.equal(Math.round(detail.leaveCharge), 200, '2000 × 10 %');
@@ -17902,8 +18624,10 @@ check('Payroll : aperçu du détail du calcul, étape par étape', () => {
   assert.equal(b.gross, 2000, 'brut inchangé');
   assert.equal(b.employerCharges, 840, '2000 × 42 %');
   assert.equal(b.employerCost, 2840, 'brut + charges patronales');
-  assert.equal(b.employeeCharges, 440, '2000 × 22 %');
-  assert.equal(b.netBeforeTax, 1560, 'brut − charges salariales');
+  // Inverse exact de `grossFromNet` (brut = net × (1 + taux), depuis le
+  // 24/09/2026) : net = brut ÷ (1 + taux) = 2000 ÷ 1,22 ≈ 1639,34 €.
+  assert.equal(b.netBeforeTax, 1639, '2000 ÷ 1,22');
+  assert.equal(b.employeeCharges, 361, '2000 − (2000 ÷ 1,22)');
 
   const empty = app.estimateEmployeeBreakdown('', '', '');
   assert.deepEqual(empty, { gross: 0, employerCharges: 0, employerCost: 0, employeeCharges: 0, netBeforeTax: 0 },
@@ -17963,8 +18687,9 @@ check('Payroll : augmentations planifiées et primes', () => {
     const december = app.employeeMonth(employee, 2026, 11);
     // Alexis, 17/09/2026 : la prime est saisie en NET et reconstituée en
     // brut par « Prime net × (1 + taux salarial) » — formule tranchée par la
-    // direction, volontairement différente de celle du salaire
-    // (`grossFromNet`, qui divise par (1 − taux)).
+    // direction. Depuis le 24/09/2026, c'est aussi celle du salaire
+    // (`grossFromNet`, aligné sur `bonusGrossFromNet`) : les deux calculs
+    // sont désormais identiques.
     const bonusGross = 1500 * 1.22;
     assert.equal(december.bonusNet, 1500, 'prime nette saisie');
     assert.ok(Math.abs(december.bonus - bonusGross) < 1e-9, 'prime brute = prime nette × (1 + 22 %)');
@@ -17985,6 +18710,60 @@ check('Payroll : augmentations planifiées et primes', () => {
     payrollFixture({ endDate: '2026-06-30', bonuses: [{ month: 11, amount: 1500 }] });
     assert.equal(app.employeeMonth(app.state.employees[0], 2026, 11).bonus, 0,
       'pas de prime après la sortie');
+  } finally {
+    app.state.lines = saved.lines; app.state.companies = saved.companies;
+    app.state.activeCompany = saved.active; app.state.employees = saved.employees;
+    app.render();
+  }
+});
+
+check('Payroll : Net avant impôt = Salaire net + Prime net, à l’euro près (24/09/2026)', () => {
+  // Alexis : « dans le calcul du payroll le net avant impôt doit être
+  // Salaire net + prime net ». Avant ce correctif, le net avant impôt se
+  // déduisait d'un raccourci sur le brut payé total, ce qui perdait une
+  // partie de la prime dès que sa reconstitution en brut divergeait de
+  // celle du salaire. La somme explicite (salaire net + prime nette) reste
+  // juste quelle que soit la formule retenue pour chacun des deux —
+  // aujourd'hui identique (`grossFromNet` = `bonusGrossFromNet`, 24/09/2026),
+  // mais rien ne le garantit pour l'avenir.
+  const saved = {
+    lines: app.state.lines.slice(), companies: app.state.companies.slice(),
+    active: app.state.activeCompany, employees: (app.state.employees || []).slice(),
+  };
+  try {
+    payrollFixture({ bonuses: [{ month: 0, amount: 1000 }] });
+    const employee = app.state.employees[0];
+    const january = app.employeeMonth(employee, 2026, 0);
+
+    // Salaire net = brut proratisé ÷ (1 + taux salarial) — inverse exact de
+    // `grossFromNet` depuis le 24/09/2026 : 2000 ÷ 1,22 ≈ 1639,34 €.
+    const expectedNetSalary = 2000 / 1.22;
+    assert.ok(Math.abs(january.netSalary - expectedNetSalary) < 1e-9,
+      'salaire net = brut proratisé ÷ (1 + 22 %)');
+    // Net avant impôt = salaire net + prime nette, TOUT SIMPLEMENT.
+    assert.ok(Math.abs(january.netBeforeTax - (january.netSalary + january.bonusNet)) < 1e-9,
+      'net avant impôt = salaire net + prime net, exactement');
+    assert.ok(Math.abs(january.netBeforeTax - (expectedNetSalary + 1000)) < 1e-9,
+      'salaire net ≈ 1 639,34 € + prime nette 1000 € saisie ≈ 2 639,34 €');
+    // NB : depuis le 24/09/2026, `grossFromNet` et `bonusGrossFromNet` sont
+    // devenues rigoureusement identiques (brut = net × (1 + taux) pour les
+    // deux), si bien qu'un raccourci `paidGross ÷ (1 + taux)` retomberait
+    // ACCIDENTELLEMENT sur le même résultat aujourd'hui — il ne serait plus
+    // un bon garde-fou. La somme explicite (salaire net + prime net) reste
+    // néanmoins la bonne implémentation : elle seule resterait juste si les
+    // deux formules redivergeaient un jour (voir le commentaire
+    // d'`employeeMonth` dans budget-app.html).
+
+    // La ligne « Brut payé − Charges salariales = Net avant impôt », affichée
+    // dans le détail du calcul, doit continuer de tomber juste à l'euro près
+    // malgré le nouveau calcul du net avant impôt.
+    assert.ok(Math.abs((january.paidGross - january.employeeCharges) - january.netBeforeTax) < 1e-9,
+      'brut payé − charges salariales doit toujours retomber exactement sur le net avant impôt affiché');
+
+    // Sans prime, le net avant impôt doit rester l'inverse exact du brut payé.
+    const withoutBonus = app.employeeMonth(employee, 2026, 1);
+    assert.ok(Math.abs(withoutBonus.netBeforeTax - withoutBonus.paidGross / (1 + withoutBonus.employeeRate)) < 1e-9,
+      'sans prime, le net avant impôt doit rester l’inverse exact de `grossFromNet`');
   } finally {
     app.state.lines = saved.lines; app.state.companies = saved.companies;
     app.state.activeCompany = saved.active; app.state.employees = saved.employees;
@@ -18192,7 +18971,9 @@ check('Payroll : le report vers la Saisie est automatique, sans clic manuel', ()
 
     const created = app.linesOf(company.id).find((l) => l.account === '64110100');
     assert.ok(created, 'la ligne 6411 doit exister sans clic sur « Reporter dans la Saisie »');
-    assert.equal(created.amounts[0], 1800, 'le brut du nouveau collaborateur doit apparaître aussitôt');
+    // 1404 net × 1,22 (22 % de charges salariales) ≈ 1713 brut, depuis le
+    // 24/09/2026 (brut = net × (1 + taux), aligné sur la prime).
+    assert.equal(created.amounts[0], 1713, 'le brut du nouveau collaborateur doit apparaître aussitôt');
 
     // Supprimer ce collaborateur retire ses lignes tout aussi automatiquement.
     const newId = app.state.employees[0].id;
@@ -18210,12 +18991,58 @@ check('Payroll : le report vers la Saisie est automatique, sans clic manuel', ()
 });
 
 check('Payroll : grossFromNet reconstitue le brut à partir du net saisi, cohérent avec estimateNetBeforeTax', () => {
-  const gross = app.grossFromNet(1404, 0.22);
-  assert.ok(Math.abs(gross - 1800) < 0.001, 'net 1404 avec 22 % de charges salariales doit redonner un brut de 1800');
+  // Depuis le 24/09/2026 : brut = net × (1 + taux salarial) — Alexis :
+  // « passe le calcul en net×(1+taux) », aligné sur `bonusGrossFromNet`.
+  const gross = app.grossFromNet(1000, 0.22);
+  assert.ok(Math.abs(gross - 1220) < 0.001, 'net 1000 avec 22 % de charges salariales doit redonner un brut de 1220');
   assert.equal(app.grossFromNet(0, 0.22), 0, 'net nul → brut nul');
   // Aller-retour : reconstituer le brut depuis le net affiché doit redonner le net de départ.
   const netRoundTrip = app.estimateNetBeforeTax(app.grossFromNet(1560, 0.22), 0.22);
   assert.ok(Math.abs(netRoundTrip - 1560) < 0.01, 'net → brut → net doit revenir à la valeur saisie, à l’arrondi près');
+});
+
+check('Migration grossAlignedNet2026 : le net affiché des fiches existantes ne bouge pas (24/09/2026)', () => {
+  // Alexis, juste après le passage à net×(1+taux) : « pourquoi tout mes net
+  // avant impot on bougé, je t'ai demandé de refaire le calcul » — pas de
+  // changer les montants déjà entrés. Le `grossMonthly` stocké avait été
+  // figé sous l'ANCIENNE formule (net ÷ (1 − taux)) ; sans reprise, le
+  // réafficher avec la NOUVELLE formule inverse (÷ (1 + taux)) aurait
+  // silencieusement déplacé le net de chaque collaborateur déjà saisi.
+  //
+  // Exemple : 1 560 € net à 22 % donnait, sous l'ancienne formule,
+  // 1 560 ÷ 0,78 = 2 000 € de brut stocké. La migration doit le ramener à
+  // 1 560 × 1,22 ≈ 1 903 € — le brut qu'aurait donné la NOUVELLE formule
+  // pour ce même net de départ — afin que le net réaffiché reste 1 560 €,
+  // pas 2 000 ÷ 1,22 ≈ 1 639 €.
+  const rate = 0.22;
+  const oldGrossFromOldFormula = 1560 / (1 - rate); // = 2000, ancien stockage
+  const raw = {
+    companies: [{ id: 'mig_net', name: 'Mig Net', currency: 'EUR', year: 2026, groupId: null }],
+    activeCompany: 'mig_net', lines: [],
+    employees: [{
+      id: 'mig_net_e1', companyId: 'mig_net', name: 'Test', role: 'Chef de rang', center: 'F&B',
+      grossMonthly: oldGrossFromOldFormula, employerRate: 0.42, employeeRate: rate,
+      startDate: '', endDate: '',
+      raises: [{ month: 6, grossMonthly: 3000 / (1 - rate) }], // même logique, net de départ 3000
+      bonuses: [], leaveAccrualPerMonth: 2.5, leaveTaken: 0,
+    }],
+  };
+  const adopted = app.adoptState(JSON.parse(JSON.stringify(raw)));
+  assert.ok(adopted.migrations.grossAlignedNet2026, 'le drapeau de migration doit être posé');
+
+  const migratedGross = adopted.employees[0].grossMonthly;
+  const netAfter = app.estimateNetBeforeTax(migratedGross, rate);
+  assert.ok(Math.abs(netAfter - 1560) < 1,
+    'le net réaffiché doit rester ≈1560 € (celui saisi à l’origine), pas ≈1639 €');
+
+  const migratedRaise = adopted.employees[0].raises[0].grossMonthly;
+  const raiseNetAfter = app.estimateNetBeforeTax(migratedRaise, rate);
+  assert.ok(Math.abs(raiseNetAfter - 3000) < 1,
+    'le net de l’augmentation doit lui aussi rester inchangé après migration');
+
+  // Rejouée sur un état déjà migré, elle ne refait rien.
+  const again = app.adoptState(JSON.parse(JSON.stringify(adopted)));
+  assert.equal(again.employees[0].grossMonthly, migratedGross, 'migration jouée une seule fois');
 });
 
 check('Payroll : le menu déroulant des postes propose les métiers du secteur, avec une échappatoire « Autre »', () => {
@@ -18578,6 +19405,97 @@ check('Payroll V2 : l’onglet complet se rend sans erreur, panneau « Taux fig�
     assert.ok(!rendered.includes('Cet écran n’a pas pu s’afficher'), 'l’onglet doit tenir aussi avec un taux figé');
     assert.ok(rendered.includes('data-unlock-rate="employerRate"'), 'un taux figé doit proposer « Défiger »');
     assert.ok(rendered.includes('Figé pour toute la société'), 'l’état figé doit être annoncé en clair');
+  } finally {
+    app.state.lines = saved.lines; app.state.companies = saved.companies;
+    app.state.activeCompany = saved.active; app.state.employees = saved.employees;
+    app.state.payrollLockedRates = saved.locked;
+    app.resetStateIndexes();
+    app.__setTab(savedTab);
+    app.render();
+  }
+});
+
+check('Payroll : figer un taux pour une seule société ou pour toutes en même temps (24/09/2026)', () => {
+  // Alexis : « fait en sorte que je puisse choisir le taux d'charges
+  // patronales et salariales pour une seule ou toute les société en meme
+  // temps ». Le panneau « Taux figés » ne visait jusqu'ici QUE la société
+  // active ; il propose désormais une portée (« Cette société » / « Toutes
+  // les sociétés ») lue au moment de figer/défiger.
+  const savedTab = app.__getTab();
+  const saved = {
+    lines: app.state.lines.slice(), companies: app.state.companies.slice(),
+    active: app.state.activeCompany, employees: (app.state.employees || []).slice(),
+    locked: JSON.parse(JSON.stringify(app.state.payrollLockedRates || {})),
+  };
+  try {
+    const companyA = { id: 'lockscope_a', name: 'Portée A', currency: 'EUR', year: 2026, groupId: null };
+    const companyB = { id: 'lockscope_b', name: 'Portée B', currency: 'EUR', year: 2026, groupId: null };
+    const employeeA = {
+      id: 'lockscope_ea', companyId: companyA.id, name: 'A', role: 'Chef de rang', center: 'F&B',
+      grossMonthly: 2000, employerRate: 0.42, employeeRate: 0.22,
+      startDate: '', endDate: '', raises: [], bonuses: [], leaveAccrualPerMonth: 2.5, leaveTaken: 0,
+    };
+    const employeeB = {
+      id: 'lockscope_eb', companyId: companyB.id, name: 'B', role: 'Chef de rang', center: 'F&B',
+      grossMonthly: 2000, employerRate: 0.30, employeeRate: 0.20,
+      startDate: '', endDate: '', raises: [], bonuses: [], leaveAccrualPerMonth: 2.5, leaveTaken: 0,
+    };
+    app.state.companies = [companyA, companyB];
+    app.state.employees = [employeeA, employeeB];
+    app.state.activeCompany = companyA.id;
+    app.state.lines = [];
+    app.resetStateIndexes();
+
+    // Unité pure : le helper de portée, sans DOM.
+    assert.deepEqual(app.payrollLockScopeCompanies('company', companyA), [companyA],
+      'portée « company » ne vise que la société passée');
+    assert.equal(app.payrollLockScopeCompanies('all', companyA).length, 2,
+      'portée « all » doit reprendre les sociétés visibles (2 ici)');
+    assert.deepEqual(app.payrollLockScopeCompanies('company', null), [],
+      'aucune société active : rien à viser');
+
+    app.__setTab('payroll');
+    app.render();
+    const rendered = document.getElementById('view').innerHTML;
+    assert.ok(rendered.includes('data-lock-rate-scope="employerRate"'),
+      'le sélecteur de portée doit apparaître pour le CDG');
+    assert.ok(rendered.includes('Toutes les sociétés (2)'),
+      'le libellé doit annoncer le bon nombre de sociétés visibles');
+
+    // 1) Portée « Cette société » (comportement historique, inchangé) :
+    // ne touche PAS l'autre société.
+    document.getElementById('lock-rate-input-employerRate').value = '45';
+    document.getElementById('lock-rate-scope-employerRate').value = 'company';
+    app.lockPayrollRateFromPanel('employerRate');
+    assert.equal(app.payrollRateLocked(companyA.id, 'employerRate'), true, 'A doit être figée');
+    assert.equal(app.payrollRateLocked(companyB.id, 'employerRate'), false, 'B ne doit pas bouger');
+    assert.equal(app.employeeById('lockscope_ea').employerRate, 0.45);
+
+    document.getElementById('lock-rate-scope-employerRate').value = 'company';
+    app.unlockPayrollRateFromPanel('employerRate');
+    assert.equal(app.payrollRateLocked(companyA.id, 'employerRate'), false, 'A redevient libre');
+
+    // 2) Portée « Toutes les sociétés » : un seul geste fige A ET B, même si
+    // elles partaient de taux différents (42 % et 30 %).
+    document.getElementById('lock-rate-input-employerRate').value = '40';
+    document.getElementById('lock-rate-scope-employerRate').value = 'all';
+    app.lockPayrollRateFromPanel('employerRate');
+    assert.equal(app.payrollRateLocked(companyA.id, 'employerRate'), true, 'A doit être figée');
+    assert.equal(app.payrollRateLocked(companyB.id, 'employerRate'), true, 'B doit être figée aussi');
+    assert.equal(app.payrollLockedRateValue(companyA.id, 'employerRate'), 0.40);
+    assert.equal(app.payrollLockedRateValue(companyB.id, 'employerRate'), 0.40);
+    assert.equal(app.employeeById('lockscope_ea').employerRate, 0.40, 'fiche A mise à jour');
+    assert.equal(app.employeeById('lockscope_eb').employerRate, 0.40, 'fiche B mise à jour aussi');
+
+    // 3) Défiger avec la même portée « Toutes les sociétés » libère les deux
+    // d'un coup, sans restaurer d'ancien taux.
+    document.getElementById('lock-rate-scope-employerRate').value = 'all';
+    app.unlockPayrollRateFromPanel('employerRate');
+    assert.equal(app.payrollRateLocked(companyA.id, 'employerRate'), false, 'A libérée');
+    assert.equal(app.payrollRateLocked(companyB.id, 'employerRate'), false, 'B libérée');
+    assert.equal(app.employeeById('lockscope_ea').employerRate, 0.40,
+      'défiger ne restaure aucun ancien taux, même en portée « toutes »');
+    assert.equal(app.employeeById('lockscope_eb').employerRate, 0.40);
   } finally {
     app.state.lines = saved.lines; app.state.companies = saved.companies;
     app.state.activeCompany = saved.active; app.state.employees = saved.employees;
@@ -19666,14 +20584,19 @@ await checkAsync('Autorisations : périmètre société/centre de coûts — soc
     assert.strictEqual(app.state.activeCompany, companyA.id,
       'la société active bascule sur la première société autorisée');
 
-    // Centres de coûts filtrés : la charge F&B reste visible, la charge AG
-    // disparaît des vues agrégées ; le chiffre d'affaires n'a pas de centre
-    // et n'est donc jamais filtré (vérifié séparément plus bas).
+    // Centres de coûts : depuis le 23/09/2026 (Alexis : « je veux que tout
+    // soit visible »), `linesOf()` ne filtre plus rien par centre de
+    // coûts — un directeur voit 100% des charges dans toutes les vues
+    // agrégées (export, P&L, Forecast, consolidation). Seule la
+    // MODIFICATION d'un centre hors périmètre reste interdite
+    // (`isCenterAllowed`, testé plus bas). Le chiffre d'affaires n'a de
+    // toute façon jamais eu de centre de coûts.
     const filtered = app.linesOf(companyA.id);
-    assert.deepEqual(filtered.map((l) => l.id), ['scope_l1'], 'seule la ligne du centre autorisé reste visible');
+    assert.deepEqual(filtered.map((l) => l.id).sort(), ['scope_l1', 'scope_l2'],
+      'linesOf() ne filtre plus par centre de coûts : toutes les charges restent visibles');
     const raw = app.rawLinesOf(companyA.id);
     assert.deepEqual(raw.map((l) => l.id).sort(), ['scope_l1', 'scope_l2'],
-      'les lignes brutes (moteur interne) restent complètes, jamais amputées par le périmètre');
+      'linesOf() et rawLinesOf() renvoient désormais le même contenu');
 
     app.signOut();
 
@@ -19699,8 +20622,7 @@ await checkAsync('P&L : un centre hors périmètre reste visible (vrai montant),
   // modifié les charges OP mais ils ont quand même une visu sur les autres
   // centres de coûts sans pouvoir les remplir » — « Charges OP » = le
   // centre déjà assigné au Directeur (F&B par défaut, catégorie « Operating
-  // charge »), pas un nouveau centre. Seul le P&L d'une société (`viewPnl`)
-  // change : la Saisie reste filtrée comme avant (`linesOf`), inchangée.
+  // charge »), pas un nouveau centre.
   const saved = {
     users: (app.state.users || []).slice(), authLog: (app.state.authLog || []).slice(),
     companies: app.state.companies.slice(), lines: app.state.lines.slice(),
@@ -19763,9 +20685,73 @@ await checkAsync('P&L : un centre hors périmètre reste visible (vrai montant),
     // de ce qu'il ne gère pas.
     assert.ok(rendered.includes(app.money(8400)), 'Total Expenses doit afficher le montant complet (F&B + AG)');
 
-    // La Saisie, elle, reste inchangée : toujours filtrée sur le périmètre.
-    assert.deepEqual(app.linesOf(company.id).map((l) => l.id), ['pnl_scope_rev', 'pnl_scope_fnb'],
-      'la Saisie doit rester filtrée sur le périmètre du directeur, seul le P&L s’ouvre');
+    // Depuis le 23/09/2026, `linesOf()` ne filtre plus non plus : Saisie,
+    // export, Forecast et consolidation voient donc tous les
+    // trois mêmes lignes que le P&L ci-dessus.
+    assert.deepEqual(app.linesOf(company.id).map((l) => l.id).sort(),
+      ['pnl_scope_ag', 'pnl_scope_fnb', 'pnl_scope_rev'],
+      'linesOf() doit désormais renvoyer toutes les lignes, y compris hors périmètre');
+  } finally {
+    app.state.users = saved.users; app.state.authLog = saved.authLog;
+    app.state.companies = saved.companies; app.state.lines = saved.lines;
+    app.state.activeCompany = saved.active;
+    app.__setTab(saved.tab);
+    app.signOut();
+    app.render();
+  }
+});
+
+await checkAsync('Export/Consolidation/Ajustements : un directeur voit 100% des charges, pas seulement son centre', async () => {
+  // Alexis, 23/09/2026 : « quand je fais des exports sur la vue directeur
+  // les seules charges que je vois sont celle des OP je veux que tout soit
+  // visible ». `linesOf()`/`linesOfAll()` alimentent l'export (`viewExport`,
+  // `handleExport`) et la Consolidation (`companyBreakdown`) : ce test
+  // prouve que les deux affichent désormais la charge AG d'un directeur
+  // borné à F&B, pas seulement F&B (Ajustements, lui, n'est de toute façon
+  // pas un onglet ouvert à un directeur — `DIRECTEUR_DEFAULT_TABS`).
+  const saved = {
+    users: (app.state.users || []).slice(), authLog: (app.state.authLog || []).slice(),
+    companies: app.state.companies.slice(), lines: app.state.lines.slice(),
+    active: app.state.activeCompany, tab: app.__getTab(),
+  };
+  try {
+    authFixture();
+    const company = { id: 'export_scope_c', name: 'Société Export Scope', currency: 'EUR', year: 2026, groupId: null };
+    app.state.companies.push(company);
+    app.state.lines.push(
+      { id: 'export_scope_rev', companyId: company.id, account: '70105100', name: 'CA', amounts: months(4000) },
+      { id: 'export_scope_fnb', companyId: company.id, account: '60101100', name: 'Achat F&B', amounts: months(600) },
+      { id: 'export_scope_ag', companyId: company.id, account: '60632200', name: 'Frais AG', amounts: months(300) },
+    );
+
+    const directeur = await app.createUser({ username: 'dir_export_scope', role: 'directeur', password: 'MotDePasse1!xyz' });
+    app.setUserScope(directeur.id, [company.id], ['F&B']);
+    await app.signIn('dir_export_scope', 'MotDePasse1!xyz');
+    app.state.activeCompany = company.id;
+
+    // Export : la sélection par défaut couvre la société, et linesOfAll()
+    // porte les trois lignes — F&B ET AG, pas seulement F&B.
+    app.setExportSelection([company.id]);
+    const exportLines = app.linesOfAll(app.exportedCompanies());
+    assert.deepEqual(exportLines.map((l) => l.id).sort(),
+      ['export_scope_ag', 'export_scope_fnb', 'export_scope_rev'],
+      'l’export doit porter toutes les charges, pas seulement celles du centre modifiable du directeur');
+
+    // Onglet Export à l'écran : le badge de la société et l'aperçu doivent
+    // aussi refléter les trois lignes.
+    app.__setTab('export');
+    app.render();
+    let rendered = document.getElementById('view').innerHTML;
+    assert.ok(rendered.includes('3 ligne(s)') || /3\s*ligne/.test(rendered),
+      'l’écran Export doit annoncer 3 lignes, pas 2 (F&B + AG + CA)');
+
+    // Consolidation : la société du directeur doit remonter avec son vrai
+    // Total charges (900 × 12), pas seulement F&B (600 × 12).
+    app.__setTab('conso');
+    app.render();
+    rendered = document.getElementById('view').innerHTML;
+    assert.ok(rendered.includes(app.money(10800)),
+      'la Consolidation doit afficher le total des charges réel (F&B + AG = 900 × 12), pas amputé du centre hors périmètre');
   } finally {
     app.state.users = saved.users; app.state.authLog = saved.authLog;
     app.state.companies = saved.companies; app.state.lines = saved.lines;
@@ -19891,6 +20877,60 @@ await checkAsync('Autorisations : le périmètre se règle dès la fenêtre d’
   }
 });
 
+await checkAsync('Autorisations : centres modifiables choisis par utilisateur, Food & Beverage par défaut', async () => {
+  const saved = {
+    users: (app.state.users || []).slice(), authLog: (app.state.authLog || []).slice(),
+    editing: app.__getAuthEditingId ? app.__getAuthEditingId() : null,
+  };
+  try {
+    authFixture();
+    assert.deepEqual(app.DIRECTEUR_DEFAULT_COST_CENTERS, ['F&B'],
+      'le périmètre modifiable par défaut d’un directeur est Food & Beverage — Alexis : « avec bien sûr le FNB modifiable par défaut »');
+
+    // Fenêtre d'invitation d'un compte à créer : les cases « centres
+    // modifiables » partent sur F&B seul, et non toutes cochées. Sans cela,
+    // readAuthEditorScopeFromForm() renvoyait null et setUserScope effaçait
+    // aussitôt le défaut posé par createInvite.
+    // On interroge la vraie fonction de rendu de la fenêtre (`user` à null
+    // = compte à créer), pas seulement la grille de cases : c'est elle qui
+    // décide du périmètre proposé.
+    const fresh = app.authEditorScopeFieldsHtml(null);
+    const toggle = fresh.slice(fresh.indexOf('id="auth-editor-restrict-centers"'));
+    assert.ok(toggle.slice(0, 60).includes('checked'),
+      'la case « centres modifiables » doit être active d’emblée pour un compte à créer');
+    const fnbCell = fresh.slice(fresh.indexOf('data-auth-editor-scope-center="F&B"'));
+    assert.ok(fnbCell.slice(0, 80).includes('checked'), 'Food & Beverage doit être coché pour un nouveau directeur');
+    const agCell = fresh.slice(fresh.indexOf('data-auth-editor-scope-center="AG"'));
+    assert.ok(!agCell.slice(0, 80).includes('checked'), 'les autres centres ne doivent PAS être cochés par défaut');
+
+    // Le périmètre se règle bien utilisateur par utilisateur : deux
+    // directeurs, deux jeux de centres modifiables différents.
+    const dirA = await app.createUser({ username: 'dir_scopeA', role: 'directeur', password: 'MotDePasse1!xyz' });
+    const dirB = await app.createUser({ username: 'dir_scopeB', role: 'directeur', password: 'MotDePasse1!xyz' });
+    assert.deepEqual(dirA.allowedCostCenters, ['F&B'], 'un directeur créé démarre sur Food & Beverage seul');
+    app.setUserScope(dirB.id, null, ['F&B', 'AG']);
+    assert.deepEqual(dirA.allowedCostCenters, ['F&B'], 'le périmètre de l’un ne bouge pas quand on règle l’autre');
+    assert.deepEqual(dirB.allowedCostCenters, ['F&B', 'AG'], 'le second directeur peut recevoir un périmètre plus large');
+
+    await app.signIn('dir_scopeB', 'MotDePasse1!xyz');
+    assert.equal(app.isCenterAllowed(app.currentUser(), 'AG'), true,
+      'le centre ajouté à ce directeur devient modifiable pour lui');
+    assert.equal(app.isCenterAllowed(app.currentUser(), 'TECH'), false,
+      'un centre non coché reste en lecture seule pour lui');
+    app.signOut();
+
+    // Libellés : les cases disent « modifiables », pas « accessibles » —
+    // tous les centres restent visibles depuis le 18/09/2026.
+    assert.ok(appSource.includes('Choisir les centres de coûts modifiables'),
+      'le libellé doit annoncer un choix de centres MODIFIABLES');
+    assert.ok(!appSource.includes('Restreindre les centres de coûts accessibles'),
+      'l’ancien libellé « accessibles » ne doit plus exister');
+  } finally {
+    app.state.users = saved.users; app.state.authLog = saved.authLog;
+    app.signOut();
+  }
+});
+
 await checkAsync('Autorisations : périmètre centre de coûts — Saisie et Payroll filtrés, P&L visible en lecture seule hors périmètre', async () => {
   const saved = {
     users: (app.state.users || []).slice(), authLog: (app.state.authLog || []).slice(),
@@ -19922,18 +20962,67 @@ await checkAsync('Autorisations : périmètre centre de coûts — Saisie et Pay
     app.setUserScope(directeur.id, null, ['F&B']);
     await app.signIn('dir_centerui', 'MotDePasse1!xyz');
 
-    // Saisie : le sélecteur de centre ne propose que F&B (+ Produits,
-    // toujours accessible) ; « Administration générale » a disparu.
+    // Saisie, depuis le 18/09/2026 (Alexis : « il faut que les directeurs
+    // puisse voir dans saisie les centre de couts mais sans pouvoir
+    // rajouter ou supprimer des charges ») : TOUS les centres restent
+    // proposés, y compris hors périmètre — et on n'est plus recalé d'office
+    // sur le premier centre autorisé.
     app.__setTab('saisie');
-    app.__setCenter('AG'); // simule un état restauré sur un centre devenu hors périmètre
+    app.__setCenter('AG'); // centre hors périmètre : on doit pouvoir y rester
     app.__setAccountQuery('');
     app.render();
-    assert.strictEqual(app.__getCenter(), 'F&B',
-      'enforceCenterPermission() doit recaler un centre hors périmètre vers le premier autorisé');
+    assert.strictEqual(app.__getCenter(), 'AG',
+      'un centre hors périmètre ne doit plus être recalé : il s’ouvre en lecture seule');
     let rendered = document.getElementById('view').innerHTML;
     assert.ok(rendered.includes('data-center="F&B"'), 'le bouton du centre autorisé doit rester présent');
-    assert.ok(!rendered.includes('data-center="AG"'), 'le bouton du centre hors périmètre doit avoir disparu');
+    assert.ok(rendered.includes('data-center="AG"'), 'le bouton du centre hors périmètre doit rester présent');
+    assert.ok(/data-center="AG" class="[^"]*is-readonly/.test(rendered),
+      'le bouton d’un centre hors périmètre doit porter la marque « lecture seule »');
+    assert.ok(!/data-center="F&B" class="[^"]*is-readonly/.test(rendered),
+      'le centre autorisé ne doit pas être marqué en lecture seule');
     assert.ok(rendered.includes('data-center="PRODUITS"'), 'Produits reste toujours accessible (le CA n’a pas de centre)');
+
+    // Contenu du centre hors périmètre : la ligne existe bien (visu), mais
+    // ses douze cases sont verrouillées et aucune action d'écriture n'est
+    // proposée.
+    assert.ok(rendered.includes('Frais AG'),
+      'la ligne d’un centre hors périmètre doit être VISIBLE dans la Saisie');
+    assert.ok(rendered.includes('Centre hors périmètre — lecture seule'),
+      'les montants d’un centre hors périmètre doivent être en lecture seule');
+    assert.ok(!rendered.includes('data-add-line='),
+      'aucun bouton d’ajout de ligne sur un centre hors périmètre');
+    assert.ok(!rendered.includes('data-delete='),
+      'aucun bouton de suppression sur un centre hors périmètre');
+    assert.ok(!rendered.includes('data-bulk-center='),
+      'pas d’ajustement en masse sur un centre hors périmètre');
+
+    // Son propre centre (F&B) : les montants redeviennent saisissables,
+    // mais créer ou supprimer une charge reste interdit à un directeur.
+    app.__setCenter('F&B');
+    app.render();
+    rendered = document.getElementById('view').innerHTML;
+    // « F&B » ressort échappé dans l'attribut value du champ nom.
+    assert.ok(rendered.includes('Achat F&amp;B'), 'la ligne du centre autorisé reste visible');
+    assert.ok(!rendered.includes('Centre hors périmètre — lecture seule'),
+      'les montants du centre autorisé restent saisissables');
+    assert.ok(!rendered.includes('data-add-line='),
+      'un directeur ne crée pas de ligne, même sur son propre centre');
+    assert.ok(!rendered.includes('data-open-ratelink-modal='),
+      'un directeur ne crée pas de ligne calculée (multiplicateur)');
+    assert.ok(!rendered.includes('data-delete='),
+      'un directeur ne supprime pas de ligne, même sur son propre centre');
+    assert.ok(!rendered.includes('data-duplicate-line='),
+      'un directeur ne duplique pas de ligne');
+    assert.ok(rendered.includes('data-bulk-account=') || rendered.includes('data-bulk-center='),
+      'ajuster des MONTANTS reste permis sur son propre centre');
+    assert.equal(app.canEditLineStructure(), false, 'un directeur n’a pas la main sur la structure');
+
+    // Garde-fou au point d'écriture : même appelées directement, les
+    // fonctions de structure refusent.
+    const beforeCount = app.state.lines.length;
+    assert.equal(app.addLine('60101100'), null, 'addLine() doit refuser pour un directeur');
+    assert.equal(app.duplicateLine('centerui_l1'), null, 'duplicateLine() doit refuser pour un directeur');
+    assert.equal(app.state.lines.length, beforeCount, 'aucune ligne créée malgré les appels directs');
 
     // P&L, depuis le 20/08/2026 (Alexis : « ils ont quand même une visu sur
     // les autres centres de coûts sans pouvoir les remplir ») : la ligne
@@ -22917,7 +24006,7 @@ check('Payroll : tableau Équipe affiche le Net mensuel (pas le Brut) — Alexis
     assert.ok(panelHtml.includes('Net mensuel'), 'l’en-tête de colonne doit être « Net mensuel »');
     assert.ok(!panelHtml.includes('>Brut mensuel<'), 'l’ancien en-tête « Brut mensuel » ne doit plus apparaître');
     assert.ok(panelHtml.includes(app.money(expectedNet)),
-      'la ligne doit afficher le net estimé (1560 pour 2000 brut à 22 %), pas le brut de 2000');
+      'la ligne doit afficher le net estimé (≈1639 pour 2000 brut à 22 %), pas le brut de 2000');
   } finally {
     app.state.employees = savedEmployees;
     app.state.companies = savedCompanies;
@@ -23063,7 +24152,7 @@ check('Refonte : les surfaces flottantes partagent la même chorégraphie d’ou
   assert.ok(panelOpenBlock, '@keyframes panel-open introuvable');
   assert.ok(!/transform/.test(panelOpenBlock[0]),
     'panel-open ne doit plus animer de transform (contenu défilable, voir le correctif du rebond de défilement)');
-  assert.ok(css.includes('translateY(var(--motion-rise)) scale(.97)'),
+  assert.ok(css.includes('translateY(var(--motion-rise)) scale(.98)'),
     'la modale doit monter vers sa place, plus seulement zoomer');
 });
 
@@ -25384,8 +26473,9 @@ await checkAsync('Échap depuis le deuxième écran de l’accueil revient vraim
     assert.equal(app.__getWelcomeClosing(), false, 'aucun fondu de FERMETURE ne doit démarrer (c’est un fondu de bascule d’étape, pas closeWelcomeImmersive)');
 
     // Le fondu de bascule (`goBackToWelcomeEnvironmentStep`) retarde le vrai
-    // changement d'étape de 110ms, comme le clic réel sur le bouton.
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    // changement d'étape de WELCOME_STEP_MS (160 ms depuis le 24/09/2026,
+    // 110 ms avant), comme le clic réel sur le bouton.
+    await new Promise((resolve) => setTimeout(resolve, 220));
     assert.ok(!app.welcomeCompanyCardsHtml(), 'après le fondu, le deuxième écran (sociétés) ne doit plus être actif');
     assert.ok(app.welcomeModalHtml().includes('data-welcome-env="esc_env"'),
       'après le fondu, l’accueil doit bien réafficher la carte de l’environnement, pas se fermer');
@@ -25933,7 +27023,10 @@ check('Fenêtres : chacune porte bien la carte `.modal-box`, jamais une classe q
   // fenêtre : il vaut pour les vingt, et pour celles à venir.
   const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
   const windows = appSource.split('class="modal-backdrop"').slice(1);
-  assert.ok(windows.length >= 18, 'les fenêtres de l’application doivent toutes passer par `.modal-backdrop`');
+  // Le seuil est descendu à 17 le 24/09/2026 avec le retrait de la modale de
+  // détail du seuil de rentabilité (point mort) — une fenêtre de moins,
+  // pas une régression de couverture.
+  assert.ok(windows.length >= 17, 'les fenêtres de l’application doivent toutes passer par `.modal-backdrop`');
   windows.forEach(function (chunk, i) {
     assert.match(chunk.slice(0, 320), /class="modal-box\b/,
       'fenêtre n°' + (i + 1) + ' : le fond `.modal-backdrop` doit envelopper une carte `.modal-box` ' +
@@ -25952,7 +27045,7 @@ check('Fenêtres (modales) : jamais d’ascenseur latéral (Alexis : « je ne ve
   assert.match(style, /\.modal-box\s+table\s+th,\s*\.modal-box\s+table\s+td\s*\{[^}]*white-space:\s*normal/s,
     'les cellules d’un tableau dans une fenêtre doivent passer à la ligne plutôt que forcer une largeur');
   assert.match(style, /\.modal-box\s+\.scroll,\s*\.modal-box\s+\.table-wrap\s*\{[^}]*overflow-x:\s*hidden/s,
-    'un tableau défilant dans une fenêtre (raccourcis, répartition, détail du point mort…) ne doit plus défiler horizontalement');
+    'un tableau défilant dans une fenêtre (raccourcis, répartition par société…) ne doit plus défiler horizontalement');
   // Bien scopé à `.modal-box` : les grands tableaux d'un onglet (Saisie,
   // P&L…) gardent leur défilement horizontal, indispensable pour tenir 12
   // mois de colonnes — Alexis a confirmé ne vouloir corriger que les
@@ -26921,10 +28014,37 @@ check('Pastilles de mois : sélection au glissé, sur les trois groupes', () => 
   // pastilles doit terminer le geste, sinon le glissé resterait actif.
   assert.match(appSource, /document\.addEventListener\('mouseup', dragSelectEnd\)/,
     'le relâchement doit être écouté sur document, pas seulement sur les pastilles');
-  // `preventDefault` : sans lui, la case bascule toute seule (donc deux fois)
-  // et le glissé sélectionne le texte au lieu des pastilles.
-  assert.match(appSource, /event\.preventDefault\(\); \/\/ pas de bascule native/,
-    'le mousedown doit être neutralisé, sinon la pastille bascule deux fois');
+  // `preventDefault` sur le mousedown : empêche la sélection de texte
+  // pendant le glissé (mais PAS, à lui seul, la bascule native — voir le
+  // test suivant, qui couvre le vrai correctif).
+  assert.match(appSource, /event\.preventDefault\(\); \/\/ pas de sélection de texte pendant le glissé/,
+    'le mousedown doit rester neutralisé pour la sélection de texte');
+});
+
+check('Pastilles de mois : un clic simple ne s’annule plus lui-même (23/09/2026)', () => {
+  // Alexis, 23/09/2026, sur « Mois concernés » (Objectifs) : « le clic seul
+  // ne marche plus ». Repro confirmée en conditions réelles (Chrome, clic
+  // physique) : le `mousedown` peint la case à `true`, mais le `<label>` qui
+  // l'englobe relaie ensuite un `click` natif à son `<input>` — lequel la
+  // rebascule tout seul à `false`. `preventDefault()` sur le `mousedown` ne
+  // bloque PAS ce relais (seulement la sélection de texte et le focus) : il
+  // faut le poser sur le `click` lui-même, une fois le geste déjà peint.
+  // Sans ce second `preventDefault`, un clic simple s'annule lui-même et la
+  // pastille paraît totalement inerte, quel que soit le nombre de clics —
+  // exactement le symptôme décrit.
+  const clickStart = appSource.indexOf('Bloque le relais natif du `<label>`');
+  assert.ok(clickStart !== -1,
+    'le correctif du relais natif label→input doit être présent et documenté');
+  const clickBlock = appSource.slice(clickStart, appSource.indexOf('\n});\n', clickStart));
+  assert.match(clickBlock, /closest\(\s*'\[data-drag-select\]'\s*\)/,
+    'le correctif doit cibler les mêmes pastilles que le mousedown/mouseover du glissé');
+  assert.match(clickBlock, /querySelector\('input\[type="checkbox"\]'\)\)\s*event\.preventDefault\(\);/,
+    'le clic sur une pastille à cocher doit être neutralisé pour ne pas annuler le peint du mousedown');
+  // Le nouveau `click` doit être posé sur `#view`, comme le `mousedown`/
+  // `mouseover` du glissé : sans ça, il ne verrait jamais les pastilles.
+  assert.match(appSource.slice(clickStart, clickStart + 400),
+    /getElementById\('view'\)\.addEventListener\('click', function \(event\) \{/,
+    'le correctif doit être posé sur le même `#view` que le reste du geste de glissé');
 });
 
 check('Aucune pastille « ⓘ » ne traîne dans l’interface', () => {
@@ -26988,22 +28108,35 @@ check('Défilement : l’animation de changement d’onglet n’anime plus aucun
   // `transition` posée puis retirée) : plus vive, jamais partie d’un écran
   // vide, et surtout increvable — l’ancienne astuce « poser la classe /
   // forcer un reflow / la retirer » pouvait ne pas démarrer du tout.
-  const enterBlockMatch = html.match(/#view-inner\.view-fade,[\s\S]*?animation: view-in[^;]*;\n  \}/);
+  const enterBlockMatch = html.match(/#view-inner\.view-fade,[\s\S]*?animation: view-in[^}]*\}/);
   assert.ok(enterBlockMatch, 'bloc CSS des classes d’entrée (.view-fade / .view-enter-*) introuvable pour #view-inner');
   assert.ok(!/transform/.test(enterBlockMatch[0]),
     'les classes .view-enter-*/.view-fade ne doivent plus poser de transform, seulement l’opacité');
   // Les deux images-clés de l’effet : elles aussi doivent rester en
   // opacité pure, sinon la transform revient par la bande.
-  for (const name of ['view-in', 'view-block-in']) {
+  for (const name of ['view-in']) {
     const framesMatch = html.match(new RegExp('@keyframes ' + name + ' \\{[\\s\\S]*?\\n  \\}'));
     assert.ok(framesMatch, '@keyframes ' + name + ' introuvable');
     assert.ok(!/transform|translate/.test(framesMatch[0]),
       '@keyframes ' + name + ' doit n’animer QUE l’opacité : aucune transform dans l’arbre défilable.');
   }
-  // La cascade s’arrête au 4e bloc : les grands tableaux ne sont jamais
-  // animés individuellement.
-  assert.ok(html.includes('#view-inner.view-fade > *:nth-child(-n+4)'),
-    'la cascade d’entrée doit se limiter aux quatre premiers blocs de la vue');
+  // Depuis le 24/09/2026 (Alexis : « je veux que l’affichage se déroule du
+  // haut vers le bas ») : un rideau qui descend, par masque dégradé — pas
+  // de transform — dont la limite (`--view-reveal`, @property) part du haut
+  // et dépasse le bas de l’écran. Le masque DOIT être retiré à la fin
+  // (`.view-revealed` posé sur animationend), sinon il resterait accroché
+  // au défilement des longs tableaux.
+  const reveal = html.match(/@keyframes view-in \{[\s\S]*?\n  \}\n/)[0];
+  assert.ok(/--view-reveal: 0px/.test(reveal) && /--view-reveal: calc\(100vh/.test(reveal),
+    'la limite du rideau doit partir du haut et descendre au-delà du bas de l’écran visible');
+  assert.ok(/@property --view-reveal \{[\s\S]*?syntax: '<length>'/.test(html), 'propriété animable déclarée');
+  assert.ok(/mask-image: linear-gradient\(to bottom, #000 calc\(var\(--view-reveal\)/.test(enterBlockMatch[0] + html),
+    'le déroulé doit se faire du haut vers le bas');
+  assert.ok(/#view-inner\.view-revealed \{ -webkit-mask-image: none; mask-image: none; \}/.test(html),
+    'le masque doit disparaître une fois l’écran déroulé');
+  assert.ok(/viewInner\.addEventListener\('animationend'[\s\S]{0,160}viewInner\.classList\.add\('view-revealed'\)/.test(appSource),
+    'la fin du déroulé doit poser .view-revealed');
+  assert.ok(!/nth-child\(-n\+4\)/.test(html), 'l’ancienne cascade par blocs, qui contrariait le déroulé, est retirée');
   for (const cls of ['view-fade', 'view-enter-right', 'view-enter-left', 'view-enter-bottom', 'view-enter-top']) {
     assert.ok(html.includes('#view-inner.' + cls),
       'la classe .' + cls + ' doit cibler #view-inner, pas main');
@@ -27193,9 +28326,8 @@ check('Aperçu téléphone : règles `@media (max-width: 480px)` scopées à `.v
   // Toutes les règles du bloc téléphone sont préfixées par un écran précis
   // (`.view-pilotage` pour Pilotage, `.view-ca` pour l'onglet CA depuis le
   // 02/09/2026, ou `main#view.<classe>`) : aucune ne doit fuiter vers
-  // d’autres écrans, y compris ceux qui réutilisent .dir-grid/.dir-tile
-  // (ex. point mort dans Ajustements, voir variablePartsCard()). C'est la
-  // portée qui est vérifiée, pas la liste des écrans concernés — celle-ci a
+  // d’autres écrans, y compris ceux qui réutilisent .dir-grid/.dir-tile.
+  // C'est la portée qui est vérifiée, pas la liste des écrans concernés — celle-ci a
   // vocation à s'allonger.
   const SCOPED_PREFIXES = ['.view-pilotage', '.view-ca'];
   const mediaBlockMatch = html.match(/@media \(max-width: 480px\) \{\s*main#view\.view-pilotage[\s\S]*?\n  \}\n/);

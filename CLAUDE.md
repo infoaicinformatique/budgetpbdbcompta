@@ -15,7 +15,7 @@ documentation. Les identifiants JS restent en anglais, en camelCase.
 | Chemin | Rôle |
 | --- | --- |
 | `budget-app.html` | **L'application entière** (~30 000 lignes, 1,7 Mo), zéro dépendance, zéro réseau |
-| `server.mjs` | Serveur Node ≥ 22 : sert seulement `/` (brotli/gzip), `/healthz`, auth Basic (compte local et/ou LDAP) ; tout le reste → 404 |
+| `server.mjs` | Serveur Node ≥ 22 : sert seulement `/` (brotli/gzip), `/healthz`, auth Basic (compte local et/ou LDAP) ; tout le reste → 404. Dépose le cookie `bm-auth` (identité + config LDAP publique) lu par Paramètres › LDAP |
 | `auth-ldap.mjs`, `test/` | Vérification LDAP (seule dépendance : `ldapts`) et ses tests (`npm test`) |
 | `excel-grid/` | Prototype tableur React/Vite **et** outillage : moteur de référence `src/engine/chart.ts`, imports, validation |
 | `scripts-doc/rebuild-doc.mjs` | Régénère la section 7 de `REPRISE-PROJET.md` |

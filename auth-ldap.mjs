@@ -101,6 +101,30 @@ export function describeLdapConfig(config) {
     + (config.groupDn ? ', groupe ' + config.groupDn : '');
 }
 
+/**
+ * Ce que l'écran Paramètres de l'application peut afficher de la
+ * configuration : serveurs, chiffrement, périmètre de recherche, groupe.
+ * Jamais le compte de service ni son mot de passe.
+ *
+ * `encryption` : `ldaps` si toutes les URL sont en ldaps://, `starttls` si
+ * StartTLS est demandé, `partiel` si seules certaines URL sont chiffrées,
+ * `aucun` sinon (mots de passe en clair entre le serveur et l'annuaire).
+ */
+export function publicLdapInfo(config) {
+  const secured = config.urls.filter(function (url) { return /^ldaps:/i.test(url); }).length;
+  let encryption = 'aucun';
+  if (config.startTls) encryption = 'starttls';
+  else if (secured === config.urls.length) encryption = 'ldaps';
+  else if (secured > 0) encryption = 'partiel';
+  return {
+    urls: config.urls.slice(),
+    encryption: encryption,
+    mode: config.userDn ? 'direct' : 'recherche',
+    base: config.userDn || config.searchBase,
+    group: config.groupDn,
+  };
+}
+
 /** Erreur d'annuaire (injoignable, compte de service refusé…) : ce n'est pas un mauvais mot de passe. */
 export class LdapUnavailableError extends Error {}
 
