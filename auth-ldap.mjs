@@ -136,12 +136,66 @@ export class LdapUnavailableError extends Error {}
  * `ClientClass` n'est paramétrable que pour les tests.
  */
 export async function ldapAuthenticate(config, username, password, ClientClass) {
-  const LdapClient = ClientClass || Client;
+  const entry = await ldapAuthenticateEntry(config, username, password, ClientClass);
+  return entry ? entry.dn : null;
+}
+
+/**
+ * Comme `ldapAuthenticate`, mais renvoie l'entrée : `{ dn, account,
+ * displayName }`. `account` est l'identifiant CANONIQUE de la personne
+ * (sAMAccountName, sinon uid, sinon l'identifiant saisi sans son
+ * « @domaine »), en minuscules : c'est la clé de ses droits dans
+ * l'application, qu'elle se connecte en « prenom.nom » ou avec son UPN.
+ */
+export async function ldapAuthenticateEntry(config, username, password, ClientClass) {
   // Mot de passe vide : un bind LDAP sans mot de passe est un bind ANONYME,
   // que beaucoup d'annuaires acceptent — il ne doit jamais valoir connexion.
   if (typeof password !== 'string' || password === '') return null;
   if (typeof username !== 'string' || !USERNAME_PATTERN.test(username)) return null;
+  return withDirectory(config, ClientClass, function (client) {
+    return checkOnServer(client, config, username, password);
+  });
+}
 
+/**
+ * Membres du groupe LDAP_GROUP_DN : `[{ dn, account, displayName }]`, triés
+ * par nom affiché. Sert à l'écran des droits de l'application, pour que
+ * l'administrateur voie qui peut entrer sans connaître l'annuaire. Lu au
+ * nom du compte de service ; `[]` sans groupe configuré.
+ */
+export async function ldapListGroupMembers(config, ClientClass) {
+  if (!config.groupDn) return [];
+  return withDirectory(config, ClientClass, async function (client) {
+    await bindService(client, config);
+    const { searchEntries } = await client.search(config.groupDn, {
+      scope: 'base', filter: '(objectClass=*)', attributes: ['member', 'uniqueMember'],
+    });
+    if (!searchEntries.length) throw new LdapUnavailableError('groupe introuvable : ' + config.groupDn);
+    const group = searchEntries[0];
+    const dns = [].concat(attribute(group, 'member'), attribute(group, 'uniqueMember'));
+    const members = [];
+    for (const dn of dns) {
+      let entry = null;
+      try {
+        const found = await client.search(dn, { scope: 'base', filter: '(objectClass=*)', attributes: ENTRY_ATTRIBUTES });
+        entry = found.searchEntries[0] || null;
+      } catch (err) {
+        if (isConnectionError(err)) throw err;
+        // Membre illisible (supprimé, hors de portée du compte de service) :
+        // on le montre quand même, par son DN.
+      }
+      const account = entry ? accountOf(entry, '') : '';
+      members.push({ dn: dn, account: account, displayName: entry ? displayNameOf(entry) : '' });
+    }
+    return members.sort(function (a, b) {
+      return (a.displayName || a.account || a.dn).localeCompare(b.displayName || b.account || b.dn, 'fr');
+    });
+  });
+}
+
+/** Ouvre une connexion sur la première URL joignable et y exécute `fn(client)`. */
+async function withDirectory(config, ClientClass, fn) {
+  const LdapClient = ClientClass || Client;
   let lastError = null;
   // Plusieurs URL : on passe à la suivante seulement si la précédente est
   // injoignable. Une réponse de l'annuaire (même un refus) est définitive.
@@ -157,7 +211,7 @@ export async function ldapAuthenticate(config, username, password, ClientClass) 
     });
     try {
       if (config.startTls) await client.startTLS(config.tlsOptions);
-      return await checkOnServer(client, config, username, password);
+      return await fn(client);
     } catch (err) {
       if (err instanceof LdapUnavailableError) throw err;
       if (!isConnectionError(err)) throw new LdapUnavailableError('Annuaire LDAP ' + url + ' : ' + err.message);
@@ -175,8 +229,36 @@ function isConnectionError(err) {
     || /timeout|timed out|connect/i.test(String(err && err.message));
 }
 
+const ENTRY_ATTRIBUTES = ['sAMAccountName', 'uid', 'displayName', 'cn'];
+
+/** Valeurs d'un attribut ldapts (absent, chaîne ou tableau), en chaînes. */
+function values(value) {
+  if (value === undefined || value === null) return [];
+  return (Array.isArray(value) ? value : [value]).map(String);
+}
+
+/** Attribut d'une entrée, quelle que soit la casse que l'annuaire lui donne. */
+function attribute(entry, name) {
+  if (!entry) return [];
+  const wanted = name.toLowerCase();
+  const key = Object.keys(entry).find(function (k) { return k.toLowerCase() === wanted; });
+  return key ? values(entry[key]) : [];
+}
+
+/** Identifiant canonique d'une entrée, en minuscules (voir `ldapAuthenticateEntry`). */
+function accountOf(entry, typed) {
+  const found = attribute(entry, 'sAMAccountName')[0] || attribute(entry, 'uid')[0]
+    || String(typed || '').split('@')[0];
+  return found.trim().toLowerCase();
+}
+
+function displayNameOf(entry) {
+  return (attribute(entry, 'displayName')[0] || attribute(entry, 'cn')[0] || '').trim();
+}
+
 async function checkOnServer(client, config, username, password) {
   let userDn;
+  let entry = null;
   if (config.userDn) {
     userDn = fill(config.userDn, username);
   } else {
@@ -184,13 +266,14 @@ async function checkOnServer(client, config, username, password) {
     const { searchEntries } = await client.search(config.searchBase, {
       scope: 'sub',
       filter: fill(config.searchFilter, escapeFilterValue(username)),
-      attributes: ['dn'],
+      attributes: ENTRY_ATTRIBUTES,
       sizeLimit: 2,
     });
     // Zéro résultat : inconnu. Plusieurs : filtre ambigu, on refuse plutôt
     // que de choisir au hasard entre deux personnes.
     if (searchEntries.length !== 1) return null;
-    userDn = searchEntries[0].dn;
+    entry = searchEntries[0];
+    userDn = entry.dn;
   }
 
   try {
@@ -212,7 +295,7 @@ async function checkOnServer(client, config, username, password) {
     });
     if (!searchEntries.length) return null;
   }
-  return userDn;
+  return { dn: userDn, account: accountOf(entry, username), displayName: displayNameOf(entry) };
 }
 
 async function bindService(client, config) {

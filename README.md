@@ -75,8 +75,44 @@ curl -I -u 'prenom.nom' http://127.0.0.1:3000                         # 200 avec
 sudo docker logs budgetpbdbcompta 2>&1 | grep 'Connexion LDAP'        # connexions acceptées / refusées
 ```
 
-Les comptes de l'onglet Autorisations de l'application sont indépendants :
-ils restent propres à chaque navigateur.
+## Droits d'accès (Paramètres › Droits d'accès)
+
+Avec LDAP, l'application ne se sert plus de ses comptes locaux (onglet
+Autorisations, propres à chaque navigateur) : la personne est celle que
+l'annuaire a reconnue, et ses droits — rôle, onglets, rubriques, sociétés,
+centres de coûts — sont tenus par le serveur, les mêmes sur tous les postes.
+
+- **Qui entre** : les membres (directs) du groupe `LDAP_GROUP_DN`, par
+  exemple `CN=budgetpbdbcompta,OU=…,DC=pbcannes,DC=org`. Les autres sont
+  refusés à la connexion (401).
+- **Ce que chacun voit** : réglé par un administrateur dans **Paramètres ›
+  Droits d'accès**, qui liste les membres du groupe. Un membre sans droits
+  n'a accès qu'à Paramètres (fermé par défaut, y compris si le serveur ne
+  répond pas).
+- **Administrateurs** : ceux que l'écran désigne (case « Administrateur »),
+  plus ceux de `RIGHTS_ADMINS` dans `.env`, toujours administrateurs — il en
+  faut au moins un pour le premier réglage. Le compte local de secours
+  (`BASIC_AUTH_*`) est lui aussi administrateur.
+- **Stockage** : `RIGHTS_FILE` (Docker : `/data/droits.json`, volume nommé
+  `droits`, conservé quand le conteneur est recréé). Chaque changement y est
+  journalisé (qui, quand, pour qui) et dans `docker logs`.
+- La page appelle le serveur pour ces droits, et pour eux seulement : la
+  politique de sécurité passe à `connect-src 'self'`, et l'application
+  refuse tout autre chemin que `/api/droits` (voir `serverRequest`).
+
+Mise en place (une fois, `docker-compose.yml` ayant changé) :
+
+```bash
+cd /opt/docker/budgetpbdbcompta && sudo git pull
+sudo nano .env        # LDAP_GROUP_DN=CN=budgetpbdbcompta,…  et  RIGHTS_ADMINS=prenom.nom
+sudo docker compose up -d
+sudo docker logs budgetpbdbcompta 2>&1 | grep -E 'groupe|Droits'   # groupe et administrateurs pris en compte
+```
+
+DN du groupe, sur un contrôleur de domaine (PowerShell) :
+`Get-ADGroup budgetpbdbcompta | Select-Object DistinguishedName`.
+
+Sauvegarde : `sudo docker exec budgetpbdbcompta cat /data/droits.json > droits-$(date +%F).json`.
 
 ## Architecture de production
 
@@ -275,6 +311,9 @@ Watchtower (il ne remplace que l'image) : après un changement de
 | LDAP : 503 « Annuaire indisponible » | `sudo docker logs budgetpbdbcompta` : `ECONNREFUSED`/`ETIMEDOUT` → réseau ou port ; `certificate` → `LDAP_CA_FILE` ; « compte de service LDAP refusé » → `LDAP_BIND_DN` / `LDAP_BIND_PASSWORD` |
 | LDAP : identifiants corrects mais refusés | journal « Connexion LDAP refusée » : vérifier `LDAP_USER_DN` / `LDAP_SEARCH_FILTER`, puis l'appartenance à `LDAP_GROUP_DN` (membre direct, pas via un sous-groupe) |
 | LDAP : 429 « Trop d'essais » | 5 échecs en 15 min depuis la même adresse ; attendre, ou `sudo docker restart budgetpbdbcompta` |
+| Droits : « Droits illisibles » ou 500 sur `/api/droits` | `sudo docker logs budgetpbdbcompta` : `EACCES` → volume `droits` absent (`docker compose up -d` après `git pull`) ; « Fichier des droits illisible » → JSON abîmé, restaurer une sauvegarde |
+| Droits : un membre du groupe n'apparaît pas | membre direct du groupe (pas via un sous-groupe) ; « Membres du groupe illisibles » → compte de service (`LDAP_BIND_DN`) sans droit de lecture sur le groupe |
+| Droits : plus aucun administrateur | ajouter `RIGHTS_ADMINS=prenom.nom` dans `.env`, puis `sudo docker compose up -d` |
 | Le conteneur redémarre en boucle après l'ajout de LDAP | « Démarrage refusé » dans `sudo docker logs budgetpbdbcompta` : variable LDAP manquante ou contradictoire |
 
 Journaux : `sudo docker logs budgetpbdbcompta --tail 50`, `sudo docker logs npm`,

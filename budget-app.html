@@ -8,8 +8,10 @@
   fichier contient lui-même. Aucune connexion sortante n'est possible —
   ni requête, ni image, ni police, ni formulaire distant. Même si du code
   tentait d'envoyer un budget quelque part, le navigateur le refuserait.
+  Seule exception, `connect-src 'self'` : le serveur qui a servi la page,
+  et seulement pour les droits d'accès (voir `serverRequest`, SAS RÉSEAU).
 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-src 'none'; object-src 'none'" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'self'; form-action 'none'; base-uri 'none'; frame-src 'none'; object-src 'none'" />
 <title>Budget Manager — Palm Beach Cannes</title>
 <!--
   Application de construction budgétaire.
@@ -3277,7 +3279,38 @@
    dans l'en-tête : si un copier-coller malheureux introduisait un jour un
    appel réseau, il échouerait bruyamment au lieu d'envoyer un budget.
    ================================================================== */
+/* Seule porte laissée entrouverte : les droits d'accès tenus par le
+   serveur qui a servi la page (Paramètres › Droits d'accès, voir
+   `loadServerSession`). `serverRequest` garde pour lui le `fetch` d'origine
+   avant qu'il ne soit neutralisé, et n'accepte qu'un chemin relatif sous
+   `/api/droits` — jamais une autre adresse, jamais un budget. `null` là où
+   `fetch` n'existe pas. */
+let serverRequest = null;
+/* Session et écran d'administration des droits tenus par le serveur :
+   voir « Droits tenus par le serveur (annuaire) ». */
+let serverSession = null; // { method, account, user, error }
+let serverDirectory = null; // { loading, error, rows, list, groupDn, membersError }
+
 (function sealNetwork() {
+  const nativeFetch = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null;
+  if (nativeFetch) {
+    serverRequest = function (method, path, body) {
+      if (!/^\/api\/droits(\/[A-Za-z0-9._@%-]+)?$/.test(String(path))) {
+        return Promise.reject(new Error('Sortie réseau interdite (' + path + ').'));
+      }
+      const options = { method: method, credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers: {} };
+      if (body !== undefined) {
+        options.headers['Content-Type'] = 'application/json';
+        options.body = JSON.stringify(body);
+      }
+      return nativeFetch(path, options).then(function (response) {
+        return response.json().catch(function () { return {}; }).then(function (data) {
+          if (!response.ok) throw new Error(data && data.error ? data.error : 'Erreur ' + response.status);
+          return data;
+        });
+      });
+    };
+  }
   const refuse = function (name) {
     return function () { throw new Error('Sortie réseau interdite (' + name + ').'); };
   };
@@ -3379,7 +3412,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-09-28.1';
+const APP_BUILD = '2026-09-28.2';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -7734,6 +7767,9 @@ function generateStrongPassword(length) {
 /* ---------------- Comptes ---------------- */
 
 function usersOf() {
+  // Droits tenus par le serveur : les comptes sont les personnes de
+  // l'annuaire (voir `serverSession`), jamais les comptes de ce navigateur.
+  if (serverSession) return serverDirectory && serverDirectory.list ? serverDirectory.list : [serverSession.user];
   return Array.isArray(state.users) ? state.users : [];
 }
 
@@ -8398,7 +8434,7 @@ function logAuthEvent(type, detail) {
     at: new Date().toISOString(),
     type: type,
     detail: detail,
-    by: authSession && authSession.username ? authSession.username : '—',
+    by: sessionUsername(),
   });
   if (state.authLog.length > AUTH_LOG_MAX) state.authLog.length = AUTH_LOG_MAX;
 }
@@ -8454,7 +8490,7 @@ function logLineEdit(line, month, oldValue, newValue, label) {
     // remplace le mois à l'affichage, puisqu'une opération groupée touche
     // plusieurs mois d'un coup.
     label: label || '',
-    by: authSession && authSession.username ? authSession.username : '—',
+    by: sessionUsername(),
   });
   if (state.editLog.length > EDIT_LOG_MAX) state.editLog.length = EDIT_LOG_MAX;
 }
@@ -8526,7 +8562,7 @@ function logCaEdit(caLine, label, oldValue, newValue) {
     oldValue: oldValue,
     newValue: newValue,
     label: label || 'CA',
-    by: authSession && authSession.username ? authSession.username : '—',
+    by: sessionUsername(),
   });
   if (state.editLog.length > EDIT_LOG_MAX) state.editLog.length = EDIT_LOG_MAX;
 }
@@ -8587,6 +8623,7 @@ let authSession = null;
 let authSessionExpired = false;
 
 function currentUser() {
+  if (serverSession) return serverSession.user;
   if (!authSession) return null;
   if (Date.now() > authSession.expiresAt) {
     authSession = null;
@@ -8724,7 +8761,234 @@ function signOut() {
  * tant qu'elle n'est pas complétée par son destinataire.
  */
 function authEnabled() {
+  if (serverSession) return true;
   return usersOf().some(function (u) { return u.status === 'active'; });
+}
+
+/** Qui agit, pour les journaux : la personne de l'annuaire, sinon le compte local connecté. */
+function sessionUsername() {
+  if (serverSession) return serverSession.user.username;
+  return authSession && authSession.username ? authSession.username : '—';
+}
+
+/* ---------------- Droits tenus par le serveur (annuaire) ----------------
+
+   28/09/2026 : « intègre uniquement les personnes du groupe budgetpbdbcompta
+   […] les droits dans ce sas doivent être effectués dans la partie
+   Paramètres ». Servie par le serveur avec une identité de l'annuaire
+   (cookie `bm-auth`, voir `serverAuthInfo`), l'application ne connaît plus
+   ses comptes locaux : la personne est celle qui s'est identifiée auprès du
+   serveur, et ses droits — rôle, onglets, rubriques, périmètre — viennent
+   de `/api/droits`, les mêmes sur tous les postes. Les administrateurs les
+   règlent dans Paramètres › Droits d'accès ; l'onglet Autorisations (comptes
+   de ce navigateur) disparaît.
+
+   Les droits reçus prennent la forme d'un compte local (`createUser`) :
+   `currentUser()` rend cet objet, et TOUS les contrôles existants
+   (`canAccessTab`, `allowedCompanyIds`, `applyPagePermissions`…)
+   s'appliquent sans changement.
+
+   Fermé par défaut : sans fiche sur le serveur, ou si le serveur ne répond
+   pas, la personne n'a accès à rien d'autre que Paramètres, qui le lui dit. */
+// `serverSession` et `serverDirectory` sont déclarés avec `serverRequest`
+// (SAS RÉSEAU), en tête de script : `usersOf()` et `currentUser()` les
+// lisent, et doivent pouvoir le faire à tout moment.
+
+const SERVER_USER_PREFIX = 'annuaire:';
+
+/**
+ * Le mode s'applique-t-il ? Page servie par notre serveur avec une identité
+ * (annuaire ou compte local de secours), et en HTTPS — règle d'Alexis pour
+ * toute fonction serveur (voir MODE SERVEUR) — ou sur ce poste même
+ * (localhost), pour les essais.
+ */
+function serverRightsModeAvailable() {
+  const info = serverAuthInfo();
+  if (!info || (info.method !== 'ldap' && info.method !== 'local')) return false;
+  if (!serverRequest || typeof location === 'undefined') return false;
+  return location.protocol === 'https:' || /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+}
+
+function isServerUserId(id) {
+  return typeof id === 'string' && id.indexOf(SERVER_USER_PREFIX) === 0;
+}
+
+/**
+ * Compte de l'application bâti sur une fiche du serveur. `rights` à `null` :
+ * personne sans fiche — aucun onglet, périmètre de départ d'un directeur
+ * pour le jour où un administrateur la configure.
+ */
+function serverUserFromRights(account, displayName, rights) {
+  const r = rights && typeof rights === 'object' ? rights : null;
+  const role = r && r.role === 'controleur' ? 'controleur' : 'directeur';
+  let permissions = {};
+  if (r) {
+    permissions = r.permissions && typeof r.permissions === 'object' ? {} : defaultPermissionsFor(role);
+    if (r.permissions && typeof r.permissions === 'object') {
+      for (const tabId of Object.keys(r.permissions)) {
+        if (Array.isArray(r.permissions[tabId])) permissions[tabId] = r.permissions[tabId].slice();
+      }
+    }
+  }
+  return {
+    id: SERVER_USER_PREFIX + account,
+    source: 'annuaire',
+    account: account,
+    username: account,
+    displayName: displayName || '',
+    email: '',
+    role: role,
+    isAdmin: Boolean(r && r.isAdmin === true),
+    status: 'active',
+    avatar: null,
+    configured: Boolean(r),
+    permissions: permissions,
+    // Sans fiche : aucune société non plus — pas même leur nom dans l'en-tête.
+    allowedCompanies: r ? (Array.isArray(r.allowedCompanies) ? r.allowedCompanies.slice() : null) : [],
+    allowedCostCenters: r
+      ? (Array.isArray(r.allowedCostCenters) ? r.allowedCostCenters.slice() : null)
+      : DIRECTEUR_DEFAULT_COST_CENTERS.slice(),
+    environmentIds: r ? normalizeEnvironmentIds(r.environmentIds) : [],
+  };
+}
+
+/** Ce qui part au serveur pour un compte de l'annuaire (forme de `sanitizeRights`, rights.mjs). */
+function serverRightsPayload(user) {
+  return {
+    role: user.role,
+    isAdmin: user.isAdmin === true,
+    permissions: user.permissions || {},
+    allowedCompanies: Array.isArray(user.allowedCompanies) ? user.allowedCompanies.slice() : null,
+    allowedCostCenters: Array.isArray(user.allowedCostCenters) ? user.allowedCostCenters.slice() : null,
+    environmentIds: normalizeEnvironmentIds(user.environmentIds),
+  };
+}
+
+/** Installe la session à partir de la réponse de `/api/droits/moi` (ou d'une erreur). */
+function adoptServerSession(me, error) {
+  const info = serverAuthInfo() || {};
+  const account = (me && me.account) || info.username || '?';
+  serverSession = {
+    method: (me && me.method) || info.method || 'ldap',
+    account: account,
+    user: serverUserFromRights(account, (me && me.displayName) || info.displayName || '', me ? me.rights : null),
+    error: error || null,
+  };
+  serverDirectory = null;
+  return serverSession;
+}
+
+/** Démarrage : lit mes droits sur le serveur, avant le premier rendu. */
+async function loadServerSession() {
+  if (!serverRightsModeAvailable()) return;
+  try {
+    adoptServerSession(await serverRequest('GET', '/api/droits/moi'), null);
+  } catch (e) {
+    adoptServerSession(null, e.message || String(e));
+  }
+}
+
+/**
+ * Écran d'arrivée : le tableau de bord pour un directeur, sinon le premier
+ * onglet permis, sinon Paramètres — seul écran d'une personne sans droits.
+ */
+function serverLandingTab() {
+  const user = serverSession.user;
+  if (user.role === 'directeur' && canAccessTab(user, DIRECTOR_TAB)) return DIRECTOR_TAB;
+  if (canAccessTab(user, 'saisie')) return 'saisie';
+  return firstAllowedTab(user) || 'parametres';
+}
+
+/**
+ * Écran d'administration : membres du groupe de l'annuaire et fiches
+ * enregistrées, réunis en une ligne par personne. Le compte connecté garde
+ * son objet (`serverSession.user`), mis à jour sur place : un administrateur
+ * qui change ses propres droits les voit s'appliquer aussitôt.
+ */
+function buildServerDirectory(data) {
+  const users = data && data.users && typeof data.users === 'object' ? data.users : {};
+  const admins = Array.isArray(data && data.admins) ? data.admins : [];
+  const rows = [];
+  const seen = new Set();
+  const addRow = function (account, displayName, dn, inGroup) {
+    if (account && seen.has(account)) return;
+    if (account) seen.add(account);
+    let rights = users[account] || null;
+    if (account && admins.indexOf(account) !== -1) {
+      rights = Object.assign({ role: 'controleur', permissions: null, allowedCompanies: null,
+        allowedCostCenters: null, environmentIds: [] }, rights, { isAdmin: true });
+    }
+    rows.push({
+      account: account, displayName: displayName || '', dn: dn || '', inGroup: inGroup,
+      designatedAdmin: admins.indexOf(account) !== -1,
+      user: account ? serverUserFromRights(account, displayName, rights) : null,
+    });
+  };
+  for (const m of Array.isArray(data && data.members) ? data.members : []) addRow(m.account, m.displayName, m.dn, true);
+  for (const account of Object.keys(users)) addRow(account, '', '', false);
+  for (const account of admins) addRow(account, '', '', false);
+
+  const list = [];
+  for (const row of rows) {
+    if (!row.user) continue;
+    if (serverSession && row.account === serverSession.account) {
+      const own = serverSession.user;
+      const displayName = own.displayName;
+      Object.assign(own, row.user);
+      if (!own.displayName) own.displayName = displayName;
+      row.user = own;
+    }
+    list.push(row.user);
+  }
+  return {
+    loading: false, error: null, rows: rows, list: list,
+    groupDn: (data && data.groupDn) || '', membersError: (data && data.membersError) || null,
+  };
+}
+
+/** Recharge l'écran d'administration depuis le serveur, puis réaffiche. */
+function loadServerDirectory() {
+  if (!serverSession || !isAdminUser(serverSession.user)) return Promise.resolve();
+  serverDirectory = Object.assign({}, serverDirectory, { loading: true, error: null });
+  return serverRequest('GET', '/api/droits').then(function (data) {
+    serverDirectory = buildServerDirectory(data);
+    render();
+  }).catch(function (e) {
+    serverDirectory = Object.assign({}, serverDirectory, { loading: false, error: e.message || String(e) });
+    render();
+  });
+}
+
+/** Enregistre sur le serveur les droits d'un compte de l'annuaire. */
+function pushServerRights(userId) {
+  const user = userById(userId);
+  if (!user || user.source !== 'annuaire') return Promise.resolve();
+  return serverRequest('PUT', '/api/droits/' + encodeURIComponent(user.account), serverRightsPayload(user))
+    .then(function () {
+      showToast('Droits de « ' + user.account + ' » enregistrés sur le serveur.');
+    })
+    .catch(function (e) {
+      showToast('Droits non enregistrés : ' + (e.message || e), true);
+    })
+    .then(loadServerDirectory);
+}
+
+/** Retire l'accès d'un compte de l'annuaire (sa fiche est supprimée du serveur). */
+function revokeServerRights(userId) {
+  const user = userById(userId);
+  if (!user || user.source !== 'annuaire') return Promise.resolve();
+  if (!confirmed({
+    key: 'server-rights-revoke-' + user.account,
+    title: 'Retirer l’accès de « ' + (user.displayName || user.account) + ' » ?',
+    body: 'Sa fiche de droits est supprimée : à sa prochaine visite, il ou elle n’aura plus accès qu’à Paramètres. ' +
+      'Son appartenance au groupe de l’annuaire n’est pas modifiée.',
+    confirmLabel: 'Retirer l’accès',
+  }, function () { revokeServerRights(userId); })) return Promise.resolve();
+  if (authPermissionsId === userId) authPermissionsId = null;
+  return serverRequest('DELETE', '/api/droits/' + encodeURIComponent(user.account))
+    .then(function () { showToast('Accès retiré à « ' + user.account + ' ».'); })
+    .catch(function (e) { showToast('Accès non retiré : ' + (e.message || e), true); })
+    .then(loadServerDirectory);
 }
 
 /**
@@ -8826,6 +9090,9 @@ function tabAllowedNow(tabId) {
   // c'est précisément dans ce cas qu'il a besoin de voir le périmètre d'un
   // directeur. Sans cette priorité, le bouton n'aurait aucun effet chez lui.
   if (directorPreviewActive()) return directorPreviewAllowsTab(tabId);
+  // Droits tenus par le serveur : les comptes de ce navigateur ne servent
+  // plus, leur écran non plus — les droits se règlent dans Paramètres.
+  if (serverSession && tabId === 'autorisations') return false;
   if (!authEnabled()) return true;
   // « Paramètres » est l'espace personnel de l'utilisateur connecté (son
   // compte, son mot de passe — voir `viewParametres()`) — Alexis,
@@ -8853,7 +9120,9 @@ function pageAllowedNow(tabId, pageId) {
 function enforceTabPermission() {
   if (tabAllowedNow(tab)) return;
   const fallback = authEnabled() ? firstAllowedTab(currentUser()) : 'saisie';
-  tab = fallback || 'saisie';
+  // Aucun onglet permis : Paramètres, le seul écran qui reste, et qui dit
+  // pourquoi (voir `viewParametres`) — plutôt qu'une Saisie interdite.
+  tab = fallback || (currentUser() ? 'parametres' : 'saisie');
 }
 
 /**
@@ -8907,7 +9176,9 @@ function renderNavPermissions() {
   const signOutButton = document.getElementById('signout-button');
   if (signOutButton) {
     const user = authEnabled() ? currentUser() : null;
-    signOutButton.hidden = !user;
+    // Identifié par le serveur : se déconnecter se fait en fermant le
+    // navigateur, l'application n'a pas la main sur l'authentification.
+    signOutButton.hidden = !user || Boolean(serverSession);
     if (user) signOutButton.textContent = 'Déconnexion (' + user.username + ')';
   }
   // Les six boutons Administration ont rejoint le panneau latéral du compte
@@ -8944,6 +9215,10 @@ function applyPagePermissions() {
     return;
   }
   if (!authEnabled()) return;
+  // Paramètres n'est pas dans la matrice (voir `tabAllowedNow`) : ses
+  // rubriques sont à tout compte connecté, sans quoi un directeur n'y
+  // trouverait plus rien — pas même son mot de passe.
+  if (tab === 'parametres') return;
   const user = currentUser();
   if (user && user.role === 'controleur') return;
   document.querySelectorAll('#view [data-panel]').forEach(function (element) {
@@ -11501,7 +11776,9 @@ function breadcrumbHtml(tabId) {
   if (environment && environment.name) parts.push(escapeHtml(environment.name));
   // La société n'a de sens que sur les écrans qui en dépendent : un écran
   // d'administration s'applique à tout l'environnement.
-  if (TAB_GROUPS[3].tabs.indexOf(tabId) === -1) {
+  // Paramètres non plus : il ne dépend d'aucune société, et une personne
+  // sans droits ne doit pas y lire le nom de l'une d'elles.
+  if (TAB_GROUPS[3].tabs.indexOf(tabId) === -1 && tabId !== 'parametres') {
     const company = state.companies.length ? activeCompany() : null;
     if (company) parts.push(escapeHtml(company.name) + ' ' + company.year);
   }
@@ -21639,10 +21916,11 @@ function securiteBody() {
         '<li>Aucune ressource externe : ni police, ni image, ni bibliothèque distante. ' +
         'Le fichier fonctionne sans Internet.</li>' +
         '<li>Une politique de sécurité déclarée dans l’en-tête interdit au navigateur ' +
-        'toute connexion sortante depuis cette page.</li>' +
+        'toute connexion sortante depuis cette page, sauf vers le serveur qui l’a servie, ' +
+        'et seulement pour lire et enregistrer les droits d’accès.</li>' +
         '<li>Les fonctions réseau du navigateur sont neutralisées au démarrage : un appel ' +
         'échouerait au lieu de partir.</li>' +
-        '<li>Rien n’est envoyé à un serveur, il n’y en a pas. Les exports sont écrits par ' +
+        '<li>Aucune donnée budgétaire n’est envoyée à un serveur. Les exports sont écrits par ' +
         'le navigateur, sur ce poste.</li>' +
         '<li>Un contrôle automatique du projet échoue si une adresse réseau réapparaît ' +
         'un jour dans le fichier.</li>' +
@@ -21847,7 +22125,11 @@ function authPermissionsPanel() {
 
   const lockedAdmin = isAdminUser(user) && adminCount() <= 1;
 
-  const rows = APP_PAGES.map(function (entry) {
+  // Droits tenus par le serveur : pas d'onglet Autorisations (voir
+  // `tabAllowedNow`), donc pas de ligne pour lui dans la matrice.
+  const rows = APP_PAGES.filter(function (entry) {
+    return !(serverSession && entry.tab === 'autorisations');
+  }).map(function (entry) {
     const sensitive = SENSITIVE_TABS.indexOf(entry.tab) !== -1;
     // Autorisations n'obéit pas à la matrice : c'est la case
     // « Administrateur » de la fiche du compte qui l'ouvre ou la ferme.
@@ -22526,6 +22808,7 @@ function viewAutorisations() {
  * dupliquée, seul le point d'entrée (le bouton ci-dessous) est nouveau.
  */
 function viewParametres() {
+  if (serverSession) return viewParametresServeur();
   const user = currentUser();
   if (!user) {
     return viewPage({
@@ -22593,6 +22876,137 @@ function viewParametres() {
       panel('parametres-mdp', 'Mot de passe', passwordBody, { open: true }) +
       parametresLdapPanel(),
   });
+}
+
+/**
+ * Paramètres quand les droits viennent du serveur : l'identité de
+ * l'annuaire (ni photo ni mot de passe, qui relèvent de l'annuaire), la
+ * rubrique LDAP, et pour les administrateurs la gestion des droits — seul
+ * endroit où ils se règlent désormais (28/09/2026).
+ */
+function viewParametresServeur() {
+  const user = serverSession.user;
+  const field = function (label, value) {
+    return '<div><div class="muted" style="font-size:12px">' + escapeHtml(label) + '</div>' +
+      '<div style="font-weight:600;overflow-wrap:anywhere">' + escapeHtml(value) + '</div></div>';
+  };
+  const status = serverSession.error
+    ? '<div class="alert error">Vos droits n’ont pas pu être lus sur le serveur (' + escapeHtml(serverSession.error) +
+      ') : par précaution, aucun écran n’est ouvert. Rechargez la page ; si cela persiste, prévenez un administrateur.</div>'
+    : (!user.configured
+      ? '<div class="alert">Votre accès n’est pas encore configuré : vous êtes bien reconnu(e) par l’annuaire, ' +
+        'mais aucun droit ne vous a été attribué. Un administrateur doit vous en donner dans Paramètres › Droits d’accès.</div>'
+      : '');
+  const accountBody = status +
+    '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px">' +
+    (user.displayName ? field('Nom', user.displayName) : '') +
+    field('Identifiant', user.account) +
+    field('Rôle', user.configured ? roleLabel(user.role) + (isAdminUser(user) ? ' · Administrateur' : '') : 'Aucun droit') +
+    field('Connexion', serverSession.method === 'local' ? 'Compte local de secours' : 'Annuaire LDAP') +
+    '</div>' +
+    '<p class="muted" style="margin:14px 0 0;font-size:13px">Votre mot de passe est celui de votre session Windows : ' +
+    'il se change dans l’annuaire, pas ici.</p>';
+
+  return viewPage({
+    title: 'Paramètres',
+    hint: 'Votre compte, la connexion à l’annuaire' + (isAdminUser(user) ? ' et les droits d’accès de chacun.' : '.'),
+    body:
+      panel('parametres-compte', 'Mon compte', accountBody, { open: true }) +
+      parametresLdapPanel() +
+      (isAdminUser(user) && !serverSession.error ? parametresDroitsPanels() : ''),
+  });
+}
+
+/** Libellé court des droits d'une personne, pour le tableau des membres. */
+function serverRightsSummary(user) {
+  if (!user.configured) return 'Aucun droit';
+  const tabs = APP_PAGES.filter(function (t) { return canAccessTab(user, t.tab) && t.tab !== 'autorisations'; }).length;
+  return roleLabel(user.role) + ' · ' + tabs + ' onglet' + (tabs > 1 ? 's' : '');
+}
+
+/**
+ * Paramètres › Droits d'accès : les membres du groupe de l'annuaire, puis,
+ * pour la personne choisie, son rôle, sa matrice d'onglets et son périmètre
+ * — les mêmes éditeurs que l'ancien onglet Autorisations (`authPermissionsPanel`,
+ * `authScopePanelHtml`), dont les boutons « Enregistrer » écrivent ici sur
+ * le serveur (voir `pushServerRights`).
+ */
+function parametresDroitsPanels() {
+  if (!serverDirectory) {
+    // Premier affichage : chargement en arrière-plan, puis nouveau rendu.
+    serverDirectory = { loading: true };
+    setTimeout(loadServerDirectory, 0);
+  }
+  const directory = serverDirectory;
+  let body;
+  if (directory.loading && !directory.rows) {
+    body = '<p class="muted" style="margin:0">Chargement des membres du groupe…</p>';
+  } else if (directory.error && !directory.rows) {
+    body = '<div class="alert error">Droits illisibles sur le serveur : ' + escapeHtml(directory.error) + '</div>' +
+      '<button class="action ghost" data-server-rights-reload="1">Réessayer</button>';
+  } else {
+    const rows = (directory.rows || []).map(function (row) {
+      const u = row.user;
+      const who = '<strong>' + escapeHtml(row.displayName || (u && u.displayName) || row.account || row.dn) + '</strong>' +
+        (row.account ? '<div class="muted" style="font-size:12px">' + escapeHtml(row.account) + '</div>' : '');
+      const badges = (row.inGroup ? '' : '<span class="badge grey" title="Absent du groupe : ne peut pas entrer sur le site">hors groupe</span> ') +
+        (row.designatedAdmin ? '<span class="badge grey" title="Désigné par RIGHTS_ADMINS sur le serveur">administrateur désigné</span>' : '');
+      if (!u) {
+        return '<tr><td>' + who + '</td><td class="muted" colspan="2">Entrée de l’annuaire illisible : ' +
+          escapeHtml(row.dn) + '</td><td></td></tr>';
+      }
+      const selected = authPermissionsId === u.id;
+      return '<tr><td>' + who + '</td>' +
+        '<td>' + escapeHtml(serverRightsSummary(u)) + (isAdminUser(u) ? ' · <strong>administrateur</strong>' : '') + '</td>' +
+        '<td>' + badges + '</td>' +
+        '<td><div class="row-actions">' +
+        '<button class="mini" data-auth-permissions="' + escapeHtml(u.id) + '">' + (selected ? 'fermer' : (u.configured ? 'modifier' : 'donner un accès')) + '</button>' +
+        (u.configured && !row.designatedAdmin
+          ? '<button class="mini" data-server-rights-revoke="' + escapeHtml(u.id) + '">retirer l’accès</button>'
+          : '') +
+        '</div></td></tr>';
+    }).join('');
+    body = '<p class="muted" style="margin:0 0 12px;font-size:13px">Seuls les membres du groupe ' +
+      (directory.groupDn ? '<strong>' + escapeHtml(directory.groupDn) + '</strong>' : 'de l’annuaire') +
+      ' peuvent entrer sur le site. Ici, vous choisissez ce que chacun y voit : rôle, onglets, rubriques, sociétés et ' +
+      'centres de coûts. Ces droits sont enregistrés sur le serveur et valent sur tous les postes, à la prochaine ' +
+      'ouverture de la page. Une personne sans droits n’a accès qu’à Paramètres.</p>' +
+      (directory.membersError
+        ? '<div class="alert error">Membres du groupe illisibles : ' + escapeHtml(directory.membersError) + '</div>' : '') +
+      (!directory.groupDn
+        ? '<div class="alert">Aucun groupe n’est configuré sur le serveur (LDAP_GROUP_DN) : tout compte de l’annuaire ' +
+          'trouvé peut entrer, et seules les personnes déjà configurées apparaissent ci-dessous.</div>' : '') +
+      '<div class="table-wrap"><table><thead><tr>' +
+      '<th style="min-width:200px">Personne</th><th style="min-width:180px">Droits</th><th></th><th></th>' +
+      '</tr></thead><tbody>' +
+      (rows || '<tr><td colspan="4" class="muted">Personne pour l’instant.</td></tr>') +
+      '</tbody></table></div>' +
+      '<div class="row" style="margin-top:12px"><button class="action ghost" data-server-rights-reload="1">' +
+      (directory.loading ? 'Actualisation…' : 'Actualiser') + '</button></div>';
+  }
+
+  const members = (directory.rows || []).filter(function (r) { return r.inGroup; }).length;
+  const selected = authPermissionsId && isServerUserId(authPermissionsId) ? userById(authPermissionsId) : null;
+  return panel('parametres-droits', 'Droits d’accès', body,
+    { open: true, meta: directory.rows ? members + ' membre' + (members > 1 ? 's' : '') + ' du groupe' : '' }) +
+    (selected ? serverRightsRolePanel(selected) + authPermissionsPanel() + authScopePanelHtml(selected) : '');
+}
+
+/** Rôle et statut d'administrateur de la personne choisie. */
+function serverRightsRolePanel(user) {
+  const roleOptions = USER_ROLES.map(function (r) {
+    return '<option value="' + r.id + '"' + (user.role === r.id ? ' selected' : '') + '>' + escapeHtml(r.label) + '</option>';
+  }).join('');
+  return panel('parametres-droits-role', 'Rôle — ' + (user.displayName || user.account),
+    '<div class="field" style="margin-bottom:12px"><label for="server-rights-role">Rôle</label>' +
+    '<select id="server-rights-role">' + roleOptions + '</select>' +
+    '<p class="muted" style="margin:6px 0 0;font-size:12px">Changer de rôle repart des droits par défaut de ce rôle ' +
+    '(contrôleur : tout ; directeur : saisie et résultats), à affiner ensuite ci-dessous.</p></div>' +
+    '<label class="auth-editor-toggle-row"><span class="grow">Administrateur (règle les droits de chacun dans Paramètres)</span>' +
+    '<input type="checkbox" class="nice-check" id="server-rights-admin"' + (isAdminUser(user) ? ' checked' : '') + ' /></label>' +
+    '<div class="row" style="margin-top:12px"><button class="action" data-server-rights-save-role="' + escapeHtml(user.id) + '">' +
+    (user.configured ? 'Enregistrer le rôle' : 'Donner l’accès avec ce rôle') + '</button></div>',
+    { open: true, meta: user.configured ? roleLabel(user.role) : 'aucun droit' });
 }
 
 /**
@@ -22685,8 +23099,10 @@ function parametresLdapBody(info) {
   return grid(session) + directory +
     grid([field('Compte local de secours', info.local ? 'Actif (si l’annuaire est en panne)' : 'Aucun')]) +
     '<p class="muted" style="margin:0;font-size:13px">Lecture seule : ces réglages se modifient sur le serveur ' +
-    '(fichier .env). L’annuaire ouvre l’accès au site ; les comptes de l’application ' +
-    '(Administration › Sécurité) restent distincts.</p>';
+    '(fichier .env). ' + (serverSession
+      ? 'L’annuaire ouvre l’accès au site ; ce que chacun y voit se règle dans Paramètres › Droits d’accès.'
+      : 'L’annuaire ouvre l’accès au site ; les comptes de l’application (Administration › Sécurité) restent distincts.') +
+    '</p>';
 }
 
 function parametresLdapPanel() {
@@ -29731,6 +30147,28 @@ document.getElementById('view').addEventListener('click', async function (event)
 
   if (target.closest('[data-auth-hide-invite]')) { authRevealedInvite = null; render(); return; }
 
+  // Paramètres › Droits d'accès (comptes de l'annuaire, droits sur le serveur).
+  if (target.closest('[data-server-rights-reload]')) { loadServerDirectory(); render(); return; }
+  const serverRevoke = target.closest('[data-server-rights-revoke]');
+  if (serverRevoke) { revokeServerRights(serverRevoke.dataset.serverRightsRevoke); return; }
+  const serverSaveRole = target.closest('[data-server-rights-save-role]');
+  if (serverSaveRole) {
+    const user = userById(serverSaveRole.dataset.serverRightsSaveRole);
+    const roleSelect = document.getElementById('server-rights-role');
+    const adminBox = document.getElementById('server-rights-admin');
+    if (!user || !roleSelect || !adminBox) return;
+    const role = roleSelect.value === 'controleur' ? 'controleur' : 'directeur';
+    // Même règle que la fiche d'un compte local : changer de rôle repart des
+    // droits par défaut du nouveau rôle ; une personne encore sans fiche
+    // reçoit ceux de son rôle dès son premier enregistrement.
+    if (user.role !== role || !user.configured) user.permissions = defaultPermissionsFor(role);
+    user.role = role;
+    user.isAdmin = adminBox.checked;
+    render();
+    pushServerRights(user.id);
+    return;
+  }
+
   const permissionsButton = target.closest('[data-auth-permissions]');
   if (permissionsButton) {
     const id = permissionsButton.dataset.authPermissions;
@@ -29827,8 +30265,17 @@ document.getElementById('view').addEventListener('click', async function (event)
       if (!permissions[tabId]) permissions[tabId] = [];
       permissions[tabId].push(box.dataset.authPageCheck);
     });
+    const permissionsUserId = savePermissions.dataset.authSavePermissions;
+    // Compte de l'annuaire : les droits vivent sur le serveur, pas dans
+    // l'état de ce navigateur — ni annulation locale, ni sauvegarde locale.
+    if (isServerUserId(permissionsUserId)) {
+      setUserPermissions(permissionsUserId, permissions);
+      render();
+      pushServerRights(permissionsUserId);
+      return;
+    }
     captureUndoStep();
-    setUserPermissions(savePermissions.dataset.authSavePermissions, permissions);
+    setUserPermissions(permissionsUserId, permissions);
     save();
     render();
     showToast('Droits enregistrés.');
@@ -29855,6 +30302,12 @@ document.getElementById('view').addEventListener('click', async function (event)
     const centers = (restrictCenters && restrictCenters.checked)
       ? Array.from(document.querySelectorAll('[data-auth-scope-center]:checked')).map(function (b) { return b.dataset.authScopeCenter; })
       : null;
+    if (isServerUserId(saveScope.dataset.authSaveScope)) {
+      setUserScope(saveScope.dataset.authSaveScope, companies, centers, environmentIds);
+      render();
+      pushServerRights(saveScope.dataset.authSaveScope);
+      return;
+    }
     captureUndoStep();
     setUserScope(saveScope.dataset.authSaveScope, companies, centers, environmentIds);
     save();
@@ -29869,6 +30322,12 @@ document.getElementById('view').addEventListener('click', async function (event)
   // exactement le genre de blocage qu'Alexis veut éviter.
   const clearScope = target.closest('[data-auth-clear-scope]');
   if (clearScope) {
+    if (isServerUserId(clearScope.dataset.authClearScope)) {
+      setUserScope(clearScope.dataset.authClearScope, null, null, []);
+      render();
+      pushServerRights(clearScope.dataset.authClearScope);
+      return;
+    }
     captureUndoStep();
     setUserScope(clearScope.dataset.authClearScope, null, null, []);
     save();
@@ -30204,6 +30663,8 @@ async function saveAuthUserFromForm() {
  * assertion — voir check-budget-app.mjs.
  */
 async function boot() {
+  // Droits d'abord : le premier rendu doit déjà appliquer ceux du serveur.
+  await loadServerSession();
   let parsed = null;
   try {
     await migrateStorageToIndexedDbIfNeeded();
@@ -30221,6 +30682,7 @@ async function boot() {
   }
 
   state = adoptState(parsed);
+  if (serverSession) tab = serverLandingTab();
   // Écran d'accueil à chaque ouverture (pas seulement la première) — sauf
   // s'il faut d'abord se connecter, auquel cas `maybeShowWelcomeOnEntry()`
   // est plutôt appelée après une connexion réussie (voir plus bas).

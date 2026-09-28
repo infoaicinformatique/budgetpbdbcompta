@@ -510,7 +510,12 @@ const app = await importApp(
     '  welcomeCompanyCardsHtml, environmentColorHex, goBackToWelcomeEnvironmentStep,\n' +
     '  isSecureServerContext, requireServerMode, serverModeStatusHtml };\n' +
     'export { viewSecurite, securiteBody, affichageBody, autorisationsBody,\n' +
-    '  viewParametres, serverAuthInfo, parametresLdapBody, SERVER_AUTH_COOKIE };\n' +
+    '  viewParametres, serverAuthInfo, parametresLdapBody, SERVER_AUTH_COOKIE,\n' +
+    '  serverRequest, adoptServerSession, buildServerDirectory, serverRightsPayload, serverUserFromRights,\n' +
+    '  serverLandingTab, sessionUsername, isServerUserId, applyPagePermissions };\n' +
+    'export function __clearServerSession() { serverSession = null; serverDirectory = null; }\n' +
+    'export function __setServerDirectory(v) { serverDirectory = v; }\n' +
+    'export function __setAuthPermissionsIdForTest(v) { authPermissionsId = v; }\n' +
     'export function __setAuthEditingId(v) { authEditingId = v; }\n' +
     'export function __setAuthPermissionsId(v) { authPermissionsId = v; }\n' +
     'export { toggleSocieteSelection, setSocieteSelection, clearSocieteSelection,\n' +
@@ -1048,6 +1053,103 @@ await checkAsync('Paramètres : rubrique LDAP présente pour un utilisateur conn
   } finally {
     app.state.users = saved.users; app.state.authLog = saved.authLog; app.signOut();
   }
+});
+
+check('Droits tenus par le serveur : personne sans fiche = Paramètres seulement (28/09/2026)', () => {
+  try {
+    app.adoptServerSession({ method: 'ldap', account: 'nouveau', displayName: 'Nouveau Venu', rights: null }, null);
+    const me = app.currentUser();
+    assert.equal(me.username, 'nouveau');
+    assert.equal(me.configured, false);
+    assert.ok(app.authEnabled(), 'identifié par le serveur : authentification active');
+    for (const tabId of ['saisie', 'pnl', 'directeur', 'autorisations', 'securite']) {
+      assert.equal(app.tabAllowedNow(tabId), false, 'sans fiche, « ' + tabId + ' » doit rester fermé');
+    }
+    assert.equal(app.tabAllowedNow('parametres'), true);
+    assert.equal(app.allowedCompanyIds(me).size, 0, 'sans fiche, aucune société — pas même son nom');
+    assert.equal(app.serverLandingTab(), 'parametres');
+    assert.equal(app.sessionUsername(), 'nouveau', 'les journaux nomment la personne de l’annuaire');
+    const html = app.viewParametres();
+    assert.ok(html.includes('pas encore configuré'), 'Paramètres doit dire pourquoi rien n’est ouvert');
+    assert.ok(!html.includes('data-parametres-change-password'), 'pas de mot de passe local pour un compte de l’annuaire');
+    assert.ok(!html.includes('data-panel="parametres-droits"'), 'la gestion des droits est réservée aux administrateurs');
+
+    app.adoptServerSession(null, 'Erreur 500');
+    assert.equal(app.tabAllowedNow('saisie'), false, 'serveur injoignable : fermé par défaut');
+    assert.ok(app.viewParametres().includes('n’ont pas pu être lus'), 'l’échec de lecture est expliqué');
+  } finally {
+    app.__clearServerSession();
+  }
+});
+
+check('Droits tenus par le serveur : directeur borné par sa fiche, Autorisations fermé à tous', () => {
+  try {
+    app.adoptServerSession({ method: 'ldap', account: 'dir', displayName: '', rights: {
+      role: 'directeur', isAdmin: false, permissions: { saisie: ['saisie-ajouter'], pnl: ['graphiques'], autorisations: [] },
+      allowedCompanies: ['co_x'], allowedCostCenters: ['F&B'], environmentIds: [],
+    } }, null);
+    assert.equal(app.tabAllowedNow('saisie'), true);
+    assert.equal(app.tabAllowedNow('pnl'), true);
+    assert.equal(app.tabAllowedNow('conso'), false);
+    assert.equal(app.tabAllowedNow('autorisations'), false, 'Autorisations fermé même coché : les droits sont dans Paramètres');
+    assert.deepEqual([...app.allowedCompanyIds(app.currentUser())], ['co_x'], 'le périmètre sociétés du serveur s’applique');
+    assert.deepEqual(app.serverRightsPayload(app.currentUser()), {
+      role: 'directeur', isAdmin: false, permissions: { saisie: ['saisie-ajouter'], pnl: ['graphiques'], autorisations: [] },
+      allowedCompanies: ['co_x'], allowedCostCenters: ['F&B'], environmentIds: [],
+    }, 'ce qui repart au serveur a la forme attendue par rights.mjs');
+
+    app.adoptServerSession({ method: 'ldap', account: 'ctrl', rights: { role: 'controleur', isAdmin: false, permissions: null } }, null);
+    assert.equal(app.tabAllowedNow('conso'), true, 'permissions null = droits par défaut du rôle');
+  } finally {
+    app.__clearServerSession();
+  }
+});
+
+check('Droits tenus par le serveur : l’administrateur règle les droits dans Paramètres', () => {
+  try {
+    app.adoptServerSession({ method: 'ldap', account: 'chef', displayName: 'Le Chef',
+      rights: { role: 'controleur', isAdmin: true, permissions: null } }, null);
+    const own = app.currentUser();
+    assert.equal(app.tabAllowedNow('autorisations'), false,
+      'administrateur des droits : Autorisations reste fermé, tout se règle dans Paramètres');
+    const directory = app.buildServerDirectory({
+      groupDn: 'CN=budgetpbdbcompta,DC=pb,DC=org',
+      members: [
+        { dn: 'CN=Chef', account: 'chef', displayName: 'Le Chef' },
+        { dn: 'CN=Neuf', account: 'neuf', displayName: 'Nouveau' },
+        { dn: 'CN=Illisible', account: '', displayName: '' },
+      ],
+      users: {
+        chef: { role: 'controleur', isAdmin: true, permissions: null },
+        ancien: { role: 'directeur', isAdmin: false, permissions: {} },
+      },
+      admins: ['secours'],
+    });
+    app.__setServerDirectory(directory);
+    assert.equal(directory.rows.length, 5, 'membres, fiches hors groupe et administrateurs désignés');
+    assert.strictEqual(app.userById('annuaire:chef'), own, 'le compte connecté garde son objet');
+    assert.equal(app.userById('annuaire:neuf').configured, false);
+    assert.equal(directory.rows.find((r) => r.account === 'ancien').inGroup, false);
+    assert.equal(app.userById('annuaire:secours').isAdmin, true, 'RIGHTS_ADMINS : administrateur même sans fiche');
+
+    app.__setAuthPermissionsIdForTest('annuaire:neuf');
+    const html = app.viewParametres();
+    for (const expected of ['data-panel="parametres-droits"', 'CN=budgetpbdbcompta,DC=pb,DC=org', 'hors groupe',
+      'data-server-rights-save-role="annuaire:neuf"', 'data-auth-save-permissions="annuaire:neuf"',
+      'data-auth-save-scope="annuaire:neuf"', 'Entrée de l’annuaire illisible']) {
+      assert.ok(html.includes(expected), 'Paramètres › Droits d’accès : « ' + expected + ' » manquant');
+    }
+    assert.ok(!html.includes('data-auth-tab-check="autorisations"'), 'pas de ligne Autorisations dans la matrice');
+    assert.ok(!html.includes('data-server-rights-revoke="annuaire:secours"'), 'un administrateur désigné ne se retire pas d’ici');
+  } finally {
+    app.__setAuthPermissionsIdForTest(null);
+    app.__clearServerSession();
+  }
+});
+
+check('Paramètres : ses rubriques ne sont jamais retirées par la matrice des droits', () => {
+  assert.ok(/if \(tab === 'parametres'\) return;/.test(appSource),
+    'applyPagePermissions doit épargner Paramètres (sinon un directeur n’y voit plus rien)');
 });
 
 check('Sociétés : colonne Logo câblée (import/retrait) et logo repris sur la carte de choix de société', () => {
@@ -7232,8 +7334,18 @@ check('la politique de sécurité interdit les connexions sortantes', () => {
   const meta = html.match(/<meta http-equiv="Content-Security-Policy" content="([^"]+)"/);
   assert.ok(meta, 'aucune politique de sécurité déclarée');
   const policy = meta[1];
-  for (const directive of ["default-src 'none'", "connect-src 'none'", "form-action 'none'"]) {
+  // `connect-src 'self'` (28/09/2026) : le serveur qui sert la page, pour
+  // les droits d'accès seulement — jamais une autre adresse.
+  for (const directive of ["default-src 'none'", "connect-src 'self';", "form-action 'none'"]) {
     assert.ok(policy.includes(directive), `directive manquante : ${directive}`);
+  }
+});
+
+await checkAsync('la seule sortie réseau restante ne vise que /api/droits', async () => {
+  assert.equal(typeof app.serverRequest, 'function', 'serverRequest doit exister là où fetch existe');
+  for (const path of ['https://example.invalid/api/droits', '//example.invalid/api/droits', '/api/budgets',
+    '/api/droits/../budgets', '/api/droits/a/b', '/']) {
+    await assert.rejects(app.serverRequest('GET', path), /interdite/, 'chemin refusé attendu : ' + path);
   }
 });
 
