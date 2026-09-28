@@ -151,6 +151,36 @@ cd /opt/docker/budgetpbdbcompta && sudo git pull && sudo docker compose up -d --
 La copie du serveur doit suivre la branche `main` (`sudo git checkout main`).
 Rien à changer dans NPM.
 
+### Déploiement automatique (watcher)
+
+Un timer systemd vérifie `main` sur GitHub **toutes les 2 minutes**. Quand elle
+a avancé, `deploy/auto-deploy.sh` avance la copie locale (fast-forward
+uniquement, jamais d'écrasement), reconstruit l'image, recrée le conteneur et
+attend qu'il soit « healthy ». Mettre à jour la production = fusionner une pull
+request dans `main`.
+
+Installation (une fois) :
+
+```bash
+cd /opt/docker/budgetpbdbcompta && sudo git checkout main && sudo git pull
+sudo cp deploy/budgetpbdbcompta-deploy.service deploy/budgetpbdbcompta-deploy.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now budgetpbdbcompta-deploy.timer
+sudo systemctl start budgetpbdbcompta-deploy.service     # premier passage immédiat
+```
+
+Suivi :
+
+```bash
+systemctl list-timers budgetpbdbcompta-deploy.timer      # prochain passage
+journalctl -u budgetpbdbcompta-deploy -n 50 --no-pager   # historique des déploiements
+```
+
+Le déploiement s'arrête (et l'erreur apparaît dans le journal) si la copie du
+serveur a été modifiée à la main : `sudo git status` pour voir quoi, puis
+`sudo git checkout -- .` pour revenir à la version du dépôt (`.env` n'est pas
+touché). Suspendre : `sudo systemctl stop budgetpbdbcompta-deploy.timer`.
+
 ## 4. Dépannage
 
 | Symptôme | Vérification |

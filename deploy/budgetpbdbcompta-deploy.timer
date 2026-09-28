@@ -1,0 +1,11 @@
+# Vérifie toutes les 2 minutes si main a changé sur GitHub.
+[Unit]
+Description=Surveillance de main pour budgetpbdbcompta
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+Unit=budgetpbdbcompta-deploy.service
+
+[Install]
+WantedBy=timers.target
