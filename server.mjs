@@ -25,7 +25,9 @@ import { gzipSync, brotliCompressSync, constants as zlib } from 'node:zlib';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ldapConfigFromEnv, describeLdapConfig, ldapAuthenticate, LdapUnavailableError } from './auth-ldap.mjs';
+import {
+  ldapConfigFromEnv, describeLdapConfig, publicLdapInfo, ldapAuthenticate, LdapUnavailableError,
+} from './auth-ldap.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const HOST = process.env.HOST || '127.0.0.1';
@@ -77,7 +79,7 @@ const expectedLocalAuth = localAuthEnabled
 // Un compte désactivé dans l'annuaire perd donc l'accès au plus tard après
 // ce délai.
 const LDAP_CACHE_MS = (Number(process.env.LDAP_CACHE_SECONDS) || 300) * 1000;
-const ldapCache = new Map(); // condensat de l'en-tête → échéance
+const ldapCache = new Map(); // condensat de l'en-tête → { expires, username, dn }
 
 // Limitation des essais : au-delà de MAX_FAILURES échecs en FAILURE_WINDOW_MS
 // depuis une même adresse, les demandes sont refusées (429) jusqu'à la fin
@@ -120,47 +122,80 @@ function parseBasic(header) {
 }
 
 /**
- * Contrôle d'accès : compte local d'abord, puis annuaire LDAP. Renvoie le
- * code HTTP à répondre en cas de refus (401 identifiants refusés, 429 trop
- * d'essais, 503 annuaire indisponible), ou 0 si l'accès est accordé.
+ * Contrôle d'accès : compte local d'abord, puis annuaire LDAP. Renvoie
+ * `{ status, method, username, dn }` : `status` est le code HTTP à répondre
+ * en cas de refus (401 identifiants refusés, 429 trop d'essais, 503
+ * annuaire indisponible), ou 0 si l'accès est accordé ; `method` dit par
+ * quelle voie (`ldap`, `local`, `none` quand l'accès est libre).
  */
 async function authenticate(req) {
-  if (!authEnabled) return 0;
+  if (!authEnabled) return { status: 0, method: 'none' };
   const header = String(req.headers.authorization || '');
   const given = Buffer.from(header);
   if (expectedLocalAuth && given.length === expectedLocalAuth.length && timingSafeEqual(given, expectedLocalAuth)) {
-    return 0;
+    return { status: 0, method: 'local', username: AUTH_USER };
   }
-  if (!ldapConfig || !header) return 401;
+  if (!ldapConfig || !header) return { status: 401 };
 
   const key = createHash('sha256').update(header).digest('base64url');
-  const expires = ldapCache.get(key);
-  if (expires > Date.now()) return 0;
-  if (expires) ldapCache.delete(key);
+  const cached = ldapCache.get(key);
+  if (cached && cached.expires > Date.now()) {
+    return { status: 0, method: 'ldap', username: cached.username, dn: cached.dn };
+  }
+  if (cached) ldapCache.delete(key);
 
   const address = clientAddress(req);
-  if (tooManyFailures(address)) return 429;
+  if (tooManyFailures(address)) return { status: 429 };
 
   const credentials = parseBasic(header);
-  if (!credentials) return 401;
+  if (!credentials) return { status: 401 };
   let dn;
   try {
     dn = await ldapAuthenticate(ldapConfig, credentials.username, credentials.password);
   } catch (err) {
     if (!(err instanceof LdapUnavailableError)) throw err;
     console.error(err.message);
-    return 503;
+    return { status: 503 };
   }
   if (!dn) {
     recordFailure(address);
     console.warn(`Connexion LDAP refusée : « ${credentials.username} » depuis ${address}`);
-    return 401;
+    return { status: 401 };
   }
   failures.delete(address);
   if (ldapCache.size > 1000) ldapCache.clear();
-  ldapCache.set(key, Date.now() + LDAP_CACHE_MS);
+  ldapCache.set(key, { expires: Date.now() + LDAP_CACHE_MS, username: credentials.username, dn });
   console.log(`Connexion LDAP : « ${credentials.username} » (${dn}) depuis ${address}`);
-  return 0;
+  return { status: 0, method: 'ldap', username: credentials.username, dn };
+}
+
+// Rubrique LDAP de Paramètres. L'application s'interdit tout appel réseau
+// (CSP `connect-src 'none'`) : c'est donc la page elle-même qui apporte ces
+// informations, dans un cookie lisible par le script — et non dans le HTML,
+// qui resterait sinon à recompresser à chaque requête. Rien de secret : qui
+// est connecté, par quelle voie, et la configuration publique de l'annuaire
+// (jamais le compte de service ni un mot de passe).
+const AUTH_INFO_COOKIE = 'bm-auth';
+const ldapPublicInfo = ldapConfig ? publicLdapInfo(ldapConfig) : null;
+
+function authInfoCookie(req, auth) {
+  const info = {
+    v: 1,
+    method: auth.method,
+    username: auth.username || '',
+    dn: auth.dn || '',
+    local: localAuthEnabled,
+    ldap: ldapPublicInfo,
+  };
+  let value = encodeURIComponent(JSON.stringify(info));
+  // Un cookie est plafonné vers 4 Ko : un DN démesuré saute en premier.
+  if (value.length > 3500) {
+    info.dn = '';
+    value = encodeURIComponent(JSON.stringify(info));
+  }
+  const https = TRUST_PROXY && String(req.headers['x-forwarded-proto'] || '').trim() === 'https';
+  // Pas de HttpOnly : le script DOIT pouvoir le lire, c'est sa raison d'être.
+  return `${AUTH_INFO_COOKIE}=${value}; Path=/; SameSite=Strict` + (https ? '; Secure' : '');
 }
 
 const DENIED = {
@@ -190,7 +225,8 @@ async function handle(req, res) {
     return res.end();
   }
 
-  const denied = await authenticate(req);
+  const auth = await authenticate(req);
+  const denied = auth.status;
   if (denied) {
     const headers = { 'Content-Type': 'text/plain; charset=utf-8' };
     if (denied === 401) headers['WWW-Authenticate'] = 'Basic realm="Budget Manager", charset="UTF-8"';
@@ -223,6 +259,8 @@ async function handle(req, res) {
     ETag: app.etag,
     'Last-Modified': app.lastModified,
     Vary: 'Accept-Encoding',
+    // Aussi sur un 304 : la page reste en cache, mais l'identité change.
+    'Set-Cookie': authInfoCookie(req, auth),
   };
   if (req.headers['if-none-match'] === app.etag) {
     res.writeHead(304, headers);

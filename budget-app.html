@@ -3379,7 +3379,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-09-24.75';
+const APP_BUILD = '2026-09-28.1';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -22531,7 +22531,7 @@ function viewParametres() {
     return viewPage({
       title: 'Paramètres',
       hint: 'Vos réglages personnels.',
-      body: emptyState('Aucun compte connecté : rien à régler ici.'),
+      body: emptyState('Aucun compte connecté : rien à régler ici.') + parametresLdapPanel(),
     });
   }
 
@@ -22590,8 +22590,109 @@ function viewParametres() {
     hint: 'Vos réglages personnels : votre compte et votre mot de passe.',
     body:
       panel('parametres-compte', 'Mon compte', accountBody, { open: true }) +
-      panel('parametres-mdp', 'Mot de passe', passwordBody, { open: true }),
+      panel('parametres-mdp', 'Mot de passe', passwordBody, { open: true }) +
+      parametresLdapPanel(),
   });
+}
+
+/**
+ * Rubrique LDAP de Paramètres (28/09/2026 : « dans les Paramètres merci de
+ * rajouter la rubrique LDAP ») — en LECTURE SEULE : l'annuaire se règle sur
+ * le serveur (fichier `.env`), pas dans le navigateur.
+ *
+ * Deux contrôles d'accès coexistent et cette rubrique ne concerne que le
+ * premier : le serveur ouvre le site (annuaire LDAP ou compte local de
+ * secours), puis l'application a ses propres comptes (Administration >
+ * Sécurité). Le SAS réseau interdisant de questionner le serveur, c'est
+ * lui qui dépose ces informations dans le cookie `bm-auth` en servant la
+ * page (voir `authInfoCookie()` dans server.mjs). Pas de cookie : fichier
+ * ouvert en local, ou serveur antérieur à cette rubrique.
+ */
+const SERVER_AUTH_COOKIE = 'bm-auth';
+
+/** Contenu du cookie `bm-auth`, ou `null` s'il est absent ou illisible. */
+function serverAuthInfo(cookieText) {
+  const text = cookieText !== undefined ? cookieText
+    : (typeof document !== 'undefined' ? String(document.cookie || '') : '');
+  const prefix = SERVER_AUTH_COOKIE + '=';
+  const part = text.split(/;\s*/).find(function (p) { return p.indexOf(prefix) === 0; });
+  if (!part) return null;
+  let info;
+  try {
+    info = JSON.parse(decodeURIComponent(part.slice(prefix.length)));
+  } catch (e) {
+    return null;
+  }
+  if (!info || typeof info !== 'object' || ['ldap', 'local', 'none'].indexOf(info.method) === -1) return null;
+  return info;
+}
+
+/** Libellé du chiffrement entre le serveur et l'annuaire (`publicLdapInfo()` côté serveur). */
+const LDAP_ENCRYPTION_LABELS = {
+  ldaps: 'LDAPS (chiffré)',
+  starttls: 'StartTLS (chiffré)',
+  partiel: 'Partiel : certains serveurs en clair',
+  aucun: 'Aucun : mots de passe en clair sur le réseau interne',
+};
+
+function parametresLdapBody(info) {
+  if (!info) {
+    return '<p class="muted" style="margin:0;font-size:13px">Aucune information du serveur : l’application ' +
+      'est ouverte comme un fichier local, ou le serveur ne transmet pas encore son état d’authentification.</p>';
+  }
+  const field = function (label, value, mono) {
+    return '<div><div class="muted" style="font-size:12px">' + escapeHtml(label) + '</div>' +
+      '<div style="font-weight:600;overflow-wrap:anywhere' + (mono ? ';font-weight:500;font-size:13px' : '') + '">' +
+      escapeHtml(value) + '</div></div>';
+  };
+  const grid = function (fields) {
+    return '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:16px">' +
+      fields.join('') + '</div>';
+  };
+
+  let session;
+  if (info.method === 'ldap') {
+    session = [field('Connecté par', 'Annuaire LDAP'), field('Identifiant', info.username || '—')];
+    if (info.dn) session.push(field('Entrée de l’annuaire', info.dn, true));
+  } else if (info.method === 'local') {
+    session = [field('Connecté par', 'Compte local de secours'), field('Identifiant', info.username || '—')];
+  } else {
+    session = [field('Connecté par', 'Aucune authentification : le site est ouvert')];
+  }
+
+  const ldap = info.ldap;
+  let directory;
+  if (!ldap || typeof ldap !== 'object') {
+    directory = '<p class="muted" style="margin:0 0 12px;font-size:13px">Aucun annuaire LDAP n’est configuré sur le serveur.</p>';
+  } else {
+    const urls = Array.isArray(ldap.urls) ? ldap.urls.join(', ') : '';
+    const encryption = LDAP_ENCRYPTION_LABELS[ldap.encryption] || String(ldap.encryption || '—');
+    directory =
+      (ldap.encryption === 'aucun' || ldap.encryption === 'partiel'
+        ? '<div class="alert">Les mots de passe transitent <strong>en clair</strong> entre le serveur et ' +
+          'l’annuaire. À corriger sur le serveur : « ldaps://…:636 » ou « LDAP_STARTTLS=true ».</div>'
+        : '') +
+      grid([
+        field('Serveur', urls || '—', true),
+        field('Chiffrement', encryption),
+        ldap.mode === 'direct'
+          ? field('Identification (bind direct)', ldap.base || '—', true)
+          : field('Recherche des comptes dans', ldap.base || '—', true),
+        field('Groupe requis', ldap.group || 'Aucun : tout compte trouvé est accepté', Boolean(ldap.group)),
+      ]);
+  }
+
+  return grid(session) + directory +
+    grid([field('Compte local de secours', info.local ? 'Actif (si l’annuaire est en panne)' : 'Aucun')]) +
+    '<p class="muted" style="margin:0;font-size:13px">Lecture seule : ces réglages se modifient sur le serveur ' +
+    '(fichier .env). L’annuaire ouvre l’accès au site ; les comptes de l’application ' +
+    '(Administration › Sécurité) restent distincts.</p>';
+}
+
+function parametresLdapPanel() {
+  const info = serverAuthInfo();
+  const meta = info && info.ldap ? '<span class="muted">actif</span>' : '';
+  return panel('parametres-ldap', 'LDAP', parametresLdapBody(info), { open: true, meta: meta });
 }
 
 /* ---------------- Export ---------------- */

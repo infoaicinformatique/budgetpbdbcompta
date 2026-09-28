@@ -510,7 +510,7 @@ const app = await importApp(
     '  welcomeCompanyCardsHtml, environmentColorHex, goBackToWelcomeEnvironmentStep,\n' +
     '  isSecureServerContext, requireServerMode, serverModeStatusHtml };\n' +
     'export { viewSecurite, securiteBody, affichageBody, autorisationsBody,\n' +
-    '  viewParametres };\n' +
+    '  viewParametres, serverAuthInfo, parametresLdapBody, SERVER_AUTH_COOKIE };\n' +
     'export function __setAuthEditingId(v) { authEditingId = v; }\n' +
     'export function __setAuthPermissionsId(v) { authPermissionsId = v; }\n' +
     'export { toggleSocieteSelection, setSocieteSelection, clearSocieteSelection,\n' +
@@ -991,6 +991,60 @@ await checkAsync('Paramètres : le bloc « Mon compte » propose la photo sans p
       '« Retirer la photo » doit apparaître dès qu’une photo existe');
     assert.ok(htmlAvecPhoto.includes('<img src="data:image/png;base64,AAAA" alt="" class="header-menu-avatar-photo" />'),
       'l’aperçu de Paramètres doit reprendre la photo posée');
+  } finally {
+    app.state.users = saved.users; app.state.authLog = saved.authLog; app.signOut();
+  }
+});
+
+check('Paramètres : rubrique LDAP lue dans le cookie déposé par le serveur (28/09/2026)', () => {
+  // Même nom de cookie des deux côtés : sinon la rubrique reste vide sans erreur.
+  const serverSource = readFileSync(join(root, '..', 'server.mjs'), 'utf8');
+  assert.ok(serverSource.includes("const AUTH_INFO_COOKIE = '" + app.SERVER_AUTH_COOKIE + "'"),
+    'server.mjs et budget-app.html doivent parler du même cookie');
+  assert.ok(/'Set-Cookie': authInfoCookie\(req, auth\)/.test(serverSource),
+    'le serveur doit déposer le cookie en servant la page (200 comme 304)');
+
+  const info = {
+    v: 1, method: 'ldap', username: 'prenom.nom', dn: 'CN=Prénom Nom,OU=UniversalUsers,DC=pbcannes,DC=org',
+    local: true,
+    ldap: { urls: ['ldap://192.168.100.226:389'], encryption: 'aucun', mode: 'recherche',
+      base: 'OU=UniversalUsers,DC=pbcannes,DC=org', group: '' },
+  };
+  const cookie = 'autre=1; ' + app.SERVER_AUTH_COOKIE + '=' + encodeURIComponent(JSON.stringify(info)) + '; x=2';
+  assert.deepEqual(app.serverAuthInfo(cookie), info, 'le cookie est relu tel que le serveur l’a écrit');
+  assert.equal(app.serverAuthInfo(''), null, 'pas de cookie : pas d’information');
+  assert.equal(app.serverAuthInfo(app.SERVER_AUTH_COOKIE + '=%7Bpas-du-json'), null, 'cookie illisible ignoré');
+  assert.equal(app.serverAuthInfo(app.SERVER_AUTH_COOKIE + '=' + encodeURIComponent('{"method":"root"}')), null,
+    'une méthode inconnue n’est pas affichée');
+
+  const body = app.parametresLdapBody(info);
+  for (const expected of ['Annuaire LDAP', 'prenom.nom', 'CN=Prénom Nom,OU=UniversalUsers,DC=pbcannes,DC=org',
+    'ldap://192.168.100.226:389', 'Recherche des comptes dans', 'en clair', 'Lecture seule']) {
+    assert.ok(body.includes(expected), 'rubrique LDAP : « ' + expected + ' » manquant');
+  }
+  const chiffre = app.parametresLdapBody(Object.assign({}, info, { ldap: Object.assign({}, info.ldap, { encryption: 'ldaps' }) }));
+  assert.ok(!chiffre.includes('class="alert"'), 'pas d’alerte « en clair » quand l’annuaire est en LDAPS');
+
+  const piege = app.parametresLdapBody(Object.assign({}, info, { username: '<img src=x onerror=alert(1)>' }));
+  assert.ok(!piege.includes('<img src=x'), 'le contenu du cookie est échappé avant affichage');
+
+  assert.ok(app.parametresLdapBody({ v: 1, method: 'local', username: 'alexis', local: true, ldap: null })
+    .includes('Aucun annuaire LDAP n’est configuré'), 'compte local sans annuaire : dit clairement l’absence de LDAP');
+  assert.ok(app.parametresLdapBody(null).includes('Aucune information du serveur'),
+    'fichier ouvert en local : la rubrique l’explique au lieu de rester vide');
+
+  // La rubrique figure dans Paramètres, connecté ou non à un compte de l'application.
+  app.signOut();
+  assert.ok(app.viewParametres().includes('data-panel="parametres-ldap"'), 'rubrique LDAP absente sans compte connecté');
+});
+
+await checkAsync('Paramètres : rubrique LDAP présente pour un utilisateur connecté', async () => {
+  const saved = { users: (app.state.users || []).slice(), authLog: (app.state.authLog || []).slice() };
+  try {
+    authFixture();
+    await app.createUser({ username: 'dir_ldap_ui', role: 'directeur', password: 'MotDePasse1!xyz' });
+    await app.signIn('dir_ldap_ui', 'MotDePasse1!xyz');
+    assert.ok(app.viewParametres().includes('data-panel="parametres-ldap"'), 'rubrique LDAP absente de Paramètres');
   } finally {
     app.state.users = saved.users; app.state.authLog = saved.authLog; app.signOut();
   }
