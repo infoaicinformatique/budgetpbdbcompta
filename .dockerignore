@@ -2,3 +2,5 @@
 !package.json
 !server.mjs
 !budget-app.html
+!package-lock.json
+!auth-ldap.mjs

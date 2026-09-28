@@ -1,0 +1,158 @@
+// Tests de auth-ldap.mjs, sans annuaire réel : un faux client LDAP rejoue
+// un petit annuaire en mémoire. Lancer : npm test
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { InvalidCredentialsError } from 'ldapts';
+import {
+  ldapConfigFromEnv, ldapAuthenticate, escapeFilterValue, LdapUnavailableError,
+} from '../auth-ldap.mjs';
+
+const PEOPLE = 'ou=people,dc=pb,dc=fr';
+const ALICE = 'uid=alice,' + PEOPLE;
+const SERVICE = 'cn=svc,dc=pb,dc=fr';
+const GROUP = 'cn=budget,ou=groups,dc=pb,dc=fr';
+
+/** Faux client : mots de passe par DN, membres du groupe, URL injoignables. */
+function fakeDirectory(options) {
+  const o = options || {};
+  const passwords = o.passwords || { [ALICE]: 'secret', [SERVICE]: 'svcpass' };
+  const members = o.members || [ALICE];
+  const down = o.down || [];
+  const log = [];
+  class FakeClient {
+    constructor(opts) { this.url = opts.url; this.boundAs = null; log.push(['new', opts.url, opts.tlsOptions]); }
+    async startTLS() { log.push(['starttls', this.url]); }
+    async bind(dn, password) {
+      if (down.includes(this.url)) {
+        const err = new Error('connect ECONNREFUSED'); err.code = 'ECONNREFUSED'; throw err;
+      }
+      log.push(['bind', this.url, dn]);
+      if (!password || passwords[dn] !== password) throw new InvalidCredentialsError('bad', 49);
+      this.boundAs = dn;
+    }
+    async search(base, opts) {
+      if (down.includes(this.url)) {
+        const err = new Error('connect ECONNREFUSED'); err.code = 'ECONNREFUSED'; throw err;
+      }
+      log.push(['search', base, opts.filter, this.boundAs]);
+      if (base === GROUP) {
+        const hit = members.some((m) => opts.filter.includes('(member=' + escapeFilterValue(m) + ')'));
+        return { searchEntries: hit ? [{ dn: GROUP }] : [] };
+      }
+      const m = /\(uid=([^)]*)\)/.exec(opts.filter);
+      const dns = Object.keys(passwords).filter((dn) => m && dn === 'uid=' + m[1] + ',' + PEOPLE);
+      return { searchEntries: (o.extraEntries || []).concat(dns.map((dn) => ({ dn }))) };
+    }
+    async unbind() { log.push(['unbind', this.url]); }
+  }
+  return { FakeClient, log };
+}
+
+const direct = () => ldapConfigFromEnv({ LDAP_URL: 'ldap://a', LDAP_USER_DN: 'uid={username},' + PEOPLE });
+const search = (extra) => ldapConfigFromEnv(Object.assign({
+  LDAP_URL: 'ldap://a', LDAP_SEARCH_BASE: PEOPLE, LDAP_BIND_DN: SERVICE, LDAP_BIND_PASSWORD: 'svcpass',
+}, extra));
+
+test('LDAP désactivé sans LDAP_URL', () => {
+  assert.equal(ldapConfigFromEnv({}), null);
+});
+
+test('configurations incomplètes ou contradictoires refusées', () => {
+  assert.throws(() => ldapConfigFromEnv({ LDAP_URL: 'ldap://a' }), /LDAP_USER_DN/);
+  assert.throws(() => ldapConfigFromEnv({ LDAP_URL: 'http://a', LDAP_USER_DN: '{username}' }), /LDAP_URL invalide/);
+  assert.throws(() => ldapConfigFromEnv({ LDAP_URL: 'ldap://a', LDAP_USER_DN: 'uid=x' }), /\{username\}/);
+  assert.throws(() => ldapConfigFromEnv({ LDAP_URL: 'ldap://a', LDAP_USER_DN: 'u={username}', LDAP_SEARCH_BASE: 'dc=x' }), /exclusifs/);
+  assert.throws(() => ldapConfigFromEnv({ LDAP_URL: 'ldap://a', LDAP_SEARCH_BASE: 'dc=x', LDAP_BIND_DN: 'cn=s' }), /LDAP_BIND_PASSWORD/);
+  assert.throws(() => ldapConfigFromEnv({ LDAP_URL: 'ldap://a', LDAP_USER_DN: '{username}@pb.local', LDAP_GROUP_DN: GROUP }), /DN complet/);
+});
+
+test('échappement des filtres (RFC 4515)', () => {
+  assert.equal(escapeFilterValue('a*b(c)d\\e'), 'a\\2ab\\28c\\29d\\5ce');
+});
+
+test('bind direct : bon et mauvais mot de passe', async () => {
+  const { FakeClient } = fakeDirectory();
+  assert.equal(await ldapAuthenticate(direct(), 'alice', 'secret', FakeClient), ALICE);
+  assert.equal(await ldapAuthenticate(direct(), 'alice', 'faux', FakeClient), null);
+  assert.equal(await ldapAuthenticate(direct(), 'bob', 'secret', FakeClient), null);
+});
+
+test('mot de passe vide : jamais de bind (il serait anonyme)', async () => {
+  const { FakeClient, log } = fakeDirectory();
+  assert.equal(await ldapAuthenticate(direct(), 'alice', '', FakeClient), null);
+  assert.equal(log.length, 0);
+});
+
+test('nom d’utilisateur hors du jeu de caractères sûr : refusé sans requête', async () => {
+  const { FakeClient, log } = fakeDirectory();
+  for (const name of ['*', 'alice)(uid=*', 'a,ou=x', 'a=b', '', 'x'.repeat(65)]) {
+    assert.equal(await ldapAuthenticate(search(), name, 'secret', FakeClient), null, name);
+  }
+  assert.equal(log.length, 0);
+});
+
+test('recherche puis bind, au nom du compte de service', async () => {
+  const { FakeClient, log } = fakeDirectory();
+  assert.equal(await ldapAuthenticate(search(), 'alice', 'secret', FakeClient), ALICE);
+  const s = log.find((e) => e[0] === 'search');
+  assert.equal(s[3], SERVICE);
+  assert.match(s[2], /\(uid=alice\)/);
+  assert.equal(await ldapAuthenticate(search(), 'alice', 'faux', FakeClient), null);
+  assert.equal(await ldapAuthenticate(search(), 'inconnu', 'secret', FakeClient), null);
+});
+
+test('recherche ambiguë (deux entrées) : refus', async () => {
+  const { FakeClient } = fakeDirectory({ extraEntries: [{ dn: 'uid=alice,ou=autre,dc=pb,dc=fr' }] });
+  assert.equal(await ldapAuthenticate(search(), 'alice', 'secret', FakeClient), null);
+});
+
+test('compte de service refusé : annuaire indisponible, pas un mauvais mot de passe', async () => {
+  const { FakeClient } = fakeDirectory();
+  const config = search({ LDAP_BIND_PASSWORD: 'mauvais' });
+  await assert.rejects(ldapAuthenticate(config, 'alice', 'secret', FakeClient), LdapUnavailableError);
+});
+
+test('groupe exigé : membre accepté, non-membre refusé', async () => {
+  const bob = 'uid=bob,' + PEOPLE;
+  const { FakeClient } = fakeDirectory({ passwords: { [ALICE]: 'secret', [bob]: 'b', [SERVICE]: 'svcpass' } });
+  const config = search({ LDAP_GROUP_DN: GROUP });
+  assert.equal(await ldapAuthenticate(config, 'alice', 'secret', FakeClient), ALICE);
+  assert.equal(await ldapAuthenticate(config, 'bob', 'b', FakeClient), null);
+});
+
+test('plusieurs URL : bascule sur la suivante si la première est injoignable', async () => {
+  const { FakeClient } = fakeDirectory({ down: ['ldap://a'] });
+  const config = ldapConfigFromEnv({ LDAP_URL: 'ldap://a, ldap://b', LDAP_USER_DN: 'uid={username},' + PEOPLE });
+  assert.equal(await ldapAuthenticate(config, 'alice', 'secret', FakeClient), ALICE);
+  assert.equal(await ldapAuthenticate(config, 'alice', 'faux', FakeClient), null);
+});
+
+test('bascule aussi en mode recherche (compte de service sur une URL injoignable)', async () => {
+  const { FakeClient } = fakeDirectory({ down: ['ldap://a'] });
+  const config = search({ LDAP_URL: 'ldap://a,ldap://b', LDAP_GROUP_DN: GROUP });
+  assert.equal(await ldapAuthenticate(config, 'alice', 'secret', FakeClient), ALICE);
+});
+
+test('toutes les URL injoignables : LdapUnavailableError', async () => {
+  const { FakeClient } = fakeDirectory({ down: ['ldap://a'] });
+  await assert.rejects(ldapAuthenticate(direct(), 'alice', 'secret', FakeClient), LdapUnavailableError);
+});
+
+test('StartTLS demandé avant tout bind', async () => {
+  const { FakeClient, log } = fakeDirectory();
+  const config = ldapConfigFromEnv({ LDAP_URL: 'ldap://a', LDAP_USER_DN: 'uid={username},' + PEOPLE, LDAP_STARTTLS: 'true' });
+  await ldapAuthenticate(config, 'alice', 'secret', FakeClient);
+  assert.equal(log[1][0], 'starttls');
+});
+
+test('options TLS transmises au client pour ldaps:// seulement', async () => {
+  // ldapts passe en TLS dès qu'il reçoit des tlsOptions : sur ldap://, la
+  // connexion en clair (ou StartTLS) échouerait.
+  const { FakeClient, log } = fakeDirectory({ passwords: { [ALICE]: 'secret' } });
+  const config = ldapConfigFromEnv({ LDAP_URL: 'ldap://a ldaps://b', LDAP_USER_DN: 'uid={username},' + PEOPLE });
+  await ldapAuthenticate(config, 'alice', 'secret', FakeClient);
+  assert.equal(log.find((e) => e[0] === 'new' && e[1] === 'ldap://a')[2], undefined);
+  const { FakeClient: F2, log: log2 } = fakeDirectory({ down: ['ldap://a'] });
+  await ldapAuthenticate(config, 'alice', 'secret', F2);
+  assert.deepEqual(log2.find((e) => e[0] === 'new' && e[1] === 'ldaps://b')[2], { rejectUnauthorized: true });
+});

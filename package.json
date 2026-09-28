@@ -11,6 +11,10 @@
     "start": "node server.mjs",
     "start:public": "HOST=0.0.0.0 node server.mjs",
     "dev": "npm --prefix excel-grid run dev",
-    "verify": "npm --prefix excel-grid run verify"
+    "verify": "npm --prefix excel-grid run verify",
+    "test": "node --test test/auth-ldap.test.mjs"
+  },
+  "dependencies": {
+    "ldapts": "^9.2.0"
   }
 }

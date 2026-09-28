@@ -15,7 +15,8 @@ documentation. Les identifiants JS restent en anglais, en camelCase.
 | Chemin | Rôle |
 | --- | --- |
 | `budget-app.html` | **L'application entière** (~30 000 lignes, 1,7 Mo), zéro dépendance, zéro réseau |
-| `server.mjs` | Serveur Node ≥ 22 sans dépendance : sert seulement `/` (brotli/gzip), `/healthz`, auth Basic ; tout le reste → 404 |
+| `server.mjs` | Serveur Node ≥ 22 : sert seulement `/` (brotli/gzip), `/healthz`, auth Basic (compte local et/ou LDAP) ; tout le reste → 404 |
+| `auth-ldap.mjs`, `test/` | Vérification LDAP (seule dépendance : `ldapts`) et ses tests (`npm test`) |
 | `excel-grid/` | Prototype tableur React/Vite **et** outillage : moteur de référence `src/engine/chart.ts`, imports, validation |
 | `scripts-doc/rebuild-doc.mjs` | Régénère la section 7 de `REPRISE-PROJET.md` |
 | `scripts-fx/taux-du-jour.mjs` | Utilitaire manuel : taux BCE (Frankfurter) à recopier dans Sociétés > Taux de change |
@@ -76,6 +77,7 @@ Invariants techniques :
 ## Commandes
 
 ```bash
+npm ci && npm test                     # serveur : dépendances et tests LDAP
 npm start                              # http://127.0.0.1:3000 (server.mjs)
 npm --prefix excel-grid install        # une fois (node_modules absent par défaut)
 npm run verify                         # check + test + check:app + check:markup + typecheck
@@ -107,6 +109,12 @@ fichiers de `excel-grid/` ont bougé. Les sections 1 à 6 s'éditent à la main.
   le certificat) → conteneur `budgetpbdbcompta` :3000, dans
   `/opt/docker/budgetpbdbcompta`, en lecture seule. Pas d'Access List NPM
   (l'auth est dans l'application).
+- Authentification serveur (README, « Authentification LDAP ») : compte local
+  `BASIC_AUTH_*` (secours) puis annuaire `LDAP_*`. Tout changement de
+  `auth-ldap.mjs` passe par `npm test`. Piège : ldapts passe en TLS dès qu'il
+  reçoit des `tlsOptions`, même sur `ldap://` — ne les donner qu'en `ldaps://`.
+  Un nouveau fichier servi doit aussi être ajouté au `Dockerfile` et au
+  `.dockerignore` (liste blanche).
 - Le serveur n'est pas joignable en SSH depuis le poste de développement :
   les opérations serveur sont à faire faire par l'utilisateur (commandes du README).
 - Vérifier la production : `curl https://budgetpbdbcompta.aic-informatique.net/healthz`
