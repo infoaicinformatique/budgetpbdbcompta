@@ -77,6 +77,26 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Déconnexion pour les personnes de l'annuaire (28/09/2026)
+
+Demande : « j'aimerai avoir la possibilité de me déconnecter » (build
+`2026-09-28.3`). Le bouton « Déconnexion » du menu du compte était masqué
+en mode serveur : l'authentification Basic n'a pas de déconnexion, le
+navigateur renvoie seul les identifiants mémorisés. Il réapparaît et mène
+à `/deconnexion` (server.mjs, `handleLogout`), qui répond 401 dans le même
+domaine d'authentification : le navigateur oublie alors les identifiants
+et affiche sa fenêtre de connexion. Le cookie `bm-deco` (deux minutes)
+fait accepter les identifiants saisis dans cette fenêtre, sans quoi elle
+reviendrait en boucle ; il est effacé à la prochaine page servie. La
+connexion LDAP mémorisée côté serveur est oubliée aussi. Annuler la
+fenêtre laisse une page « Vous êtes déconnecté(e) » avec un lien pour se
+reconnecter.
+
+Contrôle « Déconnexion : identifié par l'annuaire… » (bouton visible et
+dirigé vers /deconnexion, 401 dans le bon domaine). Essai dans Chromium :
+connecté (200), déconnexion, retour sur le site → 401, identifiants
+oubliés. 515 contrôles.
+
 ### Droits d'accès tenus par le serveur, réglés dans Paramètres (28/09/2026)
 
 Demande : « intègre uniquement les personnes du groupe budgetpbdbcompta

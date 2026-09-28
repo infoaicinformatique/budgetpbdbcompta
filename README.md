@@ -114,6 +114,11 @@ DN du groupe, sur un contrôleur de domaine (PowerShell) :
 
 Sauvegarde : `sudo docker exec budgetpbdbcompta cat /data/droits.json > droits-$(date +%F).json`.
 
+**Déconnexion** : menu du compte › « Déconnexion ». L'authentification Basic
+n'en a pas : le bouton mène à `/deconnexion`, qui répond 401 une fois — le
+navigateur oublie alors ses identifiants — puis accepte ceux saisis dans la
+fenêtre qui suit (cookie `bm-deco`, deux minutes).
+
 ## Architecture de production
 
 ```
