@@ -1,23 +1,42 @@
-# Déploiement Docker dans /opt/docker/budgetpbdbcompta :
+# Déploiement Docker dans /opt/docker/budgetpbdbcompta (même modèle que anemo) :
 #   cp .env.example .env   (renseigner BASIC_AUTH_USER / BASIC_AUTH_PASSWORD)
 #   docker compose up -d --build
-# Nginx Proxy Manager redirige budgetpbdbcompta.aic-informatique.net vers <IP de l'hôte>:3000.
+# Nginx Proxy Manager : budgetpbdbcompta.aic-informatique.net → http://192.168.100.236:3000
 services:
   budgetpbdbcompta:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     image: budgetpbdbcompta:latest
     container_name: budgetpbdbcompta
     restart: unless-stopped
+    ports:
+      - "3000:3000"
     env_file:
+      # Identifiant / mot de passe d'accès : hors du dépôt, jamais dans l'image.
       - path: .env
         required: false
     environment:
-      HOST: 0.0.0.0
-      PORT: 3000
-    ports:
-      - "3000:3000"
+      - HOST=0.0.0.0
+      - PORT=3000
+      - TZ=Europe/Paris
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # La compression de budget-app.html au démarrage prend quelques secondes.
+      start_period: 20s
+    # L'application ne stocke rien côté serveur (les budgets vivent dans le
+    # navigateur) : conteneur en lecture seule, sans privilèges.
     read_only: true
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
+    networks:
+      - budgetnet
+
+networks:
+  budgetnet:
+    driver: bridge
