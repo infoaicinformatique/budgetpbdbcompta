@@ -7,7 +7,10 @@ ENV NODE_ENV=production \
     PORT=3000
 
 WORKDIR /app
-COPY package.json server.mjs budget-app.html ./
+# Dépendances de production seulement (ldapts, pour l'authentification LDAP).
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev && npm cache clean --force
+COPY server.mjs auth-ldap.mjs budget-app.html ./
 
 USER node
 EXPOSE 3000

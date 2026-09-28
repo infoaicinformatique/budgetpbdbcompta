@@ -10,16 +10,67 @@ URL de production : **https://budgetpbdbcompta.aic-informatique.net**
 ## Lancer en local
 
 ```bash
+npm ci                    # une fois : ldapts, seule dépendance
 npm start                 # http://127.0.0.1:3000
+npm test                  # tests de l'authentification LDAP
 ```
 
-`server.mjs` (Node ≥ 22, aucune dépendance) ne sert que l'application :
+`server.mjs` (Node ≥ 22) ne sert que l'application :
 `/` renvoie `budget-app.html` compressé (brotli/gzip), `/healthz` répond `ok`,
 tout le reste (document de reprise, Excel, scripts) renvoie 404.
 
 Variables (voir `.env.example`) : `HOST`, `PORT`, `PUBLIC_HOST`,
-`BASIC_AUTH_USER` / `BASIC_AUTH_PASSWORD` (protection par mot de passe,
-recommandée : l'application embarque le plan comptable et les budgets).
+`BASIC_AUTH_USER` / `BASIC_AUTH_PASSWORD` (compte local),
+`LDAP_*` (annuaire, voir « Authentification LDAP »), `TRUST_PROXY`.
+Une protection est recommandée : l'application embarque le plan comptable et
+les budgets.
+
+## Authentification LDAP
+
+Le serveur peut vérifier les identifiants dans un annuaire (Active Directory,
+OpenLDAP…) au lieu d'un mot de passe unique. La fenêtre de connexion reste
+celle du navigateur ; l'identifiant et le mot de passe saisis sont vérifiés
+par une connexion (« bind ») à l'annuaire au nom de l'utilisateur
+(`auth-ldap.mjs`). Rien n'est stocké côté serveur.
+
+Configuration dans `.env` (modèles commentés dans `.env.example`) :
+
+| Cas | Variables |
+| --- | --- |
+| Active Directory, tous les comptes du domaine | `LDAP_URL=ldaps://dc1.exemple.local:636` et `LDAP_USER_DN={username}@exemple.local` |
+| OpenLDAP, DN prévisible | `LDAP_USER_DN=uid={username},ou=people,dc=exemple,dc=fr` |
+| Réservé à un groupe | `LDAP_SEARCH_BASE`, `LDAP_SEARCH_FILTER`, `LDAP_BIND_DN` / `LDAP_BIND_PASSWORD` (compte de service en lecture) et `LDAP_GROUP_DN` |
+
+Comportement :
+
+- le compte local `BASIC_AUTH_*`, s'il est renseigné, reste accepté : c'est
+  l'accès de secours quand l'annuaire est en panne (le garder long et secret) ;
+- une connexion réussie est mémorisée `LDAP_CACHE_SECONDS` (300 s par défaut) :
+  un compte désactivé dans l'annuaire perd l'accès au plus tard après ce délai ;
+- 5 échecs en 15 minutes depuis une même adresse → 429 pendant le reste de la
+  fenêtre (protège aussi les comptes AD du verrouillage). Derrière NPM,
+  `TRUST_PROXY=true` (imposé par `docker-compose.yml`) lit l'adresse dans
+  `X-Real-IP` : le port 3000 ne doit être joignable que par NPM (voir ufw) ;
+- annuaire injoignable → 503 ; configuration LDAP incomplète → le conteneur
+  refuse de démarrer (`sudo docker logs budgetpbdbcompta`) ;
+- mot de passe vide et identifiants hors `[A-Za-z0-9._@-]` refusés sans
+  interroger l'annuaire.
+
+Préférer `ldaps://` ou `LDAP_STARTTLS=true` : en `ldap://` simple, les mots de
+passe traversent le réseau en clair. Pour une autorité de certification
+interne, voir le bloc `volumes` commenté de `docker-compose.yml` et
+`LDAP_CA_FILE`.
+
+Vérification sur le serveur après `sudo docker compose up -d` :
+
+```bash
+sudo docker logs budgetpbdbcompta 2>&1 | grep -A2 Authentification   # « annuaire LDAP : ldaps://… »
+curl -I -u 'prenom.nom' http://127.0.0.1:3000                         # 200 avec un compte de l'annuaire
+sudo docker logs budgetpbdbcompta 2>&1 | grep 'Connexion LDAP'        # connexions acceptées / refusées
+```
+
+Les comptes de l'onglet Autorisations de l'application sont indépendants :
+ils restent propres à chaque navigateur.
 
 ## Architecture de production
 
@@ -215,6 +266,10 @@ Watchtower (il ne remplace que l'image) : après un changement de
 | 502 Bad Gateway | conteneur démarré (`sudo docker ps`) ; IP / port du Proxy Host ; depuis la machine NPM : `curl -I http://<IP hôte Docker>:3000` → 401 |
 | Page d'un autre site | nom de domaine exact dans le Proxy Host |
 | Mot de passe refusé | valeurs de `.env`, puis `sudo docker compose up -d` pour les recharger |
+| LDAP : 503 « Annuaire indisponible » | `sudo docker logs budgetpbdbcompta` : `ECONNREFUSED`/`ETIMEDOUT` → réseau ou port ; `certificate` → `LDAP_CA_FILE` ; « compte de service LDAP refusé » → `LDAP_BIND_DN` / `LDAP_BIND_PASSWORD` |
+| LDAP : identifiants corrects mais refusés | journal « Connexion LDAP refusée » : vérifier `LDAP_USER_DN` / `LDAP_SEARCH_FILTER`, puis l'appartenance à `LDAP_GROUP_DN` (membre direct, pas via un sous-groupe) |
+| LDAP : 429 « Trop d'essais » | 5 échecs en 15 min depuis la même adresse ; attendre, ou `sudo docker restart budgetpbdbcompta` |
+| Le conteneur redémarre en boucle après l'ajout de LDAP | « Démarrage refusé » dans `sudo docker logs budgetpbdbcompta` : variable LDAP manquante ou contradictoire |
 
 Journaux : `sudo docker logs budgetpbdbcompta --tail 50`, `sudo docker logs npm`,
 et le journal certbot de NPM dans `/opt/docker/npm/data/logs/letsencrypt.log`.
@@ -226,6 +281,7 @@ Service systemd (`deploy/budgetpbdbcompta.service`, variables dans
 
 ```bash
 sudo git clone https://github.com/infoaicinformatique/budgetpbdbcompta.git /opt/budgetpbdbcompta
+cd /opt/budgetpbdbcompta && sudo npm ci --omit=dev                      # ldapts ; à refaire après un git pull qui change package-lock.json
 sudo cp /opt/budgetpbdbcompta/.env.example /etc/budgetpbdbcompta.env   # HOST=0.0.0.0 si NPM est sur une autre machine
 sudo cp /opt/budgetpbdbcompta/deploy/budgetpbdbcompta.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now budgetpbdbcompta

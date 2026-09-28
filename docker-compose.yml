@@ -23,6 +23,15 @@ services:
       - HOST=0.0.0.0
       - PORT=3000
       - TZ=Europe/Paris
+      # Derrière Nginx Proxy Manager : adresse du client lue dans X-Real-IP
+      # (limitation des essais de mot de passe). Suppose que seul NPM joint
+      # le port 3000 (voir README, ufw).
+      - TRUST_PROXY=true
+    # Autorité de certification de l'annuaire LDAP, si elle est interne :
+    # déposer le fichier à côté de ce compose, décommenter, et renseigner
+    # LDAP_CA_FILE=/certs/ldap-ca.pem dans .env.
+    # volumes:
+    #   - ./ldap-ca.pem:/certs/ldap-ca.pem:ro
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/healthz"]
       interval: 30s
