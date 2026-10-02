@@ -77,6 +77,67 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Données tenues par le serveur : rien dans le navigateur (02/10/2026)
+
+Demande : « ne stocke rien dans le navigateur. Lorsqu'un administrateur
+rajoute par exemple une société, ça doit être intégré dans la base de
+données du serveur, les droits également » (build `2026-10-02.2`). Cause du
+besoin : f.leguillanton, droits paramétrés, voyait « Aucun budget à
+afficher » — ses droits désignaient des sociétés qui n'existaient que dans
+le navigateur de l'administrateur (identifiants `uid` propres à chaque
+poste). **Revient sur la règle « aucune donnée budgétaire sur le serveur »**,
+choix validé par l'utilisateur.
+
+**Serveur (`data.mjs`, `/api/donnees`).** Un fichier `DATA_FILE`
+(`/data/budget.json`, volume existant), écrit de façon atomique, avec
+`historique/` (une copie au plus toutes les dix minutes, 200 gardées).
+`scopeOf` refait le calcul d'`allowedCompanyIds` (environnements → groupes →
+sociétés, réduit par `allowedCompanies`) ; `filterState` ne transmet que ces
+sociétés et ce qui s'y rattache (lignes, versions, collaborateurs, CA,
+objectifs, journal, dictionnaires par société, événements réduits à ces
+sociétés), groupes et environnements réduits d'autant. `mergeState` ne
+reprend que les sociétés **déclarées modifiées** par l'envoi
+(`changedCompanies`, `sharedChanged`) et du périmètre ; création,
+suppression de société et éléments communs exigent un périmètre complet
+(`canEditShared`). Jamais d'effacement par omission. Chaque société garde la
+révision de sa dernière modification : une écriture sur une base plus
+ancienne qui la touche est refusée (409, nom de la société et de l'auteur).
+
+**Application.** Mode serveur = page servie avec une identité (`serverSession`).
+`boot()` lit `/api/donnees` (`loadServerData`) et ne touche plus au stockage
+local ; `persist()` passe par `persistToServer` (déclaration calculée par
+`serverChangesBetween` depuis le dernier envoi), réessaie après une panne,
+recharge et prévient sur un 409. Relecture avec celle des droits
+(`refreshServerData`, révision seule tant que rien ne change), rechargement
+si les droits changent. `SERVER_PRIVATE_KEYS` (comptes locaux, journal de
+sécurité, société/environnement/scénario affichés) ne partent jamais.
+`adoptServerState` garde les choix d'affichage du poste et n'invente aucune
+société pour un périmètre vide (`emptyServerState`, là où `adoptState`
+remettrait les sociétés d'origine). Exports : l'état affiché, pas la copie
+locale. Code d'accès refusé (rien à protéger localement), import d'une copie
+chiffrée refusé.
+
+**Mise en service.** Base vide : Paramètres › Données le dit ; un
+administrateur publie l'ancienne copie de son navigateur (détectée, jamais
+adoptée) ou restaure une sauvegarde JSON. La copie locale est effacée après
+publication ; un bouton l'efface aussi sur les autres postes.
+
+Contrôles : seuls `/api/droits` et `/api/donnees(/revision)` sortent ;
+`persist()` et `boot()` n'écrivent ni ne lisent le stockage local en mode
+serveur (retirer la garde fait échouer le contrôle, vérifié) ; clés privées
+jamais envoyées ; état vide sans société inventée ; choix d'affichage
+conservés ; Paramètres › Données ; déclaration des modifications. 520
+contrôles. `npm test` : 10 tests de `data.mjs` (périmètre, filtrage,
+écriture restreinte, omission, création/suppression, conflits, copie
+périmée d'un autre poste, historique). Essai de bout en bout dans Chromium
+(serveur local, compte local) : base vide, publication de la copie locale,
+saisie enregistrée sur le serveur et rien dans le navigateur, rechargement,
+conflit sur la même société, deux sociétés en parallèle, relecture.
+
+Non fait : limites d'un directeur contrôlées par le serveur (ajout de ligne,
+centres autorisés) — toujours appliquées par l'application seulement ;
+essai avec l'annuaire réel et un périmètre restreint.
+
 ### Droits mis à jour sans recharger la page (02/10/2026)
 
 Constat : « si l'administrateur donne des droits, je ne vois pas le compte

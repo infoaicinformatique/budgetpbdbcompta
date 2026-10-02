@@ -17,7 +17,8 @@ documentation. Les identifiants JS restent en anglais, en camelCase.
 | `budget-app.html` | **L'application entière** (~30 000 lignes, 1,7 Mo), zéro dépendance, zéro réseau |
 | `server.mjs` | Serveur Node ≥ 22 : sert seulement `/` (brotli/gzip), `/healthz`, auth Basic (compte local et/ou LDAP) ; tout le reste → 404. Dépose le cookie `bm-auth` (identité + config LDAP publique) lu par Paramètres › LDAP. `/api/droits` : droits par personne de l'annuaire |
 | `rights.mjs` | Fichier des droits (`RIGHTS_FILE`, volume Docker `droits`), contrôle de forme, dernier administrateur protégé, `RIGHTS_ADMINS` |
-| `auth-ldap.mjs`, `test/` | Vérification LDAP (seule dépendance : `ldapts`) et ses tests (`npm test`) |
+| `data.mjs` | Données budgétaires tenues par le serveur (`DATA_FILE`, même volume, `historique/`) : périmètre par droits (`scopeOf`), lecture filtrée, fusion des seules sociétés déclarées modifiées, conflits par société (409). `/api/donnees` dans `server.mjs` |
+| `auth-ldap.mjs`, `test/` | Vérification LDAP (seule dépendance : `ldapts`) et tests serveur (`npm test` : LDAP, droits, données) |
 | `excel-grid/` | Prototype tableur React/Vite **et** outillage : moteur de référence `src/engine/chart.ts`, imports, validation |
 | `scripts-doc/rebuild-doc.mjs` | Régénère la section 7 de `REPRISE-PROJET.md` |
 | `scripts-fx/taux-du-jour.mjs` | Utilitaire manuel : taux BCE (Frankfurter) à recopier dans Sociétés > Taux de change |
@@ -53,16 +54,28 @@ Invariants techniques :
 - **SAS réseau** : `fetch`, XHR, WebSocket… sont neutralisés au démarrage.
   Aucune fonctionnalité ne doit appeler le réseau ni charger de ressource externe.
   Seule exception : `serverRequest` (CSP `connect-src 'self'`), limité aux
-  chemins `/api/droits`, pour les droits tenus par le serveur — jamais de données.
+  chemins `/api/droits` (droits) et `/api/donnees` (données de la personne).
+- **Données tenues par le serveur** (depuis le 02/10/2026) : en mode serveur
+  (`serverData` non nul), `boot()` lit `/api/donnees` et `persist()` y renvoie
+  l'état (`persistToServer`) en déclarant les sociétés modifiées
+  (`serverChangesBetween`) — **rien n'est écrit dans le navigateur**, ni
+  sauvegarde automatique, ni code d'accès. Les clés `SERVER_PRIVATE_KEYS`
+  (comptes locaux, journal de sécurité, choix d'affichage) ne partent jamais.
+  Toute nouvelle donnée rattachée à une société doit être ajoutée à la fois à
+  `COMPANY_KEYED_STATE`/`SERVER_COMPANY_ARRAYS` (application) et à
+  `COMPANY_DICTS`/`COMPANY_ARRAYS` (data.mjs), sinon elle serait traitée comme
+  un élément commun.
 - **Droits tenus par le serveur** : page servie avec une identité (cookie
   `bm-auth`, voie ldap/local) → `serverSession` ; `currentUser()` rend un compte
   bâti sur la fiche du serveur (`serverUserFromRights`) et `usersOf()` la liste
   des personnes de l'annuaire. Autorisations est fermé, les droits se règlent
   dans Paramètres › Droits d'accès. Sans fiche : Paramètres seulement.
 - Aucune librairie : lecture et écriture .xlsx faites main (ZIP stocké, CRC32).
-- Stockage dans le navigateur uniquement : IndexedDB `budget-manager-db`
-  (store `kv`, clé `budget-hemasphere-v2`) avec repli localStorage ; le serveur
-  ne stocke aucune donnée budgétaire (seulement les droits). Toute évolution du format d'état exige une migration.
+- Hors mode serveur (fichier local, http simple) : stockage dans le navigateur,
+  IndexedDB `budget-manager-db` (store `kv`, clé `budget-hemasphere-v2`) avec
+  repli localStorage. En mode serveur : `/data/budget.json`. Toute évolution du
+  format d'état exige une migration (elle s'applique aussi à l'état reçu du
+  serveur, via `adoptState`).
 - Style JS : `function () {}`, `const`/`let`, pas de modules ni de build.
 
 ## Règles métier (dictées par Alexis — ne pas les changer sans demande)

@@ -114,6 +114,42 @@ DN du groupe, sur un contrôleur de domaine (PowerShell) :
 
 Sauvegarde : `sudo docker exec budgetpbdbcompta cat /data/droits.json > droits-$(date +%F).json`.
 
+## Données budgétaires sur le serveur (`/api/donnees`)
+
+Depuis le 02/10/2026, servie avec une identité (LDAP ou compte local), en
+HTTPS, l'application **n'enregistre rien dans le navigateur** : sociétés,
+budgets, collaborateurs, CA, objectifs… sont lus et écrits sur le serveur
+(`data.mjs`).
+
+- **Ce que chacun reçoit** : les seules sociétés de ses droits (même calcul
+  que dans l'application : environnements → groupes → sociétés, réduit par
+  la sélection de sociétés), et ce qui s'y rattache. Pas les salaires ni les
+  lignes des autres sociétés.
+- **Ce que chacun écrit** : ses sociétés. Créer ou supprimer une société,
+  modifier groupes, environnements, plans, scénarios, taux : contrôleur sans
+  restriction (ou administrateur sans restriction) seulement.
+- **Saisies simultanées** : chaque envoi déclare les sociétés modifiées et la
+  révision de départ. Une société modifiée entre-temps par quelqu'un d'autre
+  est refusée (409) ; la page recharge les données à jour et le dit. Deux
+  personnes sur des sociétés différentes ne se gênent pas. Les modifications
+  des autres arrivent à la relecture (chaque minute, et au retour sur
+  l'onglet).
+- **Stockage** : `DATA_FILE` (Docker : `/data/budget.json`, même volume que
+  les droits), écrit de façon atomique, et `historique/` à côté : une copie
+  au plus toutes les dix minutes, les 200 dernières gardées.
+- **Mise en service** : la base est vide au premier lancement. Un
+  administrateur ouvre **Paramètres › Données** depuis le navigateur où les
+  budgets ont été préparés (l'ancienne copie locale y est détectée) et clique
+  « Publier sur le serveur » ; ou restaure une sauvegarde JSON (Export).
+  Les identifiants des sociétés publiées sont ceux que les fiches de droits
+  désignent déjà. La copie locale est ensuite effacée.
+- **Hors serveur** (fichier ouvert en local, http simple) : l'application
+  garde son ancien fonctionnement, tout dans le navigateur.
+
+Sauvegarde : `sudo docker exec budgetpbdbcompta cat /data/budget.json > budget-$(date +%F).json`.
+Revenir à une version : copier un fichier de `/data/historique/` sur
+`/data/budget.json` (conteneur arrêté).
+
 **Déconnexion** : menu du compte › « Déconnexion ». L'authentification Basic
 n'en a pas : le bouton mène à `/deconnexion`, qui répond 401 une fois — le
 navigateur oublie alors ses identifiants — puis accepte ceux saisis dans la

@@ -3279,23 +3279,28 @@
    dans l'en-tête : si un copier-coller malheureux introduisait un jour un
    appel réseau, il échouerait bruyamment au lieu d'envoyer un budget.
    ================================================================== */
-/* Seule porte laissée entrouverte : les droits d'accès tenus par le
-   serveur qui a servi la page (Paramètres › Droits d'accès, voir
-   `loadServerSession`). `serverRequest` garde pour lui le `fetch` d'origine
-   avant qu'il ne soit neutralisé, et n'accepte qu'un chemin relatif sous
-   `/api/droits` — jamais une autre adresse, jamais un budget. `null` là où
-   `fetch` n'existe pas. */
+/* Seules portes laissées entrouvertes, vers le serveur qui a servi la
+   page : les droits d'accès (`/api/droits`, voir `loadServerSession`) et,
+   depuis le 02/10/2026, les données budgétaires de la personne connectée
+   (`/api/donnees`, voir « Données tenues par le serveur »). `serverRequest`
+   garde pour lui le `fetch` d'origine avant qu'il ne soit neutralisé, et
+   n'accepte que ces chemins relatifs — jamais une autre adresse. `null` là
+   où `fetch` n'existe pas. */
 let serverRequest = null;
 /* Session et écran d'administration des droits tenus par le serveur :
    voir « Droits tenus par le serveur (annuaire) ». */
 let serverSession = null; // { method, account, user, error }
 let serverDirectory = null; // { loading, error, rows, list, groupDn, membersError }
+/* Données tenues par le serveur : voir la section du même nom. `null` hors
+   mode serveur (fichier ouvert en local, http simple) : l'application
+   garde alors son stockage dans le navigateur. */
+let serverData = null;
 
 (function sealNetwork() {
   const nativeFetch = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null;
   if (nativeFetch) {
     serverRequest = function (method, path, body) {
-      if (!/^\/api\/droits(\/[A-Za-z0-9._@%-]+)?$/.test(String(path))) {
+      if (!/^\/api\/(droits(\/[A-Za-z0-9._@%-]+)?|donnees(\/revision)?)$/.test(String(path))) {
         return Promise.reject(new Error('Sortie réseau interdite (' + path + ').'));
       }
       const options = { method: method, credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers: {} };
@@ -3305,7 +3310,12 @@ let serverDirectory = null; // { loading, error, rows, list, groupDn, membersErr
       }
       return nativeFetch(path, options).then(function (response) {
         return response.json().catch(function () { return {}; }).then(function (data) {
-          if (!response.ok) throw new Error(data && data.error ? data.error : 'Erreur ' + response.status);
+          if (!response.ok) {
+            const error = new Error(data && data.error ? data.error : 'Erreur ' + response.status);
+            error.status = response.status;
+            error.data = data;
+            throw error;
+          }
           return data;
         });
       });
@@ -3412,7 +3422,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-02.1';
+const APP_BUILD = '2026-10-02.2';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -7174,17 +7184,25 @@ function flushSave() {
    sur-le-champ plutôt que de laisser filer la dernière saisie.
    (Absent du harnais de test, qui n'a pas de `window`.) */
 if (typeof window !== 'undefined' && window.addEventListener) {
-  window.addEventListener('beforeunload', function () {
+  window.addEventListener('beforeunload', function (event) {
     if (saveTimer !== null) {
       clearTimeout(saveTimer);
       saveTimer = null;
       persist();
+    }
+    // Mode serveur : un envoi en cours ou refusé ne doit pas se perdre sans
+    // que la personne en soit avertie.
+    if (serverData && serverDataHasPendingChanges()) {
+      event.preventDefault();
+      event.returnValue = '';
     }
   });
 }
 
 async function persist() {
   if (!state) return;
+  // Mode serveur : rien n'est écrit dans le navigateur.
+  if (serverData) return persistToServer();
   try {
     // Horodatage de fraîcheur (Alexis : « fraîcheur des données affichée »)
     // — posé juste avant la sérialisation pour qu'il soit lui-même
@@ -9050,13 +9068,368 @@ async function refreshServerSession() {
 /** Relecture périodique (fenêtre visible seulement) et au retour au premier plan. */
 function startServerRightsRefresh() {
   if (!serverSession || typeof document === 'undefined' || typeof window === 'undefined') return;
+  const tick = function () {
+    refreshServerSession().then(function (rightsChanged) {
+      // Droits changés : le périmètre aussi, donc les sociétés reçues.
+      if (rightsChanged && serverData) return reloadServerData(null);
+      return refreshServerData();
+    });
+  };
   setInterval(function () {
-    if (document.visibilityState !== 'hidden') refreshServerSession();
+    if (document.visibilityState !== 'hidden') tick();
   }, SERVER_RIGHTS_REFRESH_MS);
   document.addEventListener('visibilitychange', function () {
-    if (document.visibilityState === 'visible') refreshServerSession();
+    if (document.visibilityState === 'visible') tick();
   });
-  window.addEventListener('focus', function () { refreshServerSession(); });
+  window.addEventListener('focus', tick);
+}
+
+/* ==================================================================
+   DONNÉES TENUES PAR LE SERVEUR (02/10/2026)
+
+   Demande : « ne stocke rien dans le navigateur. Lorsqu'un administrateur
+   rajoute une société, ça doit être intégré dans la base de données du
+   serveur, les droits également. » Servie avec une identité, la page lit
+   ses données sur `/api/donnees` au démarrage et les y renvoie à chaque
+   enregistrement, au lieu d'IndexedDB. Le serveur (data.mjs) ne transmet
+   que les sociétés du périmètre de la personne et n'accepte d'elle que
+   celles-là ; groupes, environnements, plans et réglages communs ne
+   s'écrivent qu'avec un périmètre sans restriction.
+
+   Rien n'est écrit dans le navigateur : ni données, ni sauvegarde
+   automatique, ni code d'accès. Une ancienne copie locale (d'avant ce
+   mode) est seulement détectée, pour qu'un administrateur puisse la
+   publier une fois, ou l'effacer.
+
+   Saisies simultanées : chaque envoi porte la révision reçue ; si une
+   société envoyée a été modifiée entre-temps par quelqu'un d'autre, le
+   serveur refuse (409) et la page recharge les données à jour, avec un
+   message. Les modifications des autres arrivent à la relecture
+   périodique (`refreshServerData`, avec celle des droits).
+   ================================================================== */
+
+/* Ce qui ne part jamais au serveur : comptes et journal propres au mode
+   local, choix d'affichage propres au poste. Même liste que PRIVATE_KEYS
+   dans data.mjs. */
+const SERVER_PRIVATE_KEYS = ['users', 'authLog', 'activeCompany', 'activeEnvironmentId', 'activeScenario', 'lastSavedAt'];
+const SERVER_RETRY_MS = 10000;
+/* Découpage par société : même liste que COMPANY_ARRAYS / COMPANY_DICTS
+   dans data.mjs (les dictionnaires sont ceux de COMPANY_KEYED_STATE). */
+const SERVER_COMPANY_ARRAYS = ['lines', 'versions', 'employees', 'caLines', 'objectives', 'editLog'];
+
+/**
+ * Ce qu'un envoi a modifié depuis le précédent : sociétés (ajoutées,
+ * supprimées ou changées) et éléments communs. Le serveur ne reprend que
+ * cela — un poste renvoie tout son état, y compris des sociétés qu'un autre
+ * vient de modifier et dont sa copie est périmée.
+ */
+function serverChangesBetween(previous, next) {
+  const slices = function (payload) {
+    const out = Object.create(null);
+    const ids = new Set();
+    for (const c of payload.companies || []) if (c && c.id) ids.add(c.id);
+    for (const id of ids) {
+      const slice = { company: (payload.companies || []).find(function (c) { return c && c.id === id; }) };
+      for (const key of SERVER_COMPANY_ARRAYS) {
+        slice[key] = (payload[key] || []).filter(function (x) { return x && x.companyId === id; });
+      }
+      for (const key of COMPANY_KEYED_STATE) slice[key] = (payload[key] || {})[id];
+      slice.caEvents = (payload.caEvents || []).filter(function (e) { return e && (e.companyIds || []).indexOf(id) !== -1; });
+      out[id] = JSON.stringify(slice);
+    }
+    return out;
+  };
+  const sharedOf = function (payload) {
+    const special = new Set(['companies', 'caEvents'].concat(SERVER_COMPANY_ARRAYS, COMPANY_KEYED_STATE, SERVER_PRIVATE_KEYS));
+    const out = {};
+    for (const key of Object.keys(payload).sort()) if (!special.has(key)) out[key] = payload[key];
+    return JSON.stringify(out);
+  };
+  const before = slices(previous || {});
+  const after = slices(next);
+  const changed = [];
+  for (const id of new Set(Object.keys(before).concat(Object.keys(after)))) {
+    if (before[id] !== after[id]) changed.push(id);
+  }
+  return { changedCompanies: changed, sharedChanged: sharedOf(previous || {}) !== sharedOf(next) };
+}
+
+/** Copie de l'état telle qu'elle part au serveur. */
+function serverStatePayload(source) {
+  const out = {};
+  for (const key of Object.keys(source || {})) {
+    if (SERVER_PRIVATE_KEYS.indexOf(key) === -1) out[key] = source[key];
+  }
+  return out;
+}
+
+/**
+ * État vide mais valide : personne sans société dans son périmètre, ou base
+ * pas encore publiée. `adoptState` remplacerait un état sans société par
+ * les sociétés d'origine (nouveaux identifiants, bientôt renvoyés au
+ * serveur) : ici, rien n'est inventé.
+ */
+function emptyServerState(raw) {
+  const base = defaultState();
+  base.companies = [];
+  base.activeCompany = null;
+  for (const key of ['lines', 'versions', 'employees', 'caLines', 'objectives', 'editLog', 'caEvents']) base[key] = [];
+  for (const key of COMPANY_KEYED_STATE) base[key] = {};
+  for (const key of Object.keys(raw || {})) {
+    if (key !== 'companies' && raw[key] !== undefined) base[key] = raw[key];
+  }
+  base.users = [];
+  base.authLog = [];
+  return base;
+}
+
+/**
+ * Adopte un état reçu du serveur en gardant les choix d'affichage du poste
+ * (société ouverte, environnement, scénario), qui ne voyagent pas.
+ */
+function adoptServerState(raw, updatedAt) {
+  const keep = state
+    ? { activeCompany: state.activeCompany, activeEnvironmentId: state.activeEnvironmentId, activeScenario: state.activeScenario }
+    : {};
+  const copy = Object.assign({}, raw || {});
+  const next = Array.isArray(copy.companies) && copy.companies.length ? adoptState(copy) : emptyServerState(copy);
+  for (const key of Object.keys(keep)) {
+    if (keep[key] !== undefined && keep[key] !== null) next[key] = keep[key];
+  }
+  if (next.activeCompany && !next.companies.some(function (c) { return c.id === next.activeCompany; })) {
+    next.activeCompany = next.companies[0] ? next.companies[0].id : null;
+  }
+  next.users = [];
+  next.authLog = [];
+  next.lastSavedAt = updatedAt || null;
+  return next;
+}
+
+/**
+ * Écriture permise ? Personne sans fiche ou données illisibles : non. Base
+ * vide : seulement avec un périmètre complet (première publication, par
+ * exemple après « Restaurer une sauvegarde »).
+ */
+function serverDataWritable() {
+  if (!serverData || serverData.error || !serverSession || !serverSession.user.configured) return false;
+  return serverData.ready || (serverData.empty && serverData.access.shared);
+}
+
+function serverDataHasPendingChanges() {
+  if (!serverDataWritable() || !state) return false;
+  return serverData.sending || saveTimer !== null || JSON.stringify(serverStatePayload(state)) !== serverData.lastSentJson;
+}
+
+/** Retient ce qui vient d'être reçu ou envoyé : base des comparaisons suivantes. */
+function markServerDataInSync() {
+  if (serverData && state) serverData.lastSentJson = JSON.stringify(serverStatePayload(state));
+}
+
+/** Lit l'ancienne copie de ce navigateur, sans l'adopter (publication ou effacement). */
+async function detectLocalCopy() {
+  try {
+    const raw = await storageGetRaw(STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.encrypted) return { encrypted: true, companies: 0, lastSavedAt: null, parsed: null };
+    if (!parsed || !Array.isArray(parsed.companies) || !parsed.companies.length) return null;
+    return { encrypted: false, companies: parsed.companies.length, lastSavedAt: parsed.lastSavedAt || null, parsed: parsed };
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Démarrage en mode serveur : lit les données, installe `serverData` et
+ * `state`. Ne lit jamais le stockage du navigateur pour s'en servir.
+ */
+async function loadServerData() {
+  serverData = { ready: false, revision: 0, empty: false, access: { unrestricted: false, shared: false },
+    updatedAt: null, updatedBy: null, error: null, sending: false, lastSentJson: null, localCopy: null, retryTimer: null };
+  serverData.localCopy = await detectLocalCopy();
+  try {
+    const res = await serverRequest('GET', '/api/donnees');
+    applyServerDataMeta(res);
+    if (res.empty) {
+      // Base pas encore publiée : rien à afficher ni à enregistrer tant
+      // qu'un administrateur ne l'a pas initialisée (Paramètres).
+      state = emptyServerState(null);
+    } else {
+      state = adoptServerState(res.state, res.updatedAt);
+      serverData.ready = true;
+    }
+  } catch (e) {
+    serverData.error = e.message || String(e);
+    state = emptyServerState(null);
+  }
+}
+
+function applyServerDataMeta(res) {
+  serverData.revision = Number(res.revision) || 0;
+  serverData.empty = Boolean(res.empty);
+  serverData.access = res.access || { unrestricted: false, shared: false };
+  serverData.updatedAt = res.updatedAt || null;
+  serverData.updatedBy = res.updatedBy || null;
+  serverData.error = null;
+}
+
+/** Recharge les données du serveur et réaffiche (conflit, droits changés, relecture). */
+async function reloadServerData(message) {
+  if (!serverData) return;
+  try {
+    const res = await serverRequest('GET', '/api/donnees');
+    applyServerDataMeta(res);
+    state = res.empty ? emptyServerState(null) : adoptServerState(res.state, res.updatedAt);
+    serverData.ready = !res.empty;
+  } catch (e) {
+    serverData.error = e.message || String(e);
+    if (message) showToast(message, true);
+    render();
+    return;
+  }
+  if (typeof resetStateIndexes === 'function') resetStateIndexes();
+  // L'historique d'annulation portait sur l'ancienne version : le rejouer
+  // réécrirait par-dessus ce que d'autres viennent d'enregistrer.
+  resetUndoHistory();
+  render();
+  markServerDataInSync();
+  if (message) showToast(message, true);
+}
+
+/** Envoi au serveur (appelé par `persist`). */
+async function persistToServer() {
+  if (!serverDataWritable()) return;
+  const payload = serverStatePayload(state);
+  const json = JSON.stringify(payload);
+  if (json === serverData.lastSentJson) return;
+  // Base vide : première publication, tout l'envoi fait foi (pas de déclaration).
+  const changes = serverData.empty ? null
+    : serverChangesBetween(serverData.lastSentJson ? JSON.parse(serverData.lastSentJson) : {}, payload);
+  serverData.sending = true;
+  try {
+    const res = await serverRequest('PUT', '/api/donnees', Object.assign(
+      { baseRevision: serverData.revision, state: payload }, changes || {}));
+    serverData.revision = Number(res.revision) || serverData.revision;
+    serverData.lastSentJson = json;
+    serverData.saveError = null;
+    if (serverData.empty) {
+      // Première publication faite d'ici : la base existe désormais.
+      serverData.empty = false;
+      serverData.ready = true;
+    }
+    state.lastSavedAt = new Date().toISOString();
+  } catch (e) {
+    serverData.sending = false;
+    if (e.status === 409) {
+      await reloadServerData('Non enregistré : ' + e.message + ' Les données à jour sont affichées ; refaites votre dernière saisie.');
+      return;
+    }
+    serverData.saveError = e.message || String(e);
+    showToast('Enregistrement sur le serveur impossible (' + serverData.saveError + ') : nouvel essai dans quelques secondes.', true);
+    if (serverData.retryTimer) clearTimeout(serverData.retryTimer);
+    serverData.retryTimer = setTimeout(function () { serverData.retryTimer = null; queuePersist(); }, SERVER_RETRY_MS);
+  } finally {
+    serverData.sending = false;
+  }
+}
+
+/**
+ * Relecture périodique : recharge si quelqu'un a enregistré depuis, sauf
+ * si une saisie de ce poste attend encore d'être envoyée (elle partira
+ * d'abord ; un éventuel conflit sera alors signalé).
+ */
+async function refreshServerData() {
+  if (!serverData || !serverData.ready || serverData.sending || serverDataHasPendingChanges()) return false;
+  try {
+    const res = await serverRequest('GET', '/api/donnees/revision');
+    if ((Number(res.revision) || 0) === serverData.revision) return false;
+  } catch (e) {
+    return false;
+  }
+  if (serverDataHasPendingChanges()) return false;
+  await reloadServerData(null);
+  return true;
+}
+
+/**
+ * Publication par un administrateur des données de ce navigateur
+ * (ancienne copie locale) : remplace celles du serveur, puis efface la
+ * copie locale. Le serveur garde l'ancienne version dans son historique.
+ */
+async function publishLocalCopy() {
+  const copy = serverData && serverData.localCopy;
+  if (!copy || !copy.parsed || !serverData.access.shared) return;
+  if (!confirmed({
+    key: 'server-data-publish',
+    title: 'Publier les données de ce navigateur ?',
+    body: copy.companies + ' société(s) remplaceront ' + (serverData.empty ? 'la base vide du serveur' : 'toutes les données du serveur') +
+      '. Les personnes connectées les verront à leur prochaine relecture. L’ancienne version reste dans l’historique du serveur.',
+    confirmLabel: 'Publier',
+  }, function () { publishLocalCopy(); })) return;
+  const candidate = adoptServerState(copy.parsed, null);
+  try {
+    const res = await serverRequest('PUT', '/api/donnees', { baseRevision: serverData.revision, state: serverStatePayload(candidate) });
+    serverData.revision = Number(res.revision) || serverData.revision;
+  } catch (e) {
+    showToast('Publication impossible : ' + (e.message || e), true);
+    return;
+  }
+  await clearLocalCopy(true);
+  await reloadServerData(null);
+  showToast('Données publiées sur le serveur : ' + copy.companies + ' société(s).');
+}
+
+/** Efface l'ancienne copie de ce navigateur (données et marqueur de copie intégrée). */
+async function clearLocalCopy(silent) {
+  try {
+    await storageSetRaw(STORAGE_KEY, '');
+  } catch (e) {
+    if (!silent) showToast('Effacement impossible : ' + (e.message || e), true);
+    return;
+  }
+  if (serverData) serverData.localCopy = null;
+  if (!silent) {
+    showToast('Copie locale effacée de ce navigateur.');
+    render();
+  }
+}
+
+/** Paramètres › Données : état de la synchronisation, publication, copie locale. */
+function parametresDonneesPanel() {
+  if (!serverData) return '';
+  const user = serverSession.user;
+  const parts = [];
+  if (serverData.error || serverData.saveError) {
+    parts.push('<div class="alert error">Données du serveur illisibles ou non enregistrées : ' + escapeHtml(serverData.error || serverData.saveError) +
+      '. Rechargez la page ; si cela persiste, prévenez un administrateur.</div>');
+  } else if (serverData.empty) {
+    parts.push(serverData.access.shared
+      ? '<div class="alert">La base du serveur est vide. Publiez les données de ce navigateur (ci-dessous) depuis le poste où les budgets ont été préparés, ' +
+        'ou restaurez une sauvegarde JSON (Export › Sauvegarde et remise à zéro) : elle partira sur le serveur.</div>'
+      : '<div class="alert">Les données n’ont pas encore été publiées sur le serveur par un administrateur.</div>');
+  } else {
+    parts.push('<p style="margin:0">Vos sociétés et budgets sont enregistrés sur le serveur, rien dans ce navigateur. ' +
+      (serverData.access.unrestricted ? 'Vous voyez toutes les sociétés.' : 'Vous voyez ' + state.companies.length + ' société(s) : celles de vos droits.') +
+      '</p>' +
+      '<p class="muted" style="margin:8px 0 0;font-size:13px">Révision ' + serverData.revision +
+      (serverData.updatedAt ? ' · dernier enregistrement le ' + escapeHtml(authDateLabel(serverData.updatedAt)) +
+        (serverData.updatedBy ? ' par ' + escapeHtml(serverData.updatedBy) : '') : '') + '</p>');
+  }
+  const copy = serverData.localCopy;
+  if (copy) {
+    if (copy.encrypted) {
+      parts.push('<div class="alert" style="margin-top:12px">Ce navigateur garde une ancienne copie protégée par un code d’accès : ' +
+        'elle ne peut pas être publiée d’ici. Exportez-la depuis la version locale de l’application si besoin, puis effacez-la.</div>');
+    } else {
+      parts.push('<p style="margin:12px 0 0">Ancienne copie trouvée dans ce navigateur : <strong>' + copy.companies + ' société(s)</strong>' +
+        (copy.lastSavedAt ? ', modifiée le ' + escapeHtml(authDateLabel(copy.lastSavedAt)) : '') + '.</p>');
+    }
+    parts.push('<div class="row" style="margin-top:10px">' +
+      (!copy.encrypted && serverData.access.shared && user.configured
+        ? '<button class="action" data-server-data-publish="1">Publier sur le serveur</button>' : '') +
+      '<button class="action ghost" data-server-data-clear="1">Effacer la copie de ce navigateur</button></div>');
+  }
+  return panel('parametres-donnees', 'Données', parts.join(''), { open: Boolean(serverData.empty || serverData.error || copy) });
 }
 
 /**
@@ -22978,6 +23351,7 @@ function viewParametresServeur() {
     hint: 'Votre compte, la connexion à l’annuaire' + (isAdminUser(user) ? ' et les droits d’accès de chacun.' : '.'),
     body:
       panel('parametres-compte', 'Mon compte', accountBody, { open: true }) +
+      parametresDonneesPanel() +
       parametresLdapPanel() +
       (isAdminUser(user) && !serverSession.error ? parametresDroitsPanels() : ''),
   });
@@ -24797,7 +25171,9 @@ function backupDirCard() {
 async function exportFullAppData() {
   let raw;
   try {
-    raw = await storageGetRaw(STORAGE_KEY);
+    // Mode serveur : rien dans le navigateur, on exporte ce qui est affiché
+    // (les sociétés du périmètre de la personne).
+    raw = serverData ? JSON.stringify(serverStatePayload(state)) : await storageGetRaw(STORAGE_KEY);
   } catch (e) {
     showAppError('Export impossible : ' + (e && e.message ? e.message : e));
     return;
@@ -24876,6 +25252,11 @@ async function importFullAppData(file) {
     return;
   }
 
+  if (isEncrypted && serverData) {
+    showAppError('Import impossible : une copie protégée par un code ne peut pas être importée sur le serveur. ' +
+      'Ouvrez-la dans la version locale de l’application, retirez le code, exportez-la, puis importez ce fichier.');
+    return;
+  }
   if (isEncrypted) {
     try {
       await storageSetRaw(STORAGE_KEY, raw);
@@ -24951,7 +25332,9 @@ function exportedPayloadIsEncrypted(raw) {
 async function exportStandaloneAppData() {
   let raw;
   try {
-    raw = await storageGetRaw(STORAGE_KEY);
+    // Mode serveur : rien dans le navigateur, on exporte ce qui est affiché
+    // (les sociétés du périmètre de la personne).
+    raw = serverData ? JSON.stringify(serverStatePayload(state)) : await storageGetRaw(STORAGE_KEY);
   } catch (e) {
     showAppError('Export impossible : ' + (e && e.message ? e.message : e));
     return;
@@ -29484,6 +29867,12 @@ document.getElementById('view').addEventListener('change', function (event) {
 });
 
 function handleSecurity(action) {
+  // Mode serveur : rien n'est enregistré dans ce navigateur, un code d'accès
+  // n'y protégerait rien.
+  if (serverData && (action === 'set' || action === 'change')) {
+    showToast('Inutile ici : vos données sont sur le serveur, rien n’est enregistré dans ce navigateur.', true);
+    return;
+  }
   if (action === 'set' || action === 'change') {
     showLock('definir', action === 'change'
       ? 'Choisissez le nouveau code d’accès.'
@@ -30221,6 +30610,16 @@ document.getElementById('view').addEventListener('click', async function (event)
 
   // Paramètres › Droits d'accès (comptes de l'annuaire, droits sur le serveur).
   if (target.closest('[data-server-rights-reload]')) { loadServerDirectory(); render(); return; }
+  if (target.closest('[data-server-data-publish]')) { publishLocalCopy(); return; }
+  if (target.closest('[data-server-data-clear]')) {
+    if (confirmed({
+      key: 'server-data-clear-local',
+      title: 'Effacer la copie de ce navigateur ?',
+      body: 'L’ancienne copie locale sera supprimée de ce navigateur. Les données du serveur ne sont pas touchées.',
+      confirmLabel: 'Effacer',
+    }, function () { clearLocalCopy(false); })) clearLocalCopy(false);
+    return;
+  }
   const serverRevoke = target.closest('[data-server-rights-revoke]');
   if (serverRevoke) { revokeServerRights(serverRevoke.dataset.serverRightsRevoke); return; }
   const serverSaveRole = target.closest('[data-server-rights-save-role]');
@@ -30739,6 +31138,19 @@ async function boot() {
   await loadServerSession();
   // Puis tenus à jour tant que la page reste ouverte.
   startServerRightsRefresh();
+  // Mode serveur : les données viennent du serveur, jamais du navigateur.
+  if (serverSession) {
+    await loadServerData();
+    tab = serverData.ready ? serverLandingTab() : 'parametres';
+    maybeShowWelcomeOnEntry();
+    resetUndoHistory();
+    render();
+    markServerDataInSync();
+    if (serverData.empty && serverData.access.shared) {
+      showToast('La base du serveur est vide : publiez les données depuis Paramètres › Données.');
+    }
+    return;
+  }
   let parsed = null;
   try {
     await migrateStorageToIndexedDbIfNeeded();
