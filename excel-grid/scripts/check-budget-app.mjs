@@ -1256,6 +1256,11 @@ check('Données tenues par le serveur : Paramètres › Données', () => {
     assert.ok(app.viewParametres().includes('data-panel="parametres-donnees"'), 'rubrique Données dans Paramètres');
 
     app.__clearSaveTimer();
+    // FS_ACCESS_SUPPORTED est faux sous Node : on vérifie les gardes dans le source.
+    assert.ok(/function backupDirCard\(\) \{[\s\S]{0,400}?if \(serverData\) return '';/.test(html),
+      'pas de dossier de sauvegarde automatique proposé en mode serveur');
+    assert.ok(/async function writeAutoBackup\(\) \{\s*if \(!backupDirHandle \|\| !state \|\| serverData\) return;/.test(html),
+      'aucune sauvegarde automatique écrite sur le poste en mode serveur');
     app.markServerDataInSync();
     assert.equal(app.serverDataHasPendingChanges(), false);
     app.state.exchangeRates = Object.assign({}, app.state.exchangeRates, { XXX: 2 });

@@ -24999,7 +24999,7 @@ function backupFilename() {
  * remontées à l'utilisateur en pleine saisie).
  */
 async function writeAutoBackup() {
-  if (!backupDirHandle || !state) return;
+  if (!backupDirHandle || !state || serverData) return;
   try {
     const opts = { mode: 'readwrite' };
     let permission = await backupDirHandle.queryPermission(opts);
@@ -25127,6 +25127,9 @@ function exportDirCard() {
 /** Petite carte affichée en haut de l'onglet Export, à côté du dossier d'enregistrement des exports. */
 function backupDirCard() {
   if (!FS_ACCESS_SUPPORTED) return ''; // le message de repli de exportDirCard() couvre déjà ce cas
+  // Mode serveur : rien n'est écrit sur ce poste, l'historique est tenu par
+  // le serveur (data.mjs) — proposer un dossier induirait en erreur.
+  if (serverData) return '';
   if (!backupDirHandle) {
     return panel('securite-sauvegardes', 'Sauvegardes automatiques',
       '<div class="row" style="justify-content:space-between;align-items:center;gap:10px">' +
