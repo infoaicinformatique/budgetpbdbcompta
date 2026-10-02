@@ -512,7 +512,8 @@ const app = await importApp(
     'export { viewSecurite, securiteBody, affichageBody, autorisationsBody,\n' +
     '  viewParametres, serverAuthInfo, parametresLdapBody, SERVER_AUTH_COOKIE,\n' +
     '  serverRequest, adoptServerSession, buildServerDirectory, serverRightsPayload, serverUserFromRights,\n' +
-    '  serverLandingTab, sessionUsername, isServerUserId, applyPagePermissions };\n' +
+    '  serverLandingTab, sessionUsername, isServerUserId, applyPagePermissions,\n' +
+    '  applyRefreshedServerRights, serverRightsSignature };\n' +
     'export function __clearServerSession() { serverSession = null; serverDirectory = null; }\n' +
     'export function __setServerDirectory(v) { serverDirectory = v; }\n' +
     'export function __setAuthPermissionsIdForTest(v) { authPermissionsId = v; }\n' +
@@ -1102,6 +1103,47 @@ check('Droits tenus par le serveur : directeur borné par sa fiche, Autorisation
     assert.equal(app.tabAllowedNow('conso'), true, 'permissions null = droits par défaut du rôle');
   } finally {
     app.__clearServerSession();
+  }
+});
+
+check('Droits mis à jour sans recharger la page (02/10/2026)', () => {
+  const savedTab = app.__getTab();
+  try {
+    app.adoptServerSession({ method: 'ldap', account: 'f.dupont', displayName: 'F. Dupont', rights: {
+      role: 'directeur', isAdmin: false, permissions: { saisie: ['saisie-ajouter'] },
+      allowedCompanies: null, allowedCostCenters: null, environmentIds: [],
+    } }, null);
+    const own = app.currentUser();
+    app.__setTab('saisie');
+    assert.equal(app.tabAllowedNow('pnl'), false);
+
+    // Fiche inchangée : rien ne bouge.
+    assert.equal(app.applyRefreshedServerRights({ account: 'f.dupont', rights: {
+      role: 'directeur', isAdmin: false, permissions: { saisie: ['saisie-ajouter'] },
+      allowedCompanies: null, allowedCostCenters: null, environmentIds: [],
+    } }), false, 'une fiche identique ne doit pas réafficher');
+
+    // L'administrateur ouvre P&L et retire Saisie : appliqué sans rechargement.
+    assert.equal(app.applyRefreshedServerRights({ account: 'f.dupont', rights: {
+      role: 'directeur', isAdmin: false, permissions: { pnl: ['graphiques'] },
+      allowedCompanies: null, allowedCostCenters: null, environmentIds: [],
+    } }), true, 'un changement de fiche doit être détecté');
+    assert.strictEqual(app.currentUser(), own, 'le compte garde son objet (partagé avec l’écran d’administration)');
+    assert.equal(app.tabAllowedNow('pnl'), true, 'le nouvel onglet s’ouvre sans recharger');
+    assert.equal(app.tabAllowedNow('saisie'), false, 'l’onglet retiré se ferme sans recharger');
+    assert.notEqual(app.__getTab(), 'saisie', 'l’écran affiché quitte un onglet devenu interdit');
+
+    // Fiche retirée : plus que Paramètres.
+    assert.equal(app.applyRefreshedServerRights({ account: 'f.dupont', rights: null }), true);
+    assert.equal(app.tabAllowedNow('pnl'), false);
+    assert.equal(app.__getTab(), 'parametres');
+
+    // La relecture est bien branchée au démarrage.
+    assert.ok(/await loadServerSession\(\);\s*\/\/[^\n]*\n\s*startServerRightsRefresh\(\);/.test(html),
+      'boot() doit lancer la relecture des droits après loadServerSession');
+  } finally {
+    app.__clearServerSession();
+    app.__setTab(savedTab);
   }
 });
 

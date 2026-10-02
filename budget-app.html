@@ -3412,7 +3412,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-09-28.3';
+const APP_BUILD = '2026-10-02.1';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -8989,6 +8989,74 @@ function revokeServerRights(userId) {
     .then(function () { showToast('Accès retiré à « ' + user.account + ' ».'); })
     .catch(function (e) { showToast('Accès non retiré : ' + (e.message || e), true); })
     .then(loadServerDirectory);
+}
+
+/* ---------------- Droits mis à jour sans recharger la page ----------------
+
+   Les droits n'étaient lus qu'au démarrage (`loadServerSession`) : quand un
+   administrateur changeait ceux d'une personne déjà connectée, elle n'en
+   voyait rien avant d'avoir rechargé la page. Ils sont désormais relus
+   régulièrement, et dès que la fenêtre revient au premier plan ; un
+   changement s'applique aussitôt, avec un message. Même chemin réseau que
+   le démarrage (`/api/droits/moi`) : aucune donnée budgétaire ne part. */
+const SERVER_RIGHTS_REFRESH_MS = 60000;
+let serverRightsRefreshing = false;
+
+/** Ce qui, dans un compte du serveur, décide de ce qu'il voit : sert à détecter un changement. */
+function serverRightsSignature(user) {
+  return JSON.stringify([user.configured === true, serverRightsPayload(user)]);
+}
+
+/**
+ * Applique une fiche relue sur le serveur à la session en cours.
+ * L'objet du compte est mis à jour sur place : l'écran d'administration
+ * le partage (voir `buildServerDirectory`).
+ * @returns {boolean} vrai si les droits ont changé
+ */
+function applyRefreshedServerRights(me) {
+  if (!serverSession) return false;
+  const own = serverSession.user;
+  const fresh = serverUserFromRights(serverSession.account,
+    (me && me.displayName) || own.displayName, me ? me.rights : null);
+  serverSession.error = null;
+  if (serverRightsSignature(fresh) === serverRightsSignature(own)) return false;
+  Object.assign(own, fresh);
+  // Écran verrouillé par le code d'accès : les droits sont pris en compte,
+  // l'affichage suivra au déverrouillage.
+  if (lockedPayload) return true;
+  if (!tabAllowedNow(tab)) tab = serverLandingTab();
+  render();
+  showToast('Vos droits d’accès viennent d’être modifiés par un administrateur.');
+  return true;
+}
+
+/**
+ * Relit mes droits sur le serveur. Un échec garde les droits connus :
+ * contrairement au démarrage, où l'on ferme par défaut, une coupure
+ * passagère ne doit pas retirer l'accès à quelqu'un en plein travail.
+ */
+async function refreshServerSession() {
+  if (!serverSession || serverRightsRefreshing || !serverRightsModeAvailable()) return false;
+  serverRightsRefreshing = true;
+  try {
+    return applyRefreshedServerRights(await serverRequest('GET', '/api/droits/moi'));
+  } catch (e) {
+    return false;
+  } finally {
+    serverRightsRefreshing = false;
+  }
+}
+
+/** Relecture périodique (fenêtre visible seulement) et au retour au premier plan. */
+function startServerRightsRefresh() {
+  if (!serverSession || typeof document === 'undefined' || typeof window === 'undefined') return;
+  setInterval(function () {
+    if (document.visibilityState !== 'hidden') refreshServerSession();
+  }, SERVER_RIGHTS_REFRESH_MS);
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible') refreshServerSession();
+  });
+  window.addEventListener('focus', function () { refreshServerSession(); });
 }
 
 /**
@@ -30669,6 +30737,8 @@ async function saveAuthUserFromForm() {
 async function boot() {
   // Droits d'abord : le premier rendu doit déjà appliquer ceux du serveur.
   await loadServerSession();
+  // Puis tenus à jour tant que la page reste ouverte.
+  startServerRightsRefresh();
   let parsed = null;
   try {
     await migrateStorageToIndexedDbIfNeeded();

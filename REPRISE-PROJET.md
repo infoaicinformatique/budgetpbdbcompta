@@ -77,6 +77,36 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Droits mis à jour sans recharger la page (02/10/2026)
+
+Constat : « si l'administrateur donne des droits, je ne vois pas le compte
+utilisateur qui se met à jour » (build `2026-10-02.1`). Les droits n'étaient
+lus qu'au démarrage (`loadServerSession`) : une personne déjà connectée
+gardait ses anciens onglets et son ancien périmètre jusqu'à ce qu'elle
+recharge la page.
+
+Ils sont désormais relus sur `/api/droits/moi` toutes les minutes tant que
+la fenêtre est visible, et dès qu'elle revient au premier plan
+(`startServerRightsRefresh`, lancé par `boot()` après `loadServerSession`).
+`applyRefreshedServerRights` ne fait rien si la fiche est identique
+(`serverRightsSignature`) ; sinon il met à jour le compte sur place (objet
+partagé avec l'écran d'administration), quitte un onglet devenu interdit,
+réaffiche et prévient par un message. Un échec de relecture garde les
+droits connus : contrairement au démarrage, une coupure passagère ne retire
+pas l'accès en plein travail. Écran verrouillé : droits pris en compte,
+affichage au déverrouillage. Même chemin réseau qu'au démarrage, aucune
+donnée budgétaire ne part.
+
+Rappel : seules les fiches de droits sont partagées par le serveur. Les
+sociétés, environnements et budgets restent propres à chaque navigateur ;
+une fiche qui désigne des éléments absents du navigateur de la personne ne
+lui montre rien (voir l'échange de sauvegarde JSON).
+
+Contrôle « Droits mis à jour sans recharger la page » : fiche identique
+sans effet, onglet ajouté et retiré appliqués, objet du compte conservé,
+onglet courant quitté, fiche retirée → Paramètres seul, appel branché dans
+`boot()` (le retirer fait échouer le contrôle). 516 contrôles.
+
 ### Déconnexion pour les personnes de l'annuaire (28/09/2026)
 
 Demande : « j'aimerai avoir la possibilité de me déconnecter » (build
