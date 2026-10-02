@@ -3,8 +3,10 @@
  *
  * Sert uniquement `budget-app.html` (l'application tient dans ce fichier) :
  * aucun autre fichier du dépôt n'est exposé — ni le document de reprise,
- * ni le plan comptable Excel, ni les scripts. Seule autre adresse :
- * `/api/droits`, les droits des personnes de l'annuaire (voir rights.mjs).
+ * ni le plan comptable Excel, ni les scripts. Autres adresses :
+ * `/api/droits`, les droits des personnes de l'annuaire (voir rights.mjs),
+ * et `/api/donnees`, les sociétés et budgets, filtrés par ces droits
+ * (voir data.mjs).
  *
  * Node ≥ 22 ; seule dépendance : `ldapts`, pour l'authentification LDAP.
  *
@@ -20,6 +22,8 @@
  *   RIGHTS_FILE          fichier des droits (défaut ./data/droits.json)
  *   RIGHTS_ADMINS        identifiants de l'annuaire toujours administrateurs
  *                        des droits (« prenom.nom, autre.nom »)
+ *   DATA_FILE            fichier des données budgétaires (défaut ./data/budget.json ;
+ *                        historique dans le dossier `historique/` à côté)
  *
  * Sans compte local ni LDAP, l'application est publique.
  */
@@ -34,6 +38,7 @@ import {
   LdapUnavailableError,
 } from './auth-ldap.mjs';
 import { createRightsStore, parseAdminList, normalizeAccount, RightsError } from './rights.mjs';
+import { createDataStore, declarationOf, DataError } from './data.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const HOST = process.env.HOST || '127.0.0.1';
@@ -58,6 +63,9 @@ const authEnabled = localAuthEnabled || ldapConfig !== null;
 const RIGHTS_FILE = process.env.RIGHTS_FILE || join(root, 'data', 'droits.json');
 const RIGHTS_ADMINS = parseAdminList(process.env.RIGHTS_ADMINS);
 const rights = createRightsStore(RIGHTS_FILE, RIGHTS_ADMINS);
+
+const DATA_FILE = process.env.DATA_FILE || join(root, 'data', 'budget.json');
+const dataStore = createDataStore(DATA_FILE);
 
 const appPath = join(root, 'budget-app.html');
 
@@ -319,13 +327,13 @@ function sameOriginWrite(req) {
   return true;
 }
 
-function readJsonBody(req) {
+function readJsonBody(req, max = API_BODY_MAX) {
   return new Promise(function (resolve, reject) {
     const chunks = [];
     let size = 0;
     req.on('data', function (chunk) {
       size += chunk.length;
-      if (size > API_BODY_MAX) {
+      if (size > max) {
         reject(new RightsError('Requête trop volumineuse.', 413));
         req.destroy();
         return;
@@ -399,6 +407,57 @@ async function handleApi(req, res, url, auth) {
   }
 }
 
+/* ---------------- /api/donnees ----------------
+
+   GET  /api/donnees            sociétés et budgets de mon périmètre (+ révision)
+   GET  /api/donnees/revision   numéro de la dernière révision (relecture légère)
+   PUT  /api/donnees            { baseRevision, state, changedCompanies, sharedChanged } :
+                                enregistre ce que j'ai modifié (déclaré), dans mon périmètre
+
+   Le filtrage et les règles d'écriture sont dans data.mjs. Une personne
+   sans fiche ne reçoit aucune société et ne peut rien écrire. */
+const DATA_PREFIX = '/api/donnees';
+const DATA_BODY_MAX = 32 * 1024 * 1024;
+
+/** Réponse JSON, compressée en gzip au-delà de quelques Ko si le navigateur l'accepte. */
+function sendDataJson(req, res, status, body) {
+  const raw = Buffer.from(JSON.stringify(body));
+  const headers = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', Vary: 'Accept-Encoding' };
+  if (raw.length > 8192 && /\bgzip\b/.test(String(req.headers['accept-encoding'] || ''))) {
+    headers['Content-Encoding'] = 'gzip';
+    res.writeHead(status, headers);
+    return res.end(gzipSync(raw));
+  }
+  res.writeHead(status, headers);
+  return res.end(raw);
+}
+
+async function handleDataApi(req, res, url, auth) {
+  if (auth.method === 'none') return sendJson(res, 404, { error: 'Données centralisées inactives : le site est ouvert sans authentification.' });
+  const own = rightsOf(auth);
+  const by = auth.account || auth.username || '?';
+  try {
+    if (url.pathname === DATA_PREFIX + '/revision' && req.method === 'GET') {
+      return sendJson(res, 200, { revision: dataStore.revision() });
+    }
+    if (url.pathname !== DATA_PREFIX) return sendJson(res, 404, { error: 'Introuvable.' });
+    if (req.method === 'GET') return sendDataJson(req, res, 200, dataStore.read(own));
+    if (req.method !== 'PUT') return sendJson(res, 405, { error: 'Méthode non prise en charge.' });
+    if (!sameOriginWrite(req)) return sendJson(res, 403, { error: 'Requête refusée : origine non vérifiée.' });
+    const body = await readJsonBody(req, DATA_BODY_MAX);
+    const result = dataStore.write(own, body && body.baseRevision, body && body.state, by, declarationOf(body));
+    if (result.changedCompanies.length || result.sharedChanged) {
+      console.log(`Données enregistrées par « ${by} » (révision ${result.revision}, ${result.changedCompanies.length} société(s)${result.sharedChanged ? ', réglages communs' : ''})`);
+    }
+    return sendJson(res, 200, result);
+  } catch (err) {
+    if (err instanceof DataError) return sendJson(res, err.status, Object.assign({ error: err.message }, err.extra || {}));
+    if (err instanceof RightsError) return sendJson(res, err.status, { error: err.message });
+    console.error('Données :', err);
+    return sendJson(res, 500, { error: 'Erreur serveur sur les données.' });
+  }
+}
+
 const baseHeaders = {
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
@@ -420,8 +479,10 @@ async function handle(req, res) {
   }
 
   const api = url.pathname === API_PREFIX || url.pathname.startsWith(API_PREFIX + '/');
-  if (req.method !== 'GET' && req.method !== 'HEAD' && !(api && (req.method === 'PUT' || req.method === 'DELETE'))) {
-    res.writeHead(405, { Allow: api ? 'GET, PUT, DELETE' : 'GET, HEAD' });
+  const dataApi = url.pathname === DATA_PREFIX || url.pathname.startsWith(DATA_PREFIX + '/');
+  if (req.method !== 'GET' && req.method !== 'HEAD' &&
+    !(api && (req.method === 'PUT' || req.method === 'DELETE')) && !(dataApi && req.method === 'PUT')) {
+    res.writeHead(405, { Allow: api ? 'GET, PUT, DELETE' : dataApi ? 'GET, PUT' : 'GET, HEAD' });
     return res.end();
   }
 
@@ -436,6 +497,7 @@ async function handle(req, res) {
   }
 
   if (api) return handleApi(req, res, url, auth);
+  if (dataApi) return handleDataApi(req, res, url, auth);
 
   if (url.pathname === '/budget-app.html') {
     res.writeHead(301, { Location: '/' });

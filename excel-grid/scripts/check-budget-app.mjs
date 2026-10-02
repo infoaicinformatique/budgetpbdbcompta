@@ -513,7 +513,12 @@ const app = await importApp(
     '  viewParametres, serverAuthInfo, parametresLdapBody, SERVER_AUTH_COOKIE,\n' +
     '  serverRequest, adoptServerSession, buildServerDirectory, serverRightsPayload, serverUserFromRights,\n' +
     '  serverLandingTab, sessionUsername, isServerUserId, applyPagePermissions,\n' +
-    '  applyRefreshedServerRights, serverRightsSignature };\n' +
+    '  applyRefreshedServerRights, serverRightsSignature,\n' +
+    '  serverStatePayload, emptyServerState, adoptServerState, parametresDonneesPanel, SERVER_PRIVATE_KEYS,\n' +
+    '  serverDataHasPendingChanges, markServerDataInSync, serverChangesBetween };\n' +
+    'export function __setServerData(v) { serverData = v; }\n' +
+    'export function __getServerData() { return serverData; }\n' +
+    'export function __clearSaveTimer() { if (saveTimer !== null) { clearTimeout(saveTimer); saveTimer = null; } }\n' +
     'export function __clearServerSession() { serverSession = null; serverDirectory = null; }\n' +
     'export function __setServerDirectory(v) { serverDirectory = v; }\n' +
     'export function __setAuthPermissionsIdForTest(v) { authPermissionsId = v; }\n' +
@@ -1144,6 +1149,126 @@ check('Droits mis à jour sans recharger la page (02/10/2026)', () => {
   } finally {
     app.__clearServerSession();
     app.__setTab(savedTab);
+  }
+});
+
+check('Données tenues par le serveur : rien dans le navigateur (02/10/2026)', () => {
+  // L'enregistrement part au serveur avant toute écriture locale, et le
+  // démarrage en mode serveur ne lit jamais le stockage du navigateur.
+  assert.ok(/async function persist\(\) \{\s*if \(!state\) return;\s*\/\/[^\n]*\n\s*if \(serverData\) return persistToServer\(\);/.test(html),
+    'persist() doit envoyer au serveur sans écrire dans le navigateur en mode serveur');
+  const bootBody = html.slice(html.indexOf('async function boot()'));
+  const serverBranch = bootBody.slice(bootBody.indexOf('if (serverSession) {'), bootBody.indexOf('let parsed = null;'));
+  assert.ok(serverBranch.includes('await loadServerData();') && serverBranch.includes('return;'),
+    'boot() doit charger les données du serveur et s’arrêter là');
+  assert.ok(!/storageGetRaw|seedFromEmbeddedSnapshotIfNeeded/.test(serverBranch), 'aucune lecture locale en mode serveur');
+  const persistToServerBody = html.slice(html.indexOf('async function persistToServer()'), html.indexOf('async function refreshServerData()'));
+  assert.ok(!/storageSetRaw|writeAutoBackup/.test(persistToServerBody), 'aucune écriture locale en mode serveur');
+  for (const name of ['exportFullAppData', 'exportStandaloneAppData']) {
+    const body = html.slice(html.indexOf('async function ' + name + '()'));
+    assert.ok(/raw = serverData \? JSON\.stringify\(serverStatePayload\(state\)\) : await storageGetRaw/.test(body.slice(0, 600)),
+      name + ' doit exporter l’état affiché en mode serveur, pas une vieille copie locale');
+  }
+});
+
+check('Données tenues par le serveur : ce qui part, état vide, choix du poste', () => {
+  const savedState = app.state;
+  try {
+    const payload = app.serverStatePayload({ companies: [{ id: 'a' }], users: [{ passwordHash: 'x' }], authLog: [1],
+      activeCompany: 'a', activeEnvironmentId: 'e', activeScenario: 's', lastSavedAt: 'hier', scenarios: [] });
+    assert.deepEqual(Object.keys(payload).sort(), ['companies', 'scenarios'],
+      'ni comptes locaux, ni journal de sécurité, ni choix d’affichage ne partent au serveur');
+    assert.deepEqual(app.SERVER_PRIVATE_KEYS.slice().sort(),
+      ['activeCompany', 'activeEnvironmentId', 'activeScenario', 'authLog', 'lastSavedAt', 'users'],
+      'même liste que PRIVATE_KEYS dans data.mjs');
+
+    // Périmètre vide : aucune société inventée (adoptState mettrait celles d'origine).
+    const empty = app.adoptServerState({ companies: [], scenarios: [{ id: 'scn', name: 'Base' }] }, '2026-10-02T10:00:00Z');
+    assert.equal(empty.companies.length, 0);
+    assert.equal(empty.lines.length, 0);
+    assert.equal(empty.scenarios.length, 1, 'éléments communs repris');
+    assert.equal(empty.lastSavedAt, '2026-10-02T10:00:00Z', 'fraîcheur = dernier enregistrement du serveur');
+
+    // Les choix d'affichage du poste survivent à un rechargement des données.
+    const reference = JSON.parse(JSON.stringify(savedState));
+    const companyId = reference.companies[reference.companies.length - 1].id;
+    app.__setState(Object.assign({}, reference, { activeCompany: companyId, activeScenario: 'scn_x' }));
+    const reloaded = app.adoptServerState(app.serverStatePayload(reference), null);
+    assert.equal(reloaded.activeCompany, companyId);
+    assert.equal(reloaded.activeScenario, 'scn_x');
+    assert.deepEqual(reloaded.users, [], 'aucun compte local en mode serveur');
+  } finally {
+    app.__setState(savedState);
+  }
+});
+
+check('Données tenues par le serveur : un envoi ne déclare que ce que ce poste a modifié', () => {
+  const before = { companies: [{ id: 'a' }, { id: 'b' }], lines: [{ id: 'la', companyId: 'a', amounts: [1] }, { id: 'lb', companyId: 'b', amounts: [2] }],
+    priorActuals: { a: { ca: 1 } }, caEvents: [{ id: 'e', companyIds: ['a', 'b'] }], scenarios: [] };
+  const same = JSON.parse(JSON.stringify(before));
+  assert.deepEqual(app.serverChangesBetween(before, same), { changedCompanies: [], sharedChanged: false });
+
+  const edited = JSON.parse(JSON.stringify(before));
+  edited.lines[1].amounts = [20];
+  assert.deepEqual(app.serverChangesBetween(before, edited), { changedCompanies: ['b'], sharedChanged: false });
+
+  const dict = JSON.parse(JSON.stringify(before));
+  dict.priorActuals.a.ca = 5;
+  assert.deepEqual(app.serverChangesBetween(before, dict).changedCompanies, ['a'], 'dictionnaire par société');
+
+  const event = JSON.parse(JSON.stringify(before));
+  event.caEvents[0].name = 'Salon';
+  assert.deepEqual(app.serverChangesBetween(before, event).changedCompanies.sort(), ['a', 'b'], 'événement partagé : ses deux sociétés');
+
+  const structure = JSON.parse(JSON.stringify(before));
+  structure.companies = [{ id: 'a' }, { id: 'c' }];
+  structure.lines = structure.lines.filter((l) => l.companyId !== 'b');
+  structure.scenarios = [{ id: 'scn' }];
+  const changes = app.serverChangesBetween(before, structure);
+  assert.deepEqual(changes.changedCompanies.sort(), ['b', 'c'], 'suppression et ajout déclarés');
+  assert.equal(changes.sharedChanged, true, 'élément commun modifié');
+  assert.ok(/serverChangesBetween\(serverData\.lastSentJson/.test(html), 'persistToServer doit envoyer la déclaration');
+});
+
+check('Données tenues par le serveur : Paramètres › Données', () => {
+  const savedState = app.state;
+  try {
+    app.adoptServerSession({ method: 'ldap', account: 'chef', displayName: 'Le Chef',
+      rights: { role: 'controleur', isAdmin: true, permissions: null } }, null);
+    const base = { ready: false, revision: 0, empty: true, access: { unrestricted: true, shared: true }, updatedAt: null,
+      updatedBy: null, error: null, sending: false, lastSentJson: null, retryTimer: null,
+      localCopy: { encrypted: false, companies: 4, lastSavedAt: '2026-10-01T09:00:00Z', parsed: { companies: [{}, {}, {}, {}] } } };
+    app.__setServerData(base);
+    let html2 = app.parametresDonneesPanel();
+    assert.ok(html2.includes('La base du serveur est vide'), 'base vide expliquée');
+    assert.ok(html2.includes('4 société(s)') && html2.includes('data-server-data-publish'), 'publication proposée à un administrateur');
+    assert.ok(html2.includes('data-server-data-clear'), 'effacement de la copie locale proposé');
+
+    app.__setServerData(Object.assign({}, base, { access: { unrestricted: false, shared: false } }));
+    html2 = app.parametresDonneesPanel();
+    assert.ok(!html2.includes('data-server-data-publish'), 'pas de publication sans périmètre complet');
+    assert.ok(html2.includes('pas encore été publiées'));
+
+    app.__setServerData(Object.assign({}, base, { ready: true, empty: false, revision: 7, updatedBy: 'alexis',
+      updatedAt: '2026-10-02T10:00:00Z', localCopy: null, access: { unrestricted: false, shared: false } }));
+    html2 = app.parametresDonneesPanel();
+    assert.ok(html2.includes('rien dans ce navigateur') && html2.includes('Révision 7') && html2.includes('alexis'));
+    assert.ok(app.viewParametres().includes('data-panel="parametres-donnees"'), 'rubrique Données dans Paramètres');
+
+    app.__clearSaveTimer();
+    // FS_ACCESS_SUPPORTED est faux sous Node : on vérifie les gardes dans le source.
+    assert.ok(/function backupDirCard\(\) \{[\s\S]{0,400}?if \(serverData\) return '';/.test(html),
+      'pas de dossier de sauvegarde automatique proposé en mode serveur');
+    assert.ok(/async function writeAutoBackup\(\) \{\s*if \(!backupDirHandle \|\| !state \|\| serverData\) return;/.test(html),
+      'aucune sauvegarde automatique écrite sur le poste en mode serveur');
+    app.markServerDataInSync();
+    assert.equal(app.serverDataHasPendingChanges(), false);
+    app.state.exchangeRates = Object.assign({}, app.state.exchangeRates, { XXX: 2 });
+    assert.equal(app.serverDataHasPendingChanges(), true, 'une modification non envoyée est détectée');
+  } finally {
+    app.__setServerData(null);
+    app.__clearServerSession();
+    app.__setState(savedState);
   }
 });
 
@@ -7396,10 +7521,11 @@ check('la politique de sécurité interdit les connexions sortantes', () => {
   }
 });
 
-await checkAsync('la seule sortie réseau restante ne vise que /api/droits', async () => {
+await checkAsync('les seules sorties réseau restantes visent /api/droits et /api/donnees', async () => {
   assert.equal(typeof app.serverRequest, 'function', 'serverRequest doit exister là où fetch existe');
   for (const path of ['https://example.invalid/api/droits', '//example.invalid/api/droits', '/api/budgets',
-    '/api/droits/../budgets', '/api/droits/a/b', '/']) {
+    '/api/droits/../budgets', '/api/droits/a/b', '/', '/api/donnees/x', '/api/donnees/revision/x',
+    '/api/donneesx', 'https://example.invalid/api/donnees']) {
     await assert.rejects(app.serverRequest('GET', path), /interdite/, 'chemin refusé attendu : ' + path);
   }
 });
