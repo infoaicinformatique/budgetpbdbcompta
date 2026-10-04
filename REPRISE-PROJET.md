@@ -77,6 +77,65 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Retrait de la bascule de mode : la vue suit le rôle (04/10/2026)
+
+Alexis : « supprime le mode switch (dans le menu) passage mode directeur ou vue
+complete et assure toi que ca soit dans les droits des utilisateurs lors de la
+configuration de ses droits ».
+
+Le menu du compte portait un bouton « Passer en vue Directeur » / « Revenir à
+la vue complète » (19/08/2026), doublé d'un **aperçu** qui appliquait le
+périmètre type d'un directeur à la session en cours (bandeau doré sur tous les
+écrans, sortie « Revenir à ma vue »). Deux réponses concurrentes à la même
+question — « que voit cette personne ? » — dont une seule fait foi : le **rôle**
+de la fiche de droits.
+
+Ce qui disparaît :
+
+- le bouton `#director-mode-toggle` du menu du compte, son libellé synchronisé
+  dans `renderHeader()` et son écouteur ;
+- `directorModeOverride` (choix de session), `setDirectorMode()` ;
+- tout l'aperçu : `directorPreviewActive()`, `directorPreviewAllowsTab()`,
+  `directorPreviewAllowsPage()`, `directorPreviewBanner()`, le bandeau posé par
+  `setViewHtml()`, son bouton `data-exit-director-preview`, les styles
+  `.director-preview-bar` / `.director-preview-dot` et la pastille
+  `.dir-mode-badge` (déjà sans porteur) ;
+- les court-circuits d'aperçu dans `allowedCostCenterIds()`,
+  `visibleCostCenters()`, `tabAllowedNow()`, `applyPagePermissions()`,
+  `canValidateCompanyBudget()` et `canEditObjectives()`.
+
+Ce qui reste : `directorModeActive()` ne lit plus que le rôle de la personne
+connectée (`user.role === 'directeur'`), et n'est plus consulté que par
+`canEditLineStructure()` — un directeur renseigne des montants, il ne crée ni
+ne supprime de ligne. Sans aucun compte (fichier ouvert seul), la vue technique
+reste celle de départ, comme avant. `DIRECTEUR_DEFAULT_TABS`,
+`DIRECTEUR_DEFAULT_PAGES` et `DIRECTEUR_DEFAULT_COST_CENTERS` gardent leur seul
+rôle légitime : les droits de départ d'un directeur fraîchement créé.
+
+Côté réglage, le rôle se choisit déjà dans **Paramètres › Droits d'accès**
+(`serverRightsRolePanel`, menu déroulant `#server-rights-role`, enregistré sur
+le serveur). Le texte d'aide le dit maintenant en clair : « Le rôle décide de la
+vue : un directeur arrive sur la vue Directeur (tableau de bord, saisie et
+résultats), un contrôleur de gestion sur la vue complète. Il n'y a pas d'autre
+réglage ailleurs dans l'application. » — pour qu'on ne cherche plus
+l'interrupteur retiré du menu.
+
+Contrôles (`check-budget-app.mjs`) :
+
+- nouveau « Vue Directeur : plus de bascule dans le menu, la vue se règle dans
+  les droits » — absence du bouton, du bandeau, de son style, des six fonctions
+  d'aperçu et de l'état de session ; `directorModeActive()` doit se réduire à la
+  lecture du rôle ; le panneau des droits doit porter le choix du rôle et le
+  texte qui l'annonce ;
+- « Objectifs : un directeur a tout le menu Pilotage, mais en lecture seule »,
+  « Validation hiérarchique… » et « Vue Directeur : le mode suit le rôle, et
+  rien d'autre » passent par de **vrais comptes connectés** (directeur puis
+  contrôleur) au lieu de la bascule qui leur servait de raccourci ;
+- « Aperçu directeur : un bandeau le signale sur tous les écrans » est supprimé,
+  son objet n'existant plus.
+
+`APP_BUILD` : `2026-10-04.2`.
+
 ### Pied de page : retrait de la mention « Hors ligne » (04/10/2026)
 
 Alexis, après explication de la phrase : « ok trés bien mais ca porte à
@@ -10777,13 +10836,10 @@ const app = await importApp(
     'export function __getStorageBackendIsIndexedDb() { return storageBackendIsIndexedDb; }\n' +
     'export function __setStorageBackendIsIndexedDb(v) { storageBackendIsIndexedDb = v; }\n' +
     'export { exportFullAppData, importFullAppData, fullExportImportCard };\n' +
-    'export { DIRECTOR_TAB, directorModeActive, setDirectorMode, defaultTabForCurrentUser,\n' +
+    'export { DIRECTOR_TAB, directorModeActive, defaultTabForCurrentUser,\n' +
     '  landingTabAfterCompanySelection,\n' +
     '  viewDirecteur, directorMatrixCard, dirRatioTone, dirAmountTone,\n' +
-    '  directorPreviewActive, directorPreviewAllowsTab, directorPreviewAllowsPage,\n' +
-    '  directorPreviewBanner, DIRECTEUR_DEFAULT_PAGES, objectivesSummaryHtml };\n' +
-    'export function __getDirectorModeOverride() { return directorModeOverride; }\n' +
-    'export function __setDirectorModeOverride(v) { directorModeOverride = v; }\n' +
+    '  DIRECTEUR_DEFAULT_PAGES, objectivesSummaryHtml };\n' +
     'export { MATRIX_SERVICES, normalizeServiceMatrix, serviceMatrixOf, serviceMatrixValue,\n' +
     '  setServiceMatrixValue, matrixDayKeys, matrixServiceRevenue, matrixTotalCovers,\n' +
     '  matrixTotalRevenue, weekTotal, matrixOverallTicket, matrixYearTotals, matrixMonthlySeries,\n' +
@@ -22686,79 +22742,57 @@ check('Vue Directeur : tous les onglets restent accessibles, rien n’est retir�
   // des fonctionnalités pour simplifier », « ne PAS cacher des
   // fonctionnalités dans des sous-menus complexes ». Le mode Directeur est
   // donc un réglage d'affichage : il ajoute un écran, il n'en retire aucun.
-  const before = app.TAB_GROUPS.flatMap((g) => g.tabs).slice().sort();
-  const saved = app.__getDirectorModeOverride();
-  try {
-    app.__setDirectorModeOverride(true);
-    const during = app.TAB_GROUPS.flatMap((g) => g.tabs).slice().sort();
-    assert.deepEqual(during, before, 'le mode Directeur ne doit retirer aucun onglet de la barre');
-    assert.ok(before.indexOf(app.DIRECTOR_TAB) !== -1, 'la Vue Directeur doit être un onglet à part entière');
-    assert.ok(before.indexOf('objectifs') !== -1, 'les Objectifs doivent être un onglet à part entière');
-  } finally {
-    app.__setDirectorModeOverride(saved);
-  }
+  // `TAB_GROUPS` ne dépend d'aucun mode — c'est le catalogue, les droits
+  // filtrent ensuite à l'affichage (`renderNavPermissions`).
+  const tabs = app.TAB_GROUPS.flatMap((g) => g.tabs);
+  assert.ok(tabs.indexOf(app.DIRECTOR_TAB) !== -1, 'la Vue Directeur doit être un onglet à part entière');
+  assert.ok(tabs.indexOf('objectifs') !== -1, 'les Objectifs doivent être un onglet à part entière');
 });
 
-check('Aperçu directeur : le bouton applique VRAIMENT le périmètre d’un directeur', () => {
-  // Défaut de la première version, signalé par Alexis (« la vue directeur
-  // n'est pas opérationnelle ») : le mode ne changeait que l'écran
-  // d'atterrissage, sans appliquer la moindre restriction. Alexis,
-  // contrôleur et administrateur, continuait de tout voir — le bouton ne
-  // montrait rien de ce qu'il promettait. Il a tranché : « quand je clique
-  // sur vue directeur je veux pouvoir voir exactement ce que le directeur
-  // verra quand il se connectera ».
-  const saved = app.__getDirectorModeOverride();
-  try {
-    app.__setDirectorModeOverride(false);
-    assert.equal(app.directorPreviewActive(), false, 'hors mode, aucun aperçu');
-    const centersBefore = app.visibleCostCenters().length;
-    assert.ok(centersBefore > 1, 'hors aperçu, tous les centres de coûts restent visibles');
-    assert.ok(app.tabAllowedNow('ajustements'), 'et tous les onglets restent ouverts');
-
-    app.__setDirectorModeOverride(true);
-    assert.equal(app.directorPreviewActive(), true, 'le mode déclenche bien un aperçu');
-
-    // Onglets : ceux du périmètre type, et eux seuls.
-    for (const open of app.DIRECTEUR_DEFAULT_TABS) {
-      assert.ok(app.tabAllowedNow(open), `« ${open} » doit rester visible en aperçu`);
-    }
-    for (const closed of ['ajustements', 'forecast', 'conso', 'societes', 'plan', 'import', 'autorisations']) {
-      assert.ok(!app.tabAllowedNow(closed), `« ${closed} » doit disparaître en aperçu`);
-    }
-
-    // Centres de coûts : le Food & Beverage seul.
-    assert.deepEqual(app.visibleCostCenters().map((c) => c.id), ['F&B'],
-      'la Saisie ne doit plus proposer que le Food & Beverage');
-
-    // Rubriques : celles de l'onglet CA sont filtrées comme pour un directeur.
-    assert.ok(app.directorPreviewAllowsPage('ca', 'ca-couverts'), 'la matrice couverts reste');
-    for (const page of ['ca-comptes', 'ca-ponderation', 'ca-ventilation']) {
-      assert.ok(!app.directorPreviewAllowsPage('ca', page), `« ${page} » doit disparaître en aperçu`);
-    }
-
-    // Et tout revient à l'identique en sortant.
-    app.__setDirectorModeOverride(false);
-    assert.equal(app.visibleCostCenters().length, centersBefore,
-      'sortir de l’aperçu doit rendre tous les centres de coûts');
-    assert.ok(app.tabAllowedNow('ajustements'), 'et tous les onglets');
-  } finally {
-    app.__setDirectorModeOverride(saved);
+check('Vue Directeur : plus de bascule dans le menu, la vue se règle dans les droits', () => {
+  // 04/10/2026 — Alexis : « supprime le mode switch (dans le menu) passage
+  // mode directeur ou vue complete et assure toi que ca soit dans les
+  // droits des utilisateurs lors de la configuration de ses droits ». Deux
+  // réponses concurrentes à « que voit cette personne ? » (une bascule de
+  // session + un aperçu, d'un côté ; le rôle de la fiche de droits, de
+  // l'autre) : il n'en reste qu'une.
+  assert.ok(!html.includes('director-mode-toggle'),
+    'le menu du compte ne doit plus porter de bascule de mode');
+  assert.ok(!html.includes('data-exit-director-preview'),
+    'ni de sortie d’aperçu');
+  assert.ok(!html.includes('director-preview-bar'),
+    'le bandeau d’aperçu et son style doivent avoir disparu');
+  for (const gone of ['function setDirectorMode', 'function directorPreviewActive',
+    'function directorPreviewAllowsTab', 'function directorPreviewAllowsPage',
+    'function directorPreviewBanner', 'let directorModeOverride',
+    'directorPreviewActive()']) {
+    assert.ok(!appSource.includes(gone), `« ${gone} » ne doit plus exister`);
   }
+
+  // Le mode ne se déduit plus que du rôle de la personne connectée.
+  assert.match(appSource,
+    /function directorModeActive\(\) \{\s*\n\s*const user = currentUser\(\);\s*\n\s*return Boolean\(user\) && user\.role === 'directeur';\s*\n\}/,
+    'directorModeActive() doit suivre le seul rôle, sans choix de session');
+
+  // Et le réglage est annoncé là où il se fait : Paramètres › Droits d'accès.
+  assert.ok(appSource.includes("'<select id=\"server-rights-role\">' + roleOptions + '</select>'"),
+    'le panneau des droits doit porter le choix du rôle');
+  assert.ok(appSource.includes('Le rôle décide de la vue'),
+    'et dire en clair que c’est le rôle qui décide de la vue, la bascule ayant disparu');
+  assert.ok(appSource.includes('Il n’y a pas d’autre réglage ailleurs dans l’application.'),
+    'pour qu’on ne cherche plus l’ancien interrupteur du menu');
 });
 
-await checkAsync('Aperçu directeur : un vrai directeur garde SON périmètre, jamais un aperçu', async () => {
-  // Un directeur peut avoir reçu un accès supplémentaire dans Autorisations.
-  // L'aperçu montre le périmètre type ; lui doit vivre dans le sien, sinon
+await checkAsync('Vue Directeur : un directeur vit dans SON périmètre, celui de ses droits', async () => {
+  // Un directeur peut avoir reçu un accès supplémentaire dans sa fiche de
+  // droits. Rien ne doit plus superposer un « périmètre type » à sa
+  // session (c'était le rôle de l'aperçu, retiré le 04/10/2026) : sinon
   // l'accès qu'on vient de lui ouvrir serait annulé à l'écran.
   authFixture();
-  const savedOverride = app.__getDirectorModeOverride();
   try {
-    app.__setDirectorModeOverride(null);
-    const directeur = await app.createUser({ username: 'dir_apercu', role: 'directeur', password: 'MotDePasse1!xyz' });
-    await app.signIn('dir_apercu', 'MotDePasse1!xyz');
+    const directeur = await app.createUser({ username: 'dir_perimetre', role: 'directeur', password: 'MotDePasse1!xyz' });
+    await app.signIn('dir_perimetre', 'MotDePasse1!xyz');
     assert.equal(app.directorModeActive(), true, 'un directeur est bien en mode Directeur');
-    assert.equal(app.directorPreviewActive(), false,
-      'mais il n’est pas « en aperçu » : c’est sa vraie vue');
 
     app.setUserPermissions(directeur.id, Object.assign({}, directeur.permissions, {
       ajustements: app.pagesOfTab('ajustements'),
@@ -22766,7 +22800,6 @@ await checkAsync('Aperçu directeur : un vrai directeur garde SON périmètre, j
     assert.ok(app.tabAllowedNow('ajustements'),
       'un accès rouvert à ce directeur précis doit lui rester ouvert');
   } finally {
-    app.__setDirectorModeOverride(savedOverride);
     authFixture();
   }
 });
@@ -22932,44 +22965,41 @@ check('Objectifs : le Chiffre d’affaires peut être restreint à certaines cat
   }
 });
 
-check('Objectifs : un directeur a tout le menu Pilotage, mais en lecture seule', () => {
+await checkAsync('Objectifs : un directeur a tout le menu Pilotage, mais en lecture seule', async () => {
   // Alexis : « il faut que les directeurs aient accès à tout le menu
   // Pilotage ; pour les objectifs, eux ne peuvent pas les définir, seuls
   // les CDG peuvent le faire — les directeurs ont uniquement la vue sur
   // les objectifs mis et leur avancement. »
+  //
+  // 04/10/2026 : le contrôle passe par de VRAIS comptes connectés, l'un
+  // directeur et l'autre contrôleur. Il s'appuyait jusque-là sur la
+  // bascule de mode du menu du compte, retirée à la demande d'Alexis —
+  // c'est désormais le rôle de la fiche de droits, et lui seul, qui décide.
   const company = app.state.companies[0];
-  const savedOverride = app.__getDirectorModeOverride();
   const savedTab = app.__getTab ? app.__getTab() : undefined;
   const savedObjectives = (app.state.objectives || []).slice();
+  authFixture();
   try {
     app.state.objectives = [
       { id: 'obj_lecture', companyId: company.id, scope: 'revenue', target: 1000000,
         label: 'Objectif imposé', createdAt: Date.now(), createdBy: 'cdg' },
     ];
 
-    // Tout le menu Pilotage est dans le périmètre type d'un directeur.
+    // Tout le menu Pilotage est dans les droits de départ d'un directeur.
     const pilotage = app.TAB_GROUPS.find((g) => g.id === 'pilotage');
     assert.ok(pilotage, 'le menu Pilotage doit exister');
     for (const tabId of pilotage.tabs) {
       assert.ok(app.DIRECTEUR_DEFAULT_TABS.indexOf(tabId) !== -1,
         `« ${tabId} » du menu Pilotage doit être ouvert aux directeurs`);
-      assert.ok(app.directorPreviewAllowsTab(tabId),
-        `« ${tabId} » doit rester visible en aperçu directeur`);
-    }
-    // Et toutes leurs rubriques, sans restriction.
-    for (const tabId of pilotage.tabs) {
-      for (const page of app.pagesOfTab(tabId)) {
-        assert.ok(app.directorPreviewAllowsPage(tabId, page),
-          `la rubrique « ${page} » doit rester visible à un directeur`);
-      }
     }
 
-    // En aperçu, le formulaire de création disparaît : un directeur ne
-    // fixe jamais d'objectif. C'était le défaut — Alexis étant contrôleur,
-    // l'aperçu lui montrait un formulaire qu'un directeur ne voit pas.
-    app.__setDirectorModeOverride(true);
-    assert.equal(app.canEditObjectives(), false,
-      'un directeur ne peut pas fixer d’objectif, l’aperçu doit le refléter');
+    // Connecté en directeur : le formulaire de création disparaît.
+    await app.createUser({ username: 'dir_objectifs', role: 'directeur', password: 'MotDePasse1!xyz' });
+    await app.signIn('dir_objectifs', 'MotDePasse1!xyz');
+    for (const tabId of pilotage.tabs) {
+      assert.ok(app.tabAllowedNow(tabId), `« ${tabId} » doit rester ouvert à un directeur`);
+    }
+    assert.equal(app.canEditObjectives(), false, 'un directeur ne peut pas fixer d’objectif');
     app.__setTab('objectifs');
     app.render();
     const asDirector = document.getElementById('view').innerHTML;
@@ -22983,61 +23013,44 @@ check('Objectifs : un directeur a tout le menu Pilotage, mais en lecture seule',
     assert.ok(asDirector.includes('dir-gauge'), 'et une jauge d’avancement d’ensemble');
 
     // Le contrôleur, lui, garde le formulaire.
-    app.__setDirectorModeOverride(false);
+    app.signOut();
+    await app.createUser({ username: 'cdg_objectifs', role: 'controleur', password: 'MotDePasse1!xyz' });
+    await app.signIn('cdg_objectifs', 'MotDePasse1!xyz');
     assert.equal(app.canEditObjectives(), true, 'un contrôleur fixe les objectifs');
+    app.__setTab('objectifs');
     app.render();
     const asControleur = document.getElementById('view').innerHTML;
-    assert.ok(asControleur.includes('objective-add'), 'le formulaire revient hors aperçu');
+    assert.ok(asControleur.includes('objective-add'), 'le formulaire revient pour un contrôleur');
     assert.ok(asControleur.includes('data-delete-objective'), 'ainsi que la suppression');
   } finally {
     app.state.objectives = savedObjectives;
-    app.__setDirectorModeOverride(savedOverride);
+    authFixture();
     if (savedTab !== undefined) { app.__setTab(savedTab); app.render(); }
   }
 });
 
-check('Aperçu directeur : un bandeau le signale sur tous les écrans', () => {
-  const saved = app.__getDirectorModeOverride();
+await checkAsync('Vue Directeur : le mode suit le rôle, et rien d’autre', async () => {
+  // Plus de choix de session depuis le 04/10/2026 : le rôle de la fiche de
+  // droits est le seul réglage. Sans compte créé, on reste sur la vue
+  // technique — basculer d'office aurait changé l'écran d'accueil d'Alexis
+  // sans qu'il le demande.
   const savedTab = app.__getTab ? app.__getTab() : undefined;
+  authFixture();
   try {
-    app.__setDirectorModeOverride(false);
-    assert.equal(app.directorPreviewBanner(), '', 'aucun bandeau hors aperçu');
-
-    app.__setDirectorModeOverride(true);
-    const banner = app.directorPreviewBanner();
-    assert.ok(banner.includes('director-preview-bar'), 'le bandeau doit apparaître en aperçu');
-    assert.ok(banner.includes('data-exit-director-preview'),
-      'et porter sa propre sortie, pour ne pas rester coincé dedans');
-
-    // Posé dans setViewHtml : il suit donc TOUS les onglets, pas seulement
-    // le tableau de bord — c'est en ouvrant la Saisie restreinte qu'on se
-    // demande si l'application est cassée.
-    for (const t of [app.DIRECTOR_TAB, 'saisie', 'ca', 'pnl']) {
-      app.__setTab(t);
-      app.render();
-      assert.ok(document.getElementById('view').innerHTML.includes('director-preview-bar'),
-        `le bandeau doit être présent sur l’onglet « ${t} »`);
-    }
-  } finally {
-    app.__setDirectorModeOverride(saved);
-    if (savedTab !== undefined) { app.__setTab(savedTab); app.render(); }
-  }
-});
-
-check('Vue Directeur : le mode suit le rôle par défaut, un choix manuel prime', () => {
-  const saved = app.__getDirectorModeOverride();
-  try {
-    app.__setDirectorModeOverride(null);
-    // Sans compte créé, on reste sur la vue technique : basculer d'office
-    // aurait changé l'écran d'accueil d'Alexis sans qu'il le demande.
     assert.equal(app.directorModeActive(), false,
       'sans authentification, le mode Directeur ne doit pas s’activer tout seul');
-    app.__setDirectorModeOverride(true);
-    assert.equal(app.directorModeActive(), true, 'un choix manuel doit primer sur le rôle');
-    app.__setDirectorModeOverride(false);
-    assert.equal(app.directorModeActive(), false, 'le retour à la vue complète doit primer aussi');
+
+    await app.createUser({ username: 'dir_mode', role: 'directeur', password: 'MotDePasse1!xyz' });
+    await app.signIn('dir_mode', 'MotDePasse1!xyz');
+    assert.equal(app.directorModeActive(), true, 'un directeur est en mode Directeur');
+
+    app.signOut();
+    await app.createUser({ username: 'cdg_mode', role: 'controleur', password: 'MotDePasse1!xyz' });
+    await app.signIn('cdg_mode', 'MotDePasse1!xyz');
+    assert.equal(app.directorModeActive(), false, 'un contrôleur reste sur la vue complète');
   } finally {
-    app.__setDirectorModeOverride(saved);
+    authFixture();
+    if (savedTab !== undefined) { app.__setTab(savedTab); app.render(); }
   }
 });
 
@@ -28591,18 +28604,22 @@ check('Validation hiérarchique : brouillon → soumis → validé fige une vers
   }
 });
 
-check('Validation hiérarchique : valider est réservé au contrôleur, soumettre reste ouvert en aperçu directeur', () => {
+await checkAsync('Validation hiérarchique : valider est réservé au contrôleur, soumettre reste ouvert à un directeur', async () => {
   assert.ok(!app.authEnabled(), 'ce contrôle suppose un état de départ sans compte actif');
   assert.strictEqual(app.canValidateCompanyBudget(), true,
     'sans aucun compte créé, tout le monde peut (même logique que canEditObjectives)');
+  authFixture();
   try {
-    app.__setDirectorModeOverride(true);
+    // Par un vrai compte connecté : la bascule de mode du menu, qui servait
+    // ici de raccourci, a été retirée le 04/10/2026.
+    await app.createUser({ username: 'dir_validation', role: 'directeur', password: 'MotDePasse1!xyz' });
+    await app.signIn('dir_validation', 'MotDePasse1!xyz');
     assert.strictEqual(app.canValidateCompanyBudget(), false,
-      'un directeur ne valide ni ne rouvre un budget — l’aperçu doit le refléter');
+      'un directeur ne valide ni ne rouvre un budget');
     assert.strictEqual(app.canSubmitCompanyValidation('peu importe'), true,
       'soumettre reste ouvert, y compris à un directeur, contrairement à valider');
   } finally {
-    app.__setDirectorModeOverride(false);
+    authFixture();
   }
 });
 
@@ -28753,6 +28770,30 @@ check('Invitation : le message s’ouvre dans la messagerie du poste', () => {
   assert.strictEqual(openCalls.length, 3,
     'création, renvoi confirmé et renvoi direct ouvrent tous les trois la messagerie');
   assert.ok(/function openInviteMail\(/.test(source), 'l’ouverture passe par une fonction unique');
+});
+
+check('Pied de page : plus de mention « Hors ligne »', () => {
+  // 04/10/2026 — Alexis : « ca porte à confusion ». La phrase « Hors ligne :
+  // aucune donnée ne quitte ce poste » se lisait comme un état de connexion,
+  // et elle était devenue inexacte au mot près depuis que la page interroge
+  // le serveur pour les droits d'accès (`serverRequest`). Le pied de page ne
+  // garde que la version, le plan comptable et l'état du chiffrement.
+  // Le contrôle porte sur la seule affectation du pied de page : la même
+  // idée, formulée avec sa réserve (« tant qu'elle n'est pas connectée à un
+  // serveur »), reste légitime dans « À propos » et sur l'écran de connexion.
+  const footerStart = appSource.indexOf("getElementById('footer').innerHTML =");
+  assert.ok(footerStart !== -1, 'l’affectation du pied de page doit exister');
+  const footerBlock = appSource.slice(footerStart, appSource.indexOf(';', footerStart));
+  assert.ok(!/Hors ligne|quitte ce poste/.test(footerBlock),
+    'le pied de page ne doit plus annoncer que les données ne quittent pas le poste');
+  assert.match(footerBlock, /importé le '[\s\S]*?\(isProtected\(\)/,
+    'le pied de page enchaîne directement le plan comptable et l’état du chiffrement');
+  // Le sas réseau lui-même reste entier : c'est une phrase d'affichage qui
+  // disparaît, pas une protection.
+  for (const name of ['fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource']) {
+    assert.ok(appSource.includes("seal(globalThis, '" + name + "'"),
+      name + ' doit rester neutralisé par sealNetwork()');
+  }
 });
 
 /* --- 5. Verdict ------------------------------------------------------- */

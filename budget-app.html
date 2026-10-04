@@ -1699,31 +1699,6 @@
     padding: 0 var(--space-2);
   }
 
-  /* Bandeau d'aperçu directeur : présent sur tous les écrans tant que
-     l'aperçu dure. Volontairement voyant — on ne doit jamais croire qu'on
-     regarde sa propre vue alors qu'on regarde celle d'un directeur. */
-  .director-preview-bar {
-    display: flex; align-items: center; gap: var(--space-25); flex-wrap: wrap;
-    padding: var(--space-25) var(--space-35); margin-bottom: var(--space-4);
-    border: 1px solid var(--gold-line); border-left: 4px solid var(--gold);
-    border-radius: var(--radius); background: var(--gold-soft);
-    font-size: var(--text-md); color: var(--text);
-  }
-  .director-preview-bar span:nth-of-type(2) { flex: 1 1 320px; }
-  .director-preview-dot {
-    width: 9px; height: 9px; border-radius: 50%; background: var(--gold);
-    flex: 0 0 auto;
-  }
-
-  /* Pastille de mode dans l'en-tête : signale sans ambiguïté qu'on
-     regarde l'application « comme un Directeur » — indispensable pour
-     Alexis qui bascule d'un mode à l'autre pour vérifier son travail. */
-  .dir-mode-badge {
-    display: inline-flex; align-items: center; gap: var(--space-15);
-    padding: 3px var(--space-25); border-radius: var(--radius-pill); margin-left: var(--space-25);
-    background: var(--gold-soft); color: var(--accent-text);
-    font-size: var(--text-xs); font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
-  }
   /* ---- Suivi du chiffre d'affaires jour par jour ----
      Mise en forme conditionnelle : au-dessus de l'objectif du jour en
      vert, en dessous en rouge. Le fond teinté (et pas seulement la
@@ -3052,10 +3027,6 @@
     <button type="button" class="account-panel-close" id="account-panel-close" aria-label="Fermer">✕</button>
   </div>
   <div class="account-panel-body">
-    <!-- Bascule du mode Directeur. Élément statique comme ses voisins :
-         seul son libellé change (voir `syncAccountPanelDom()`), jamais le
-         nœud lui-même, pour ne pas perdre l'écouteur posé une fois. -->
-    <button type="button" id="director-mode-toggle">Passer en vue Directeur</button>
     <button type="button" id="settings-link" hidden>Paramètres</button>
     <!-- Administration (Sociétés, Affichage, Plan comptable, Export, Sécurité,
          Autorisations) : vivait derrière un engrenage à l'autre bout de la
@@ -3412,7 +3383,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-04.1';
+const APP_BUILD = '2026-10-04.2';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -5207,22 +5178,6 @@ function adoptState(parsed) {
 
 let state = null;
 let tab = 'saisie';
-/**
- * Mode Directeur : réglage d'affichage, pas un droit. Il ne cache jamais
- * rien — tous les onglets restent dans la barre de navigation, tous les
- * écrans restent atteignables (consigne explicite des supérieurs d'Alexis
- * le 19/08/2026 : « ne PAS supprimer des fonctionnalités pour simplifier »,
- * « ne PAS cacher des fonctionnalités dans des sous-menus complexes »). Ce
- * qu'il change : l'écran d'atterrissage devient le tableau de bord
- * Directeur (`viewDirecteur()`), pensé pour aller vite et lire l'essentiel
- * d'un coup d'œil, au lieu de la Saisie ligne à ligne.
- *
- * `null` = pas de choix explicite, on suit le rôle (un Directeur démarre
- * dedans, un Contrôleur en dehors). Un choix manuel prime et vaut pour la
- * session — ce qui permet aussi à Alexis, administrateur, de basculer à
- * volonté pour voir exactement ce que voit un Directeur.
- */
-let directorModeOverride = null;
 let currentCenter = 'PRODUITS';
 let planQuery = '';
 /** Plan comptable actuellement parcouru dans l'onglet Plan comptable — `null` = plan de base. */
@@ -7414,78 +7369,34 @@ const USER_ROLES = [
 /* ---------------- Mode Directeur (réglage d'affichage) ---------------- */
 
 /**
- * Le mode Directeur est-il actif ? Un choix manuel (`directorModeOverride`)
- * prime toujours ; sinon on suit le rôle. Sans comptes créés du tout
- * (application ouverte sans authentification), on reste sur la vue
- * technique historique : c'est le cas d'Alexis en usage courant, et
- * basculer d'office aurait changé son écran d'accueil sans qu'il demande.
+ * Le mode Directeur est-il actif ? Il suit le RÔLE de la personne
+ * connectée, et rien d'autre.
+ *
+ * 04/10/2026 — Alexis : « supprime le mode switch (dans le menu) passage
+ * mode directeur ou vue complete et assure toi que ca soit dans les droits
+ * des utilisateurs lors de la configuration de ses droits ». Le menu du
+ * compte portait une bascule manuelle (`directorModeOverride`) doublée d'un
+ * aperçu : deux façons concurrentes de répondre à « que voit cette
+ * personne ? ». Il n'en reste qu'une, le rôle réglé dans
+ * Paramètres › Droits d'accès (`serverRightsRolePanel`).
+ *
+ * Sans comptes créés du tout (application ouverte sans authentification),
+ * on reste sur la vue technique historique : c'est le cas d'Alexis en usage
+ * courant, et basculer d'office aurait changé son écran d'accueil sans
+ * qu'il demande.
  */
 function directorModeActive() {
-  if (directorModeOverride !== null) return directorModeOverride;
   const user = currentUser();
   return Boolean(user) && user.role === 'directeur';
 }
 
-/**
- * Bascule le mode Directeur. Le passage d'un mode à l'autre ramène sur
- * l'écran d'accueil correspondant (tableau de bord Directeur / Saisie),
- * sinon on resterait sur un écran qui n'a plus rien à voir avec le mode
- * qu'on vient de demander — et l'intérêt du bouton, pour Alexis, est
- * justement de voir immédiatement ce que voit un Directeur.
- */
-function setDirectorMode(on) {
-  const next = Boolean(on);
-  if (directorModeActive() === next && directorModeOverride !== null) return;
-  directorModeOverride = next;
-  tab = next ? DIRECTOR_TAB : defaultTabForCurrentUser();
-  requestViewFade();
-  render();
-}
-
-/**
- * Sommes-nous en train de PRÉVISUALISER l'application en directeur, sans
- * l'être réellement ?
- *
- * Alexis, après avoir testé la première version : « je veux deux
- * environnements distincts pour les CDG et les directeurs ; quand je clique
- * sur Vue Directeur je veux pouvoir voir exactement ce que le directeur
- * verra quand il se connectera ». C'était le défaut de la version
- * précédente : le mode Directeur ne changeait que l'écran d'atterrissage,
- * sans jamais appliquer les restrictions d'un directeur. Alexis, contrôleur
- * et administrateur, continuait donc de tout voir — le bouton ne montrait
- * rien de ce qu'il promettait.
- *
- * Désormais l'aperçu applique le périmètre type d'un directeur
- * (`DIRECTEUR_DEFAULT_TABS`, `DIRECTEUR_DEFAULT_PAGES`,
- * `DIRECTEUR_DEFAULT_COST_CENTERS`) à la session en cours : mêmes onglets,
- * mêmes rubriques, mêmes centres de coûts.
- *
- * Un directeur, lui, n'est jamais « en aperçu » : il vit dans son propre
- * périmètre, tel que défini compte par compte dans Autorisations — qui peut
- * légitimement différer du périmètre type si un accès lui a été rouvert.
- * L'aperçu montre le périmètre STANDARD, celui d'un directeur fraîchement
- * créé, ce qui est bien la question qu'on se pose en cliquant sur le bouton.
- */
-function directorPreviewActive() {
-  if (!directorModeActive()) return false;
-  const user = currentUser();
-  return !user || user.role !== 'directeur';
-}
-
-/** L'onglet est-il dans le périmètre type d'un directeur ? */
-function directorPreviewAllowsTab(tabId) {
-  // Paramètres (compte personnel, mot de passe) n'est plus lié à un
-  // périmètre métier — un directeur y a toujours accès, comme tout compte.
-  if (tabId === 'parametres') return true;
-  return DIRECTEUR_DEFAULT_TABS.indexOf(tabId) !== -1;
-}
-
-/** La rubrique est-elle dans le périmètre type d'un directeur ? */
-function directorPreviewAllowsPage(tabId, pageId) {
-  if (!directorPreviewAllowsTab(tabId)) return false;
-  const restricted = DIRECTEUR_DEFAULT_PAGES[tabId];
-  return restricted ? restricted.indexOf(pageId) !== -1 : true;
-}
+/* L'aperçu « vue Directeur » (`directorPreviewActive`, son bandeau et ses
+   deux filtres de périmètre type) a disparu le 04/10/2026 avec la bascule
+   du menu du compte qui l'ouvrait : ce que voit une personne se lit
+   désormais dans ses droits (rôle + matrice), à un seul endroit.
+   `DIRECTEUR_DEFAULT_TABS`, `DIRECTEUR_DEFAULT_PAGES` et
+   `DIRECTEUR_DEFAULT_COST_CENTERS` restent utilisés pour ce qu'ils sont :
+   les droits de départ d'un directeur fraîchement créé. */
 
 /**
  * Onglet d'atterrissage hors mode Directeur : la Saisie si elle est
@@ -8227,10 +8138,6 @@ function allowedCompanyIds(user) {
  * des charges (Saisie, P&L, Forecast, exports, consolidation).
  */
 function allowedCostCenterIds(user) {
-  // En aperçu directeur, c'est le périmètre type qui s'applique — pour que
-  // le grisage affiché en aperçu corresponde à ce qu'un vrai directeur ne
-  // peut pas modifier.
-  if (directorPreviewActive()) return new Set(DIRECTEUR_DEFAULT_COST_CENTERS);
   if (!user) return null;
   return Array.isArray(user.allowedCostCenters) ? new Set(user.allowedCostCenters) : null;
 }
@@ -8335,11 +8242,6 @@ function isCenterAllowed(user, centerId) {
  * budget (quelles charges existent, sur quel compte, dans quel centre)
  * reste la main du contrôle de gestion ; un directeur renseigne les
  * MONTANTS des lignes de son périmètre et consulte tout le reste.
- *
- * L'aperçu directeur compte comme un directeur (`directorModeActive()`
- * couvre les deux cas) : sinon l'aperçu montrerait des boutons qu'un vrai
- * directeur n'a jamais sous les yeux, ce qui est exactement le défaut que
- * l'aperçu doit éviter.
  */
 function canEditLineStructure() {
   return !directorModeActive();
@@ -8347,12 +8249,6 @@ function canEditLineStructure() {
 
 /** Centres de coûts visibles pour la personne connectée, dans l'ordre de `COST_CENTERS`. */
 function visibleCostCenters() {
-  // Aperçu directeur d'abord : c'est ce qui fait disparaître les huit
-  // autres centres de la barre de la Saisie pendant l'aperçu.
-  if (directorPreviewActive()) {
-    const preview = new Set(DIRECTEUR_DEFAULT_COST_CENTERS);
-    return COST_CENTERS.filter(function (c) { return preview.has(c.id); });
-  }
   if (!authEnabled()) return COST_CENTERS;
   const user = currentUser();
   if (!user) return COST_CENTERS;
@@ -8727,13 +8623,10 @@ async function signIn(username, password) {
   };
   user.lastLoginAt = new Date().toISOString();
   logAuthEvent('sign-in', 'Connexion de « ' + user.username + ' »');
-  // Chaque connexion repart du mode correspondant au rôle : un directeur
+  // Chaque connexion part du mode correspondant au rôle : un directeur
   // atterrit sur sa Vue Directeur (demande du 19/08/2026 : « faire en
   // sorte que l'utilisateur arrive sur la Vue Manager/Directeur par
-  // défaut au lancement »), un contrôleur sur la vue technique. Le choix
-  // manuel de la session précédente ne doit pas suivre l'utilisateur
-  // suivant sur le même poste.
-  directorModeOverride = null;
+  // défaut au lancement »), un contrôleur sur la vue technique.
   tab = user.role === 'directeur' && canAccessTab(user, DIRECTOR_TAB)
     ? DIRECTOR_TAB
     : (firstAllowedTab(user) || 'saisie');
@@ -9085,11 +8978,6 @@ function closeAccountPanel() {
  * celui de tous les fichiers antérieurs à cette fonctionnalité.
  */
 function tabAllowedNow(tabId) {
-  // L'aperçu directeur passe AVANT le raccourci « pas de comptes = tout
-  // ouvert » : Alexis travaille le plus souvent sans authentification, et
-  // c'est précisément dans ce cas qu'il a besoin de voir le périmètre d'un
-  // directeur. Sans cette priorité, le bouton n'aurait aucun effet chez lui.
-  if (directorPreviewActive()) return directorPreviewAllowsTab(tabId);
   // Droits tenus par le serveur : les comptes de ce navigateur ne servent
   // plus, leur écran non plus — les droits se règlent dans Paramètres.
   if (serverSession && tabId === 'autorisations') return false;
@@ -9206,14 +9094,6 @@ function renderNavPermissions() {
 
 /** Retire du DOM les rubriques non autorisées de l'onglet affiché. */
 function applyPagePermissions() {
-  // Aperçu directeur : on filtre sur le périmètre TYPE, quel que soit le
-  // rôle réel de la personne connectée — c'est tout l'objet de l'aperçu.
-  if (directorPreviewActive()) {
-    document.querySelectorAll('#view [data-panel]').forEach(function (element) {
-      if (!directorPreviewAllowsPage(tab, element.dataset.panel)) element.remove();
-    });
-    return;
-  }
   if (!authEnabled()) return;
   // Paramètres n'est pas dans la matrice (voir `tabAllowedNow`) : ses
   // rubriques sont à tout compte connecté, sans quoi un directeur n'y
@@ -10834,28 +10714,7 @@ function calculatorInsert() {
  * `'view-enter-left'` (glissé directionnel en changeant de menu — voir
  * `render()` pour le choix du sens) sont les valeurs possibles.
  */
-/**
- * Bandeau d'aperçu, ajouté en tête de TOUS les écrans pendant un aperçu
- * directeur. Sur le seul tableau de bord il ne suffirait pas : c'est en
- * ouvrant la Saisie et en n'y trouvant que le Food & Beverage qu'on se
- * demande si l'application est cassée. Le bandeau répond à la question
- * avant qu'elle ne se pose, et porte sa propre sortie.
- */
-function directorPreviewBanner() {
-  if (!directorPreviewActive()) return '';
-  return '<div class="director-preview-bar">' +
-    '<span class="director-preview-dot"></span>' +
-    '<span><strong>Aperçu vue Directeur.</strong> Vous voyez l’application exactement comme la verra ' +
-    'un directeur : mêmes onglets, mêmes rubriques, mêmes centres de coûts. Vos propres droits sont ' +
-    'intacts.</span>' +
-    '<button type="button" class="mini" data-exit-director-preview="1">Revenir à ma vue</button>' +
-    '</div>';
-}
-
 function setViewHtml(html, transitionClass) {
-  // Le bandeau se pose ici, seul point par lequel passent tous les écrans :
-  // l'ajouter vue par vue aurait demandé de ne pas en oublier une seule.
-  html = directorPreviewBanner() + html;
   const view = document.getElementById('view');
   const scrollY = (typeof window !== 'undefined' && window.scrollY) || 0;
   // `#view` est <main>, et c'est lui qui défile (il porte `overflow: auto`)
@@ -11643,16 +11502,6 @@ function renderHeader() {
   document.getElementById('account-panel-avatar').innerHTML = headerMenuAvatarHtml();
   const accountUser = authEnabled() ? currentUser() : null;
   document.getElementById('account-panel-name').textContent = accountUser ? accountUser.username : 'Mon compte';
-  // Bascule du mode Directeur : le libellé dit toujours ce que le clic
-  // va FAIRE, jamais l'état courant — « Passer en… » plutôt que « Vue
-  // Directeur », qui laisserait deviner s'il s'agit d'un état ou d'une
-  // action. Le mode actif se lit sur la pastille de l'en-tête.
-  const modeToggle = document.getElementById('director-mode-toggle');
-  if (modeToggle) {
-    modeToggle.textContent = directorModeActive()
-      ? 'Revenir à la vue complète'
-      : 'Passer en vue Directeur';
-  }
   refreshUndoButtons();
 }
 
@@ -13426,7 +13275,6 @@ function canSubmitCompanyValidation(companyId) {
 
 /** Seul le contrôle de gestion valide ou repasse un budget en brouillon — même logique que `canEditObjectives()`. */
 function canValidateCompanyBudget() {
-  if (directorPreviewActive()) return false;
   if (!authEnabled()) return true;
   const user = currentUser();
   return Boolean(user) && user.role === 'controleur';
@@ -14183,13 +14031,6 @@ function objectivesOf(companyId) {
  * peut : il n'y a alors pas de rôle à faire respecter.
  */
 function canEditObjectives() {
-  // Aperçu directeur d'abord, et avant le raccourci « pas de comptes =
-  // tout permis » : un directeur ne fixe jamais d'objectif, l'aperçu doit
-  // donc masquer le formulaire de création. Sans cette ligne, Alexis
-  // (contrôleur) voyait en aperçu un formulaire qu'un vrai directeur
-  // n'aura jamais sous les yeux — l'aperçu montrait autre chose que la
-  // réalité, ce qui est exactement le défaut qu'il fallait corriger.
-  if (directorPreviewActive()) return false;
   if (!authEnabled()) return true;
   const user = currentUser();
   return Boolean(user) && user.role === 'controleur';
@@ -22999,7 +22840,15 @@ function parametresDroitsPanels() {
     (selected ? serverRightsRolePanel(selected) + authPermissionsPanel() + authScopePanelHtml(selected) : '');
 }
 
-/** Rôle et statut d'administrateur de la personne choisie. */
+/**
+ * Rôle et statut d'administrateur de la personne choisie.
+ *
+ * Le rôle est le SEUL réglage de la vue depuis le 04/10/2026 : la bascule
+ * « Passer en vue Directeur / Revenir à la vue complète » du menu du compte
+ * a été retirée (Alexis : « assure toi que ca soit dans les droits des
+ * utilisateurs lors de la configuration de ses droits »). Le texte le dit
+ * donc en clair ici — c'est l'endroit où la question se pose désormais.
+ */
 function serverRightsRolePanel(user) {
   const roleOptions = USER_ROLES.map(function (r) {
     return '<option value="' + r.id + '"' + (user.role === r.id ? ' selected' : '') + '>' + escapeHtml(r.label) + '</option>';
@@ -23007,8 +22856,10 @@ function serverRightsRolePanel(user) {
   return panel('parametres-droits-role', 'Rôle — ' + (user.displayName || user.account),
     '<div class="field" style="margin-bottom:12px"><label for="server-rights-role">Rôle</label>' +
     '<select id="server-rights-role">' + roleOptions + '</select>' +
-    '<p class="muted" style="margin:6px 0 0;font-size:12px">Changer de rôle repart des droits par défaut de ce rôle ' +
-    '(contrôleur : tout ; directeur : saisie et résultats), à affiner ensuite ci-dessous.</p></div>' +
+    '<p class="muted" style="margin:6px 0 0;font-size:12px">Le rôle décide de la vue : un <strong>directeur</strong> ' +
+    'arrive sur la vue Directeur (tableau de bord, saisie et résultats), un <strong>contrôleur de gestion</strong> sur ' +
+    'la vue complète. Il n’y a pas d’autre réglage ailleurs dans l’application. Changer de rôle repart des droits par ' +
+    'défaut de ce rôle, à affiner ensuite ci-dessous.</p></div>' +
     '<label class="auth-editor-toggle-row"><span class="grow">Administrateur (règle les droits de chacun dans Paramètres)</span>' +
     '<input type="checkbox" class="nice-check" id="server-rights-admin"' + (isAdminUser(user) ? ' checked' : '') + ' /></label>' +
     '<div class="row" style="margin-top:12px"><button class="action" data-server-rights-save-role="' + escapeHtml(user.id) + '">' +
@@ -25810,11 +25661,6 @@ document.getElementById('about-button').addEventListener('click', function () {
   toggleAbout();
 });
 
-document.getElementById('director-mode-toggle').addEventListener('click', function () {
-  setDirectorMode(!directorModeActive());
-  closeAccountPanel();
-});
-
 document.getElementById('settings-link').addEventListener('click', function () {
   if (!tabAllowedNow('parametres')) return;
   tab = 'parametres';
@@ -27178,7 +27024,6 @@ document.getElementById('view').addEventListener('click', function (event) {
   const dirGoto = target.closest('button[data-dir-goto]');
   if (dirGoto) { tab = dirGoto.dataset.dirGoto; requestViewFade(); render(); return; }
 
-  if (target.closest('button[data-exit-director-preview]')) { setDirectorMode(false); return; }
 
   // Matrice CA officielle : export Excel, et import via le sélecteur de fichier caché.
   if (target.closest('button[data-export-ca-matrix]')) { downloadCaMatrix(); return; }
