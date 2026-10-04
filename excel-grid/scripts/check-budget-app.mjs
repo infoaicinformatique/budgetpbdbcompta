@@ -521,6 +521,7 @@ const app = await importApp(
     'export function __getServerData() { return serverData; }\n' +
     'export function __clearSaveTimer() { if (saveTimer !== null) { clearTimeout(saveTimer); saveTimer = null; } }\n' +
     'export function __clearServerSession() { serverSession = null; serverDirectory = null; }\n' +
+    'export function __setServerDataForTest(v) { serverData = v; }\n' +
     'export function __setServerDirectory(v) { serverDirectory = v; }\n' +
     'export function __setAuthPermissionsIdForTest(v) { authPermissionsId = v; }\n' +
     'export function __setAuthEditingId(v) { authEditingId = v; }\n' +
@@ -18744,6 +18745,30 @@ check('Sociétés : un périmètre vide n’affiche JAMAIS une société hors dr
     app.state.activeCompany = savedActive;
     if (savedTab !== undefined) { app.__setTab(savedTab); app.render(); }
   }
+});
+
+check('Sociétés : une panne du serveur n’est pas présentée comme un défaut de droits', () => {
+  // Revue du 04/10/2026 : `loadServerData()` laisse un état SANS société
+  // quand la lecture du serveur échoue (`emptyServerState`). Pour une
+  // personne au périmètre restreint, cela ressemblait exactement à un
+  // périmètre vide, et l'écran accusait les droits — alors que le détail de
+  // l'erreur ne s'affiche que dans Paramètres › Données.
+  const page = app.companyScopeEmptyPageHtml.bind(null);
+  assert.ok(app.companyScopeEmptyPageHtml().includes('Aucune société ne vous est attribuée'),
+    'hors panne, l’écran parle bien du périmètre de droits');
+  app.__setServerDataForTest({ error: 'Erreur 503', saveError: null, revision: 0 });
+  try {
+    const html = app.companyScopeEmptyPageHtml();
+    assert.ok(html.includes('Données du serveur indisponibles'),
+      'en panne de lecture, l’écran doit nommer la vraie cause');
+    assert.ok(html.includes('Erreur 503'), 'et reprendre le message du serveur');
+    assert.ok(!html.includes('Aucune société ne vous est attribuée'),
+      'sans accuser le périmètre de droits');
+    assert.ok(html.includes('Paramètres › Données'), 'en renvoyant là où se lit la synchronisation');
+  } finally {
+    app.__setServerDataForTest(null);
+  }
+  assert.equal(typeof page, 'function');
 });
 
 check('Sociétés : sans borne de droits, le périmètre n’est jamais déclaré vide', () => {

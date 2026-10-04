@@ -3393,7 +3393,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-04.1';
+const APP_BUILD = '2026-10-04.2';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -11372,6 +11372,22 @@ function viewForTab(tabId) {
  * interdite.
  */
 function companyScopeEmptyPageHtml() {
+  // Données du serveur illisibles : ne pas accuser le périmètre de droits
+  // d'une panne de lecture. `emptyServerState()` laisse alors un état sans
+  // société, ce qui ressemble exactement à un périmètre vide — et le détail
+  // de l'erreur ne s'affiche que dans Paramètres › Données
+  // (`parametresDonneesPanel`), où personne n'irait sans y être renvoyé.
+  if (serverData && (serverData.error || serverData.saveError)) {
+    return viewPage({
+      title: 'Données du serveur indisponibles',
+      hint: 'Ce n’est pas un problème de droits : le serveur n’a pas pu être lu.',
+      body: '<div class="alert error">' +
+        '<p style="margin:0 0 8px">' + escapeHtml(String(serverData.error || serverData.saveError)) + '</p>' +
+        '<p class="muted" style="margin:0;font-size:12px">Rechargez la page dans un instant. Le détail ' +
+        'et l’état de la synchronisation sont dans <strong>Paramètres › Données</strong>.</p>' +
+        '</div>',
+    });
+  }
   return viewPage({
     title: 'Aucune société ne vous est attribuée',
     hint: 'Vos droits ouvrent bien l’application, mais aucune société de votre périmètre n’est disponible ici.',
