@@ -143,8 +143,16 @@ fichiers de `excel-grid/` ont bougé. Les sections 1 à 6 s'éditent à la main.
   reçoit des `tlsOptions`, même sur `ldap://` — ne les donner qu'en `ldaps://`.
   Un nouveau fichier servi doit aussi être ajouté au `Dockerfile` et au
   `.dockerignore` (liste blanche).
-- Le serveur n'est pas joignable en SSH depuis le poste de développement :
-  les opérations serveur sont à faire faire par l'utilisateur (commandes du README).
+- **Où tourne cette session ?** Vérifier avant de proposer des commandes à
+  l'utilisateur : `hostname` (`AIServer` = le serveur de production lui-même,
+  192.168.100.236) et `docker ps`. Sur AIServer, le dépôt de travail EST
+  `/opt/docker/budgetpbdbcompta`, le conteneur de production tourne là, et les
+  opérations serveur se font directement (constaté le 04/10/2026 ; la note
+  précédente affirmait le contraire). Depuis un autre poste, le serveur n'est
+  pas joignable en SSH : les opérations sont alors à faire faire par
+  l'utilisateur (commandes du README).
+- Fichiers de production **hors git**, à ne jamais committer : `.env` (mots de
+  passe LDAP, voir `.gitignore`) et le volume `/data` (droits et budgets).
 - Vérifier la production : `curl https://budgetpbdbcompta.aic-informatique.net/healthz`
   → `ok` ; `/` → 401 sans identifiants, 200 avec. La page servie doit être
   identique à `main` aux fins de ligne près (copie Windows en CRLF via
