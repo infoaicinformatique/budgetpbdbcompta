@@ -59,6 +59,15 @@ Comportement :
   refuse de démarrer (`sudo docker logs budgetpbdbcompta`) ;
 - mot de passe vide et identifiants hors `[A-Za-z0-9._@-]` refusés sans
   interroger l'annuaire.
+- **ce que le serveur lit dans l'annuaire** : `sAMAccountName` (ou `uid`)
+  comme identifiant, `displayName` (ou `cn`) comme nom affiché, et `mail`
+  comme adresse de courrier. Rien d'autre, et rien n'est recopié dans les
+  fichiers du serveur : ces valeurs sont relues à chaque ouverture de page et
+  à chaque actualisation de Paramètres › Droits d'accès, l'annuaire reste le
+  seul endroit où on les corrige. Une fiche d'annuaire sans `mail` n'affiche
+  aucune adresse : le `userPrincipalName` (« prenom.nom@domaine ») n'est
+  volontairement pas utilisé comme repli, ce n'est pas forcément une boîte
+  aux lettres qui existe.
 - l'état de la connexion s'affiche dans l'application, **Paramètres › LDAP**
   (lecture seule) : voie de connexion (annuaire ou compte local), identifiant,
   entrée de l'annuaire, serveurs, chiffrement, OU de recherche, groupe. Le
@@ -90,7 +99,8 @@ centres de coûts — sont tenus par le serveur, les mêmes sur tous les postes.
   exemple `CN=budgetpbdbcompta,OU=…,DC=pbcannes,DC=org`. Les autres sont
   refusés à la connexion (401).
 - **Ce que chacun voit** : réglé par un administrateur dans **Paramètres ›
-  Droits d'accès**, qui liste les membres du groupe. Un membre sans droits
+  Droits d'accès**, qui liste les membres du groupe avec leur nom et, quand
+  l'annuaire en porte une, leur adresse de courrier. Un membre sans droits
   n'a accès qu'à Paramètres (fermé par défaut, y compris si le serveur ne
   répond pas).
 - **Administrateurs** : ceux que l'écran désigne (case « Administrateur »),

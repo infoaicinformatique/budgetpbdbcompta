@@ -97,7 +97,7 @@ const expectedLocalAuth = localAuthEnabled
 // Un compte désactivé dans l'annuaire perd donc l'accès au plus tard après
 // ce délai.
 const LDAP_CACHE_MS = (Number(process.env.LDAP_CACHE_SECONDS) || 300) * 1000;
-const ldapCache = new Map(); // condensat de l'en-tête → { expires, username, account, displayName, dn }
+const ldapCache = new Map(); // condensat de l'en-tête → { expires, username, account, displayName, mail, dn }
 
 // Limitation des essais : au-delà de MAX_FAILURES échecs en FAILURE_WINDOW_MS
 // depuis une même adresse, les demandes sont refusées (429) jusqu'à la fin
@@ -141,7 +141,7 @@ function parseBasic(header) {
 
 /**
  * Contrôle d'accès : compte local d'abord, puis annuaire LDAP. Renvoie
- * `{ status, method, username, account, displayName, dn }` : `status` est
+ * `{ status, method, username, account, displayName, mail, dn }` : `status` est
  * le code HTTP à répondre en cas de refus (401 identifiants refusés, 429
  * trop d'essais, 503 annuaire indisponible), ou 0 si l'accès est accordé ;
  * `method` dit par quelle voie (`ldap`, `local`, `none` quand l'accès est
@@ -161,7 +161,7 @@ async function authenticate(req) {
   if (cached && cached.expires > Date.now()) {
     return {
       status: 0, method: 'ldap', username: cached.username, account: cached.account,
-      displayName: cached.displayName, dn: cached.dn,
+      displayName: cached.displayName, mail: cached.mail, dn: cached.dn,
     };
   }
   if (cached) ldapCache.delete(key);
@@ -187,7 +187,8 @@ async function authenticate(req) {
   failures.delete(address);
   if (ldapCache.size > 1000) ldapCache.clear();
   const identity = {
-    username: credentials.username, account: entry.account, displayName: entry.displayName, dn: entry.dn,
+    username: credentials.username, account: entry.account, displayName: entry.displayName,
+    mail: entry.mail || '', dn: entry.dn,
   };
   ldapCache.set(key, Object.assign({ expires: Date.now() + LDAP_CACHE_MS }, identity));
   console.log(`Connexion LDAP : « ${credentials.username} » (${entry.dn}) depuis ${address}`);
@@ -198,8 +199,9 @@ async function authenticate(req) {
 // (CSP `connect-src 'none'`) : c'est donc la page elle-même qui apporte ces
 // informations, dans un cookie lisible par le script — et non dans le HTML,
 // qui resterait sinon à recompresser à chaque requête. Rien de secret : qui
-// est connecté, par quelle voie, et la configuration publique de l'annuaire
-// (jamais le compte de service ni un mot de passe).
+// est connecté (avec l'adresse de courrier que porte l'annuaire, pour que
+// Paramètres puisse la montrer), par quelle voie, et la configuration
+// publique de l'annuaire (jamais le compte de service ni un mot de passe).
 const AUTH_INFO_COOKIE = 'bm-auth';
 const ldapPublicInfo = ldapConfig ? publicLdapInfo(ldapConfig) : null;
 
@@ -209,6 +211,7 @@ function authInfoCookie(req, auth) {
     method: auth.method,
     username: auth.account || auth.username || '',
     displayName: auth.displayName || '',
+    mail: auth.mail || '',
     dn: auth.dn || '',
     local: localAuthEnabled,
     ldap: ldapPublicInfo,
@@ -358,7 +361,8 @@ async function handleApi(req, res, url, auth) {
   try {
     if (rest === '/moi' && req.method === 'GET') {
       return sendJson(res, 200, {
-        method: auth.method, account: auth.account, displayName: auth.displayName || '', rights: own,
+        method: auth.method, account: auth.account, displayName: auth.displayName || '',
+        mail: auth.mail || '', rights: own,
       });
     }
     if (!own || own.isAdmin !== true) return sendJson(res, 403, { error: 'Réservé aux administrateurs des droits.' });
