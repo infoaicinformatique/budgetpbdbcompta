@@ -3393,7 +3393,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-04.3';
+const APP_BUILD = '2026-10-04.4';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -21844,6 +21844,23 @@ function viewSocietes() {
       (active
         ? '<span class="badge">société active</span>'
         : '<button class="mini" data-open-company="' + c.id + '">ouvrir</button>') +
+      // Import/export société par société (Alexis, 04/10/2026 : « rajoute le
+      // bouton imports/export par société »). Chaque bouton n'apparaît que
+      // si la personne a le droit correspondant — l'onglet Export pour
+      // extraire, l'onglet Import pour la matrice et le dépôt d'un fichier.
+      // La ligne elle-même ne liste que des sociétés du périmètre
+      // (`companiesWithinRights()`), et les gardes de l'import (périmètre de
+      // centres, création de ligne) s'appliquent comme depuis l'onglet.
+      (tabAllowedNow('export')
+        ? '<button class="mini" data-company-export="' + c.id +
+          '" title="Télécharger le détail budgétaire de cette société (Excel)">exporter</button>'
+        : '') +
+      (tabAllowedNow('import')
+        ? '<button class="mini" data-company-matrix="' + c.id +
+          '" title="Télécharger la matrice de saisie des montants de cette société (Excel), à remplir hors ligne">matrice</button>' +
+          '<button class="mini" data-company-import="' + c.id +
+          '" title="Importer un fichier de matrice rempli dans cette société (.xlsx)">importer</button>'
+        : '') +
       (seedBudgetForCompany(c)
         ? '<button class="mini" data-reload-company-budget="' + c.id +
           '" title="Remplacer le budget de cette société par celui du fichier actuellement importé (écrase les modifications faites depuis le dernier import)">recharger import</button>'
@@ -21996,6 +22013,11 @@ function viewSocietes() {
       '« EBITDA réalisé N-1 » alimentent la variance vs réalisé de l’export Consolidation.',
     body:
   section('Sociétés', 'company', sortedCompanies.length,
+    // Un seul sélecteur de fichier pour tout l'onglet : la société visée est
+    // retenue par `companyImportTargetId` au clic sur « importer » (voir le
+    // gestionnaire de `#company-import-input`). Un par ligne encombrerait le
+    // DOM pour rien.
+    '<input type="file" id="company-import-input" accept=".xlsx" style="display:none" />' +
     groupFilterBar + bulkSelectionBar + companiesBodyHtml,
     false,
     // « Monter une société » (assistant guidé) à côté de « Dupliquer » : les
@@ -23507,6 +23529,11 @@ function parametresLdapPanel() {
  */
 let exportSelectedCompanies = null;
 
+/* Société visée par le bouton « importer » d'une ligne de l'onglet Sociétés
+   (04/10/2026) : retenue entre le clic et le choix du fichier, le temps que
+   le sélecteur natif rende la main. Jamais persistée. */
+let companyImportTargetId = null;
+
 /**
  * Angle de sélection dans l'onglet Export : la sélection reste toujours une
  * liste de sociétés (`exportSelectedCompanies`) — c'est uniquement la façon
@@ -24287,8 +24314,10 @@ function importMatrixSheets(companyId) {
 }
 
 /** Déclenche le téléchargement de la matrice import montants (plan comptable complet) de la société active. */
-function downloadImportMatrix() {
-  const company = activeCompany();
+function downloadImportMatrix(targetCompany) {
+  // `targetCompany` : appel depuis la ligne d'une société dans l'onglet
+  // Sociétés (04/10/2026). Sans lui, la société active — l'onglet Import.
+  const company = targetCompany || activeCompany();
   if (!company) return;
   const sheets = importMatrixSheets(company.id);
   if (!sheets.length) {
@@ -24507,8 +24536,9 @@ function importSummaryMessage(fileName, summary, unknown, issues) {
  * ne serait écrasée), soit ouvre la fenêtre de décision (additionner /
  * écraser) si au moins un compte a déjà un montant saisi à la main.
  */
-async function importAccountMatrixFile(file) {
-  const company = activeCompany();
+async function importAccountMatrixFile(file, targetCompany) {
+  const company = targetCompany || activeCompany();
+  if (!company) return;
   if (typeof DecompressionStream !== 'function') {
     showAppError('Ce navigateur ne permet pas de lire un fichier Excel directement '
       + '(DecompressionStream indisponible). Utilisez Chrome ou Edge.');
@@ -27768,6 +27798,32 @@ document.getElementById('view').addEventListener('click', function (event) {
   if (target.dataset.downloadImportMatrix !== undefined) { downloadImportMatrix(); return; }
 
   if (target.id === 'import-matrix-button') { document.getElementById('import-matrix-input').click(); return; }
+
+  // Import/export d'une société depuis sa ligne (onglet Sociétés). Les
+  // droits sont revérifiés ici : un bouton ne doit jamais faire foi, le DOM
+  // se bricole. Même raison pour la société — elle doit être dans le
+  // périmètre de la personne.
+  const companyDataButton = target.closest('button[data-company-export], button[data-company-matrix], button[data-company-import]');
+  if (companyDataButton) {
+    const id = companyDataButton.dataset.companyExport || companyDataButton.dataset.companyMatrix ||
+      companyDataButton.dataset.companyImport;
+    const company = companyById(id);
+    const dataUser = authEnabled() ? currentUser() : null;
+    if (!company || !isCompanyAllowed(dataUser, company.id)) return;
+    if (companyDataButton.dataset.companyExport !== undefined) {
+      if (!tabAllowedNow('export')) return;
+      withBusy('Préparation du fichier…', function () { return handleExport('detail-xlsx', [company]); });
+      return;
+    }
+    if (!tabAllowedNow('import')) return;
+    if (companyDataButton.dataset.companyMatrix !== undefined) {
+      withBusy('Préparation de la matrice…', function () { return downloadImportMatrix(company); });
+      return;
+    }
+    companyImportTargetId = company.id;
+    document.getElementById('company-import-input').click();
+    return;
+  }
   if (target.dataset.closeImportModal !== undefined && isRealClickOn(target)) { cancelPendingImport(); return; }
   if (target.dataset.importMode) { confirmPendingImport(target.dataset.importMode); return; }
 
@@ -29820,6 +29876,23 @@ document.getElementById('view').addEventListener('change', function (event) {
     return;
   }
 
+  // Matrice déposée depuis la ligne d'une société (onglet Sociétés) : elle
+  // part dans CETTE société, pas dans la société active. Les droits sont
+  // revérifiés — le clic et le choix du fichier sont deux moments distincts,
+  // et les droits peuvent avoir changé entre les deux (relecture des fiches
+  // sur le serveur).
+  if (event.target.id === 'company-import-input') {
+    const file = event.target.files && event.target.files[0];
+    event.target.value = '';
+    const company = companyById(companyImportTargetId);
+    companyImportTargetId = null;
+    if (!file || !company) return;
+    const dataUser = authEnabled() ? currentUser() : null;
+    if (!tabAllowedNow('import') || !isCompanyAllowed(dataUser, company.id)) return;
+    withBusy('Import de la matrice…', function () { return importAccountMatrixFile(file, company); });
+    return;
+  }
+
   if (event.target.id === 'forecast-matrix-input') {
     const file = event.target.files && event.target.files[0];
     event.target.value = '';
@@ -29890,7 +29963,11 @@ function sheetName(name) {
   return (cleaned || 'Feuille').slice(0, 31);
 }
 
-function handleExport(kind) {
+function handleExport(kind, companiesOverride) {
+  // `companiesOverride` : export d'UNE société depuis sa ligne dans l'onglet
+  // Sociétés (04/10/2026), sans toucher à la sélection de l'onglet Export —
+  // elle sert à travailler sur un périmètre, on ne la bouscule pas pour un
+  // export ponctuel.
   const stamp = new Date().toISOString().slice(0, 10);
   const generatedOn = 'Généré le ' + new Date().toLocaleDateString('fr-FR') + ' — montants en euros, non audités';
 
@@ -29899,7 +29976,7 @@ function handleExport(kind) {
     return;
   }
 
-  const selected = exportedCompanies();
+  const selected = companiesOverride || exportedCompanies();
   if (!selected.length) { showAppError('Sélectionnez au moins une société à exporter.'); return; }
   const selectionLabel = describeSelection(selected);
   const safeName = exportFileNamePart(selected).replace(/[^\w-]+/g, '_');

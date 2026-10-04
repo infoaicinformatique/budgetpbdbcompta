@@ -18908,6 +18908,79 @@ await checkAsync('Export : accordé par les droits, borné par le périmètre de
   }
 });
 
+await checkAsync('Sociétés : boutons import/export par ligne, affichés selon les droits', async () => {
+  // Alexis, 04/10/2026 : « rajoute le bouton imports/export par société ».
+  // Trois boutons sur la ligne de chaque société — exporter (détail Excel),
+  // matrice (modèle à remplir) et importer (dépôt du fichier rempli) —
+  // chacun conditionné au droit correspondant.
+  const mine = { id: 'btn_mienne', name: 'Boutons Mienne', currency: 'EUR', year: 2026 };
+  const savedCompanies = app.state.companies.slice();
+  const savedLines = app.state.lines.slice();
+  const savedTab = app.__getTab ? app.__getTab() : undefined;
+  authFixture();
+  try {
+    app.state.companies = [mine];
+    app.state.lines = [
+      { id: 'btn_l1', companyId: mine.id, account: '60101100', name: 'Boissons', amounts: months(100) },
+    ];
+    app.state.activeCompany = mine.id;
+    app.resetStateIndexes();
+
+    // Sans authentification (cas d'Alexis), tout est ouvert : les trois boutons.
+    app.__setTab('societes');
+    app.render();
+    const asControleur = document.getElementById('view').innerHTML;
+    for (const attr of ['data-company-export="' + mine.id + '"',
+      'data-company-matrix="' + mine.id + '"', 'data-company-import="' + mine.id + '"']) {
+      assert.ok(asControleur.includes(attr), 'bouton manquant sur la ligne : ' + attr);
+    }
+    assert.ok(asControleur.includes('id="company-import-input"'),
+      'le sélecteur de fichier de l’onglet doit exister');
+
+    // Un directeur qui n'a PAS l'onglet Import garde l'export (il est dans
+    // son périmètre de départ) mais perd matrice et import.
+    const directeur = await app.createUser({ username: 'dir_boutons', role: 'directeur', password: 'MotDePasse1!xyz' });
+    app.setUserPermissions(directeur.id, Object.assign({}, directeur.permissions, {
+      societes: app.pagesOfTab('societes'), import: [],
+    }));
+    await app.signIn('dir_boutons', 'MotDePasse1!xyz');
+    assert.equal(app.tabAllowedNow('export'), true, 'Export reste dans son périmètre de départ');
+    assert.equal(app.tabAllowedNow('import'), false, 'Import ne lui a pas été accordé');
+    app.__setTab('societes');
+    app.render();
+    const asDirecteur = document.getElementById('view').innerHTML;
+    assert.ok(asDirecteur.includes('data-company-export="' + mine.id + '"'),
+      'il garde le bouton exporter');
+    assert.ok(!asDirecteur.includes('data-company-matrix="' + mine.id + '"'),
+      'mais pas la matrice, faute du droit Import');
+    assert.ok(!asDirecteur.includes('data-company-import="' + mine.id + '"'),
+      'ni le dépôt de fichier');
+
+    // Les trois points d'entrée acceptent une société explicite : c'est ce
+    // qui permet d'agir sur une AUTRE société que l'active.
+    assert.match(appSource, /function downloadImportMatrix\(targetCompany\)/,
+      'downloadImportMatrix doit accepter une société');
+    assert.match(appSource, /async function importAccountMatrixFile\(file, targetCompany\)/,
+      'importAccountMatrixFile doit accepter une société');
+    assert.match(appSource, /function handleExport\(kind, companiesOverride\)/,
+      'handleExport doit accepter un périmètre explicite');
+    // L'export ponctuel ne doit pas bousculer la sélection de l'onglet Export.
+    assert.ok(!appSource.includes("setExportSelection([company.id])"),
+      'un export par ligne ne doit pas réécrire la sélection de l’onglet Export');
+    // Et les gestionnaires revérifient les droits : un bouton ne fait pas foi.
+    assert.match(appSource, /if \(!company \|\| !isCompanyAllowed\(dataUser, company\.id\)\) return;/,
+      'le clic doit revérifier que la société est dans le périmètre');
+    assert.match(appSource, /if \(!tabAllowedNow\('import'\) \|\| !isCompanyAllowed\(dataUser, company\.id\)\) return;/,
+      'le dépôt du fichier doit revérifier le droit Import et le périmètre');
+  } finally {
+    authFixture();
+    app.state.companies = savedCompanies;
+    app.state.lines = savedLines;
+    app.resetStateIndexes();
+    if (savedTab !== undefined) { app.__setTab(savedTab); app.render(); }
+  }
+});
+
 /* --- 5. Verdict ------------------------------------------------------- */
 
 if (problems.length) {

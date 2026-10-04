@@ -77,6 +77,58 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Boutons import/export sur la ligne de chaque société (04/10/2026)
+
+Alexis : « rajoute le bouton imports/export par société ». Jusque-là l'import
+portait sur la société **active** (onglet Import) et l'export sur une
+**sélection** (onglet Export) : rien ne permettait d'agir sur une société depuis
+sa propre ligne.
+
+Trois boutons dans la colonne d'actions de l'onglet Sociétés, à côté
+d'« ouvrir » :
+
+- **exporter** → le détail budgétaire de cette société en Excel ;
+- **matrice** → le modèle de saisie des montants de cette société, à remplir
+  hors ligne ;
+- **importer** → dépose un fichier de matrice rempli dans cette société.
+
+Chacun n'apparaît que si la personne a le droit correspondant :
+`tabAllowedNow('export')` pour le premier, `tabAllowedNow('import')` pour les
+deux autres. La ligne elle-même ne liste que des sociétés du périmètre
+(`companiesWithinRights()`), et les gardes de l'import posées plus tôt dans la
+journée (périmètre de centres de coûts, création de ligne réservée au contrôle
+de gestion) s'appliquent exactement comme depuis l'onglet.
+
+Mise en œuvre — les trois points d'entrée existants acceptent désormais une
+société explicite, plutôt que d'être dupliqués :
+
+- `downloadImportMatrix(targetCompany)`,
+- `importAccountMatrixFile(file, targetCompany)`,
+- `handleExport(kind, companiesOverride)`.
+
+Sans argument, chacun retombe sur la société active ou sur la sélection de
+l'onglet Export : les deux onglets ne changent pas d'un iota. En particulier
+l'export d'une ligne **ne touche pas** `exportSelectedCompanies` — cette
+sélection sert à travailler sur un périmètre, on ne la bousculerait pas pour un
+export ponctuel.
+
+Un seul sélecteur de fichier pour tout l'onglet (`#company-import-input`), la
+société visée étant retenue par `companyImportTargetId` entre le clic et le
+choix du fichier. Les deux gestionnaires (clic, puis fichier choisi)
+**revérifient les droits** : un bouton ne fait pas foi, le DOM se bricole — et
+le clic et le choix du fichier sont deux moments distincts, entre lesquels une
+fiche de droits peut avoir été relue sur le serveur.
+
+Contrôle ajouté (« Sociétés : boutons import/export par ligne, affichés selon
+les droits ») : les trois boutons et le sélecteur présents sans
+authentification ; pour un directeur sans l'onglet Import, « exporter » reste et
+les deux autres disparaissent ; les trois signatures acceptent bien une société ;
+la sélection de l'onglet Export n'est pas réécrite ; et les deux gestionnaires
+revérifient périmètre et droit. Vérifié en affichant les boutons sans condition :
+le contrôle échoue.
+
+`APP_BUILD` : `2026-10-04.4`.
+
 ### Import et export sous droits : déjà là, mais l'import ne les respectait pas (04/10/2026)
 
 Alexis : « donne la possibilité (via des droits) (et vérifie que ce n'est pas
@@ -29417,6 +29469,79 @@ await checkAsync('Export : accordé par les droits, borné par le périmètre de
     app.state.lines = savedLines;
     app.setExportSelection(savedCompanies.map((c) => c.id));
     app.resetStateIndexes();
+  }
+});
+
+await checkAsync('Sociétés : boutons import/export par ligne, affichés selon les droits', async () => {
+  // Alexis, 04/10/2026 : « rajoute le bouton imports/export par société ».
+  // Trois boutons sur la ligne de chaque société — exporter (détail Excel),
+  // matrice (modèle à remplir) et importer (dépôt du fichier rempli) —
+  // chacun conditionné au droit correspondant.
+  const mine = { id: 'btn_mienne', name: 'Boutons Mienne', currency: 'EUR', year: 2026 };
+  const savedCompanies = app.state.companies.slice();
+  const savedLines = app.state.lines.slice();
+  const savedTab = app.__getTab ? app.__getTab() : undefined;
+  authFixture();
+  try {
+    app.state.companies = [mine];
+    app.state.lines = [
+      { id: 'btn_l1', companyId: mine.id, account: '60101100', name: 'Boissons', amounts: months(100) },
+    ];
+    app.state.activeCompany = mine.id;
+    app.resetStateIndexes();
+
+    // Sans authentification (cas d'Alexis), tout est ouvert : les trois boutons.
+    app.__setTab('societes');
+    app.render();
+    const asControleur = document.getElementById('view').innerHTML;
+    for (const attr of ['data-company-export="' + mine.id + '"',
+      'data-company-matrix="' + mine.id + '"', 'data-company-import="' + mine.id + '"']) {
+      assert.ok(asControleur.includes(attr), 'bouton manquant sur la ligne : ' + attr);
+    }
+    assert.ok(asControleur.includes('id="company-import-input"'),
+      'le sélecteur de fichier de l’onglet doit exister');
+
+    // Un directeur qui n'a PAS l'onglet Import garde l'export (il est dans
+    // son périmètre de départ) mais perd matrice et import.
+    const directeur = await app.createUser({ username: 'dir_boutons', role: 'directeur', password: 'MotDePasse1!xyz' });
+    app.setUserPermissions(directeur.id, Object.assign({}, directeur.permissions, {
+      societes: app.pagesOfTab('societes'), import: [],
+    }));
+    await app.signIn('dir_boutons', 'MotDePasse1!xyz');
+    assert.equal(app.tabAllowedNow('export'), true, 'Export reste dans son périmètre de départ');
+    assert.equal(app.tabAllowedNow('import'), false, 'Import ne lui a pas été accordé');
+    app.__setTab('societes');
+    app.render();
+    const asDirecteur = document.getElementById('view').innerHTML;
+    assert.ok(asDirecteur.includes('data-company-export="' + mine.id + '"'),
+      'il garde le bouton exporter');
+    assert.ok(!asDirecteur.includes('data-company-matrix="' + mine.id + '"'),
+      'mais pas la matrice, faute du droit Import');
+    assert.ok(!asDirecteur.includes('data-company-import="' + mine.id + '"'),
+      'ni le dépôt de fichier');
+
+    // Les trois points d'entrée acceptent une société explicite : c'est ce
+    // qui permet d'agir sur une AUTRE société que l'active.
+    assert.match(appSource, /function downloadImportMatrix\(targetCompany\)/,
+      'downloadImportMatrix doit accepter une société');
+    assert.match(appSource, /async function importAccountMatrixFile\(file, targetCompany\)/,
+      'importAccountMatrixFile doit accepter une société');
+    assert.match(appSource, /function handleExport\(kind, companiesOverride\)/,
+      'handleExport doit accepter un périmètre explicite');
+    // L'export ponctuel ne doit pas bousculer la sélection de l'onglet Export.
+    assert.ok(!appSource.includes("setExportSelection([company.id])"),
+      'un export par ligne ne doit pas réécrire la sélection de l’onglet Export');
+    // Et les gestionnaires revérifient les droits : un bouton ne fait pas foi.
+    assert.match(appSource, /if \(!company \|\| !isCompanyAllowed\(dataUser, company\.id\)\) return;/,
+      'le clic doit revérifier que la société est dans le périmètre');
+    assert.match(appSource, /if \(!tabAllowedNow\('import'\) \|\| !isCompanyAllowed\(dataUser, company\.id\)\) return;/,
+      'le dépôt du fichier doit revérifier le droit Import et le périmètre');
+  } finally {
+    authFixture();
+    app.state.companies = savedCompanies;
+    app.state.lines = savedLines;
+    app.resetStateIndexes();
+    if (savedTab !== undefined) { app.__setTab(savedTab); app.render(); }
   }
 });
 
