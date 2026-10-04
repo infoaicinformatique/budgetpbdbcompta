@@ -3393,7 +3393,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-04.2';
+const APP_BUILD = '2026-10-04.4';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -21844,6 +21844,23 @@ function viewSocietes() {
       (active
         ? '<span class="badge">société active</span>'
         : '<button class="mini" data-open-company="' + c.id + '">ouvrir</button>') +
+      // Import/export société par société (Alexis, 04/10/2026 : « rajoute le
+      // bouton imports/export par société »). Chaque bouton n'apparaît que
+      // si la personne a le droit correspondant — l'onglet Export pour
+      // extraire, l'onglet Import pour la matrice et le dépôt d'un fichier.
+      // La ligne elle-même ne liste que des sociétés du périmètre
+      // (`companiesWithinRights()`), et les gardes de l'import (périmètre de
+      // centres, création de ligne) s'appliquent comme depuis l'onglet.
+      (tabAllowedNow('export')
+        ? '<button class="mini" data-company-export="' + c.id +
+          '" title="Télécharger le détail budgétaire de cette société (Excel)">exporter</button>'
+        : '') +
+      (tabAllowedNow('import')
+        ? '<button class="mini" data-company-matrix="' + c.id +
+          '" title="Télécharger la matrice de saisie des montants de cette société (Excel), à remplir hors ligne">matrice</button>' +
+          '<button class="mini" data-company-import="' + c.id +
+          '" title="Importer un fichier de matrice rempli dans cette société (.xlsx)">importer</button>'
+        : '') +
       (seedBudgetForCompany(c)
         ? '<button class="mini" data-reload-company-budget="' + c.id +
           '" title="Remplacer le budget de cette société par celui du fichier actuellement importé (écrase les modifications faites depuis le dernier import)">recharger import</button>'
@@ -21996,6 +22013,11 @@ function viewSocietes() {
       '« EBITDA réalisé N-1 » alimentent la variance vs réalisé de l’export Consolidation.',
     body:
   section('Sociétés', 'company', sortedCompanies.length,
+    // Un seul sélecteur de fichier pour tout l'onglet : la société visée est
+    // retenue par `companyImportTargetId` au clic sur « importer » (voir le
+    // gestionnaire de `#company-import-input`). Un par ligne encombrerait le
+    // DOM pour rien.
+    '<input type="file" id="company-import-input" accept=".xlsx" style="display:none" />' +
     groupFilterBar + bulkSelectionBar + companiesBodyHtml,
     false,
     // « Monter une société » (assistant guidé) à côté de « Dupliquer » : les
@@ -23507,6 +23529,11 @@ function parametresLdapPanel() {
  */
 let exportSelectedCompanies = null;
 
+/* Société visée par le bouton « importer » d'une ligne de l'onglet Sociétés
+   (04/10/2026) : retenue entre le clic et le choix du fichier, le temps que
+   le sélecteur natif rende la main. Jamais persistée. */
+let companyImportTargetId = null;
+
 /**
  * Angle de sélection dans l'onglet Export : la sélection reste toujours une
  * liste de sociétés (`exportSelectedCompanies`) — c'est uniquement la façon
@@ -24186,8 +24213,16 @@ function computedLineReason(line) {
 /** Tous les comptes de produits et de charges du plan de la société (comptes de bilan exclus), un `accountRowInfo` chacun. */
 function importMatrixAccounts(companyId) {
   const company = companyById(companyId);
+  // Périmètre de centres de coûts : la matrice téléchargée ne propose que
+  // ce que la personne a le droit de remplir (04/10/2026). Sans ce filtre,
+  // un directeur borné au Food & Beverage repartait avec un classeur de
+  // tous les centres, le remplissait, et l'import en ignorait la moitié
+  // sans qu'il comprenne pourquoi. Les comptes de produits n'ont pas de
+  // centre et restent toujours proposés, comme dans la Saisie.
+  const importUser = authEnabled() ? currentUser() : null;
   const accounts = accountsForPlan(company ? company.planId : null)
-    .filter(function (a) { return a.kind === 'produit' || a.kind === 'charge'; });
+    .filter(function (a) { return a.kind === 'produit' || a.kind === 'charge'; })
+    .filter(function (a) { return isCenterAllowed(importUser, a.center); });
   const linesByAccount = new Map();
   for (const line of linesOf(companyId)) {
     let bucket = linesByAccount.get(line.account);
@@ -24279,8 +24314,10 @@ function importMatrixSheets(companyId) {
 }
 
 /** Déclenche le téléchargement de la matrice import montants (plan comptable complet) de la société active. */
-function downloadImportMatrix() {
-  const company = activeCompany();
+function downloadImportMatrix(targetCompany) {
+  // `targetCompany` : appel depuis la ligne d'une société dans l'onglet
+  // Sociétés (04/10/2026). Sans lui, la société active — l'onglet Import.
+  const company = targetCompany || activeCompany();
   if (!company) return;
   const sheets = importMatrixSheets(company.id);
   if (!sheets.length) {
@@ -24379,6 +24416,9 @@ function importIssuesSummaryText(issues) {
 /** Comptes du fichier qui écraseraient une valeur déjà saisie à la main (lignes calculées ignorées). */
 function detectImportConflicts(companyId, rows) {
   return rows.filter(function (row) {
+    // Un compte que l'import n'a pas le droit de toucher ne pose aucun
+    // conflit : il sera ignoré de toute façon.
+    if (!importAllowsAccount(companyId, row.account)) return false;
     // Brut : sans quoi un compte d'un centre hors périmètre semblerait
     // toujours vide, et l'import créerait une ligne en double au lieu de
     // mettre à jour celle qui existe déjà (voir `applyImportedAccountAmounts`).
@@ -24390,13 +24430,40 @@ function detectImportConflicts(companyId, rows) {
 }
 
 /**
+ * L'import a-t-il le droit de toucher ce compte ?
+ *
+ * 04/10/2026 — l'onglet Import s'accorde personne par personne dans
+ * Paramètres › Droits d'accès, mais il écrivait sans regarder le périmètre
+ * de centres de coûts : il suffisait de l'obtenir pour contourner ce que
+ * `isCenterAllowed` interdit dans la Saisie (lignes grisées) et dans la
+ * recherche de comptes. Un droit qui ouvre plus que ce qu'il annonce n'est
+ * pas un droit.
+ *
+ * Un compte introuvable au plan passe : `parseImportMatrixRows` l'a déjà
+ * écarté, et ce n'est pas ici qu'on en décide.
+ */
+function importAllowsAccount(companyId, account) {
+  const user = authEnabled() ? currentUser() : null;
+  const company = companyById(companyId);
+  const info = findAccount(account, accountIndexForPlan(company ? company.planId : null));
+  return !info || isCenterAllowed(user, info.center);
+}
+
+/**
  * Applique les montants importés d'UN compte : met à jour sa première ligne
  * saisissable à la main (additionne ou remplace selon `mode`), ou en crée
  * une nouvelle si le compte n'a encore aucune ligne. Un compte qui n'a que
  * des lignes calculées (Payroll, CA, taux, indicateur) est ignoré : ces
  * montants ne se modifient pas depuis Excel.
+ *
+ * Deux refus tiennent aux droits de la personne : un compte hors de son
+ * périmètre de centres de coûts, et la création d'une ligne quand la
+ * structure du budget ne lui appartient pas (`canEditLineStructure`, même
+ * règle que « + ajouter une ligne » dans la Saisie). Chacun est compté et
+ * annoncé dans le compte-rendu — aucune ligne n'est écartée en silence.
  */
 function applyImportedAccountAmounts(companyId, account, amounts, mode) {
+  if (!importAllowsAccount(companyId, account)) return { status: 'skipped-center' };
   const lines = rawLinesOf(companyId).filter(function (l) { return l.account === account; });
   const editable = lines.find(function (l) { return !isComputedLine(l); });
   if (editable) {
@@ -24409,6 +24476,7 @@ function applyImportedAccountAmounts(companyId, account, amounts, mode) {
   }
   if (lines.length) return { status: 'skipped-computed' };
   if (!amounts.some(function (v) { return Number(v) !== 0; })) return { status: 'skipped-empty' };
+  if (!canEditLineStructure()) return { status: 'skipped-structure' };
   state.lines.push({
     id: uid('lig'),
     companyId: companyId,
@@ -24422,13 +24490,15 @@ function applyImportedAccountAmounts(companyId, account, amounts, mode) {
 /** Applique tout un lot de lignes importées, dans un seul point d'annulation (Ctrl+Z). */
 function applyImportRows(companyId, rows, mode) {
   captureUndoStep();
-  const summary = { created: 0, updated: 0, skippedComputed: 0 };
+  const summary = { created: 0, updated: 0, skippedComputed: 0, skippedCenter: 0, skippedStructure: 0 };
   logLineAmountChanges('import Excel', companyId, function () {
     for (const row of rows) {
       const result = applyImportedAccountAmounts(companyId, row.account, row.amounts, mode);
       if (result.status === 'created') summary.created++;
       else if (result.status === 'updated') summary.updated++;
       else if (result.status === 'skipped-computed') summary.skippedComputed++;
+      else if (result.status === 'skipped-center') summary.skippedCenter++;
+      else if (result.status === 'skipped-structure') summary.skippedStructure++;
     }
   });
   save();
@@ -24441,6 +24511,12 @@ function importSummaryMessage(fileName, summary, unknown, issues) {
   if (summary.updated) parts.push(summary.updated + ' compte(s) mis à jour');
   if (summary.created) parts.push(summary.created + ' nouvelle(s) ligne(s) créée(s)');
   if (summary.skippedComputed) parts.push(summary.skippedComputed + ' compte(s) calculé(s) ignoré(s) (Payroll/CA/taux/indicateur)');
+  if (summary.skippedCenter) {
+    parts.push(summary.skippedCenter + ' compte(s) hors de votre périmètre de centres de coûts ignoré(s)');
+  }
+  if (summary.skippedStructure) {
+    parts.push(summary.skippedStructure + ' compte(s) sans ligne existante ignoré(s) : créer une ligne est réservé au contrôle de gestion');
+  }
   let message = 'Import de « ' + fileName + ' » — ' + (parts.length ? parts.join(', ') : 'rien à importer') + '.';
   // Compte-rendu ligne par ligne (voir `importIssuesSummaryText`) : remplace
   // l'ancien décompte global des comptes non reconnus, qui ne disait jamais
@@ -24460,8 +24536,9 @@ function importSummaryMessage(fileName, summary, unknown, issues) {
  * ne serait écrasée), soit ouvre la fenêtre de décision (additionner /
  * écraser) si au moins un compte a déjà un montant saisi à la main.
  */
-async function importAccountMatrixFile(file) {
-  const company = activeCompany();
+async function importAccountMatrixFile(file, targetCompany) {
+  const company = targetCompany || activeCompany();
+  if (!company) return;
   if (typeof DecompressionStream !== 'function') {
     showAppError('Ce navigateur ne permet pas de lire un fichier Excel directement '
       + '(DecompressionStream indisponible). Utilisez Chrome ou Edge.');
@@ -27721,6 +27798,32 @@ document.getElementById('view').addEventListener('click', function (event) {
   if (target.dataset.downloadImportMatrix !== undefined) { downloadImportMatrix(); return; }
 
   if (target.id === 'import-matrix-button') { document.getElementById('import-matrix-input').click(); return; }
+
+  // Import/export d'une société depuis sa ligne (onglet Sociétés). Les
+  // droits sont revérifiés ici : un bouton ne doit jamais faire foi, le DOM
+  // se bricole. Même raison pour la société — elle doit être dans le
+  // périmètre de la personne.
+  const companyDataButton = target.closest('button[data-company-export], button[data-company-matrix], button[data-company-import]');
+  if (companyDataButton) {
+    const id = companyDataButton.dataset.companyExport || companyDataButton.dataset.companyMatrix ||
+      companyDataButton.dataset.companyImport;
+    const company = companyById(id);
+    const dataUser = authEnabled() ? currentUser() : null;
+    if (!company || !isCompanyAllowed(dataUser, company.id)) return;
+    if (companyDataButton.dataset.companyExport !== undefined) {
+      if (!tabAllowedNow('export')) return;
+      withBusy('Préparation du fichier…', function () { return handleExport('detail-xlsx', [company]); });
+      return;
+    }
+    if (!tabAllowedNow('import')) return;
+    if (companyDataButton.dataset.companyMatrix !== undefined) {
+      withBusy('Préparation de la matrice…', function () { return downloadImportMatrix(company); });
+      return;
+    }
+    companyImportTargetId = company.id;
+    document.getElementById('company-import-input').click();
+    return;
+  }
   if (target.dataset.closeImportModal !== undefined && isRealClickOn(target)) { cancelPendingImport(); return; }
   if (target.dataset.importMode) { confirmPendingImport(target.dataset.importMode); return; }
 
@@ -29773,6 +29876,23 @@ document.getElementById('view').addEventListener('change', function (event) {
     return;
   }
 
+  // Matrice déposée depuis la ligne d'une société (onglet Sociétés) : elle
+  // part dans CETTE société, pas dans la société active. Les droits sont
+  // revérifiés — le clic et le choix du fichier sont deux moments distincts,
+  // et les droits peuvent avoir changé entre les deux (relecture des fiches
+  // sur le serveur).
+  if (event.target.id === 'company-import-input') {
+    const file = event.target.files && event.target.files[0];
+    event.target.value = '';
+    const company = companyById(companyImportTargetId);
+    companyImportTargetId = null;
+    if (!file || !company) return;
+    const dataUser = authEnabled() ? currentUser() : null;
+    if (!tabAllowedNow('import') || !isCompanyAllowed(dataUser, company.id)) return;
+    withBusy('Import de la matrice…', function () { return importAccountMatrixFile(file, company); });
+    return;
+  }
+
   if (event.target.id === 'forecast-matrix-input') {
     const file = event.target.files && event.target.files[0];
     event.target.value = '';
@@ -29843,7 +29963,11 @@ function sheetName(name) {
   return (cleaned || 'Feuille').slice(0, 31);
 }
 
-function handleExport(kind) {
+function handleExport(kind, companiesOverride) {
+  // `companiesOverride` : export d'UNE société depuis sa ligne dans l'onglet
+  // Sociétés (04/10/2026), sans toucher à la sélection de l'onglet Export —
+  // elle sert à travailler sur un périmètre, on ne la bouscule pas pour un
+  // export ponctuel.
   const stamp = new Date().toISOString().slice(0, 10);
   const generatedOn = 'Généré le ' + new Date().toLocaleDateString('fr-FR') + ' — montants en euros, non audités';
 
@@ -29852,7 +29976,7 @@ function handleExport(kind) {
     return;
   }
 
-  const selected = exportedCompanies();
+  const selected = companiesOverride || exportedCompanies();
   if (!selected.length) { showAppError('Sélectionnez au moins une société à exporter.'); return; }
   const selectionLabel = describeSelection(selected);
   const safeName = exportFileNamePart(selected).replace(/[^\w-]+/g, '_');
