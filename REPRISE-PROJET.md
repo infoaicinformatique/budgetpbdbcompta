@@ -77,6 +77,73 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Périmètre de sociétés vide : plus jamais une société hors droits (04/10/2026)
+
+Alexis : « peux tu me garantir que la gestion des sociétés en mode
+client/serveur fonctionne bien. Les sociétés remontent bien sur la dashboard
+quand l'utilisateur se connecte avec ses droits. » Vérification faite : **non**,
+et le diagnostic tient en trois points.
+
+1. **Le serveur ne détient aucune société.** Les budgets vivent dans l'IndexedDB
+   de chaque navigateur ; le serveur ne garde que les droits. Un poste neuf
+   démarre sur les sociétés d'amorçage (`SEED_COMPANIES` : LPM test, Medusa
+   test, Kokoro), pas sur le portefeuille réel. La page servie ne contient aucun
+   instantané de données (`EMBEDDED_SNAPSHOT_ELEMENT_ID` n'existe que dans les
+   copies autonomes exportées). Inchangé : mettre les données budgétaires sur le
+   serveur est un autre chantier.
+2. **Les identifiants de sociétés ne voyagent pas.** `newCompany()` les tire de
+   `uid('soc')` (aléatoire + horodatage) : ils diffèrent dans chaque navigateur,
+   même pour deux sociétés de même nom. Or l'éditeur de périmètre coche des
+   sociétés de l'état LOCAL et enregistre leurs identifiants sur le serveur
+   (`scopeCompanyRowsHtml`). Sur un autre poste, le périmètre ne correspond à
+   rien : zéro société visible, aucune carte d'accueil. Même problème pour
+   `environmentIds`. Le rôle, les onglets, les rubriques et les centres de coûts,
+   eux, voyagent bien — leurs identifiants sont des clés stables du catalogue.
+   **Point ouvert**, à trancher : faire voyager le périmètre par le nom (+
+   l'année) de la société, avec migration du fichier de droits.
+3. **Corrigé ici : le repli affichait une société interdite.** Périmètre vide,
+   `enforceCompanyPermission()` et `activeCompany()` retombaient tous deux sur
+   `state.companies[0]` — sans vérifier les droits. Mesuré avant correction :
+   `périmètre=[] visibles=0 activeCompany()="Palm Beach Test" autorisée ? false`,
+   et le tableau de bord affichait ses chiffres (5 116 caractères) pendant que
+   l'écran d'accueil ne proposait aucune carte. Cas atteint aussi par une
+   personne **sans fiche de droits** (`allowedCompanies: []`,
+   `serverUserFromRights`), ce qui contredisait l'intention affichée du code
+   (« pas même leur nom dans l'en-tête »).
+
+Le correctif :
+
+- `enforceCompanyPermission()` essaie d'abord l'environnement affiché, puis le
+  périmètre de droits entier (`companiesWithinRights`), et sinon met
+  `state.activeCompany` à `null` — jamais une société hors droits ;
+- `activeCompany()` suit la même règle et rend `null` plutôt qu'une société
+  interdite ;
+- nouveau `companyScopeEmpty()` : la personne est-elle bornée à des sociétés
+  dont aucune n'existe sur ce poste ? Sans borne de droits (`allowedCompanyIds`
+  à `null`), la réponse est toujours non — un portefeuille vide se règle en
+  créant une société, ce n'est pas une affaire de droits ;
+- `renderTabView()` remplace alors **tous** les écrans métier par
+  `companyScopeEmptyPageHtml()` (« Aucune société ne vous est attribuée », les
+  deux causes possibles, et vers qui se tourner). Paramètres reste ouvert :
+  c'est là que l'administrateur corrige le périmètre.
+
+Effet de bord bienvenu : le fil d'Ariane ne peut plus afficher le nom d'une
+société hors périmètre (`breadcrumbHtml` garde déjà `if (company)`).
+
+Contrôles ajoutés (`check-budget-app.mjs`) :
+
+- « Sociétés : un périmètre vide n'affiche JAMAIS une société hors droits » —
+  fiche bornée à un identifiant d'un autre navigateur : `companyScopeEmpty()`
+  vrai, `state.activeCompany` et `activeCompany()` à `null`, le tableau de bord
+  remplacé par l'écran explicatif, et **aucun nom de société** dans le rendu ;
+  puis personne sans fiche, dont Paramètres continue de s'afficher. Vérifié en
+  rétablissant l'ancien repli : le contrôle échoue (`'soc_test' !== null`) ;
+- « Sociétés : sans borne de droits, le périmètre n'est jamais déclaré vide » —
+  le garde-fou ne doit pas se déclencher chez Alexis, qui travaille sans
+  authentification.
+
+`APP_BUILD` : `2026-10-04.3`.
+
 ### Retrait de la bascule de mode : la vue suit le rôle (04/10/2026)
 
 Alexis : « supprime le mode switch (dans le menu) passage mode directeur ou vue
@@ -10784,6 +10851,7 @@ const app = await importApp(
     '  authEditorScopeFieldsHtml,\n' +
     '  SENSITIVE_TABS, ENVIRONMENT_ALL, welcomeEnvironmentCardsHtml,\n' +
     '  companiesWithinRights, pickableCompanies, environmentNameForCompany, viewAffichage,\n' +
+    '  companyScopeEmpty, companyScopeEmptyPageHtml,\n' +
     '  setEnvironmentLogo, removeEnvironmentLogo, normalizeLogoToPng,\n' +
     '  companiesForWelcomeStep, autoAdvanceWelcomeToCompanyStepIfNeeded, resetWelcomeCompanyStep,\n' +
     '  welcomeCompanyCardsHtml, environmentColorHex, goBackToWelcomeEnvironmentStep,\n' +
@@ -28794,6 +28862,69 @@ check('Pied de page : plus de mention « Hors ligne »', () => {
     assert.ok(appSource.includes("seal(globalThis, '" + name + "'"),
       name + ' doit rester neutralisé par sealNetwork()');
   }
+});
+
+check('Sociétés : un périmètre vide n’affiche JAMAIS une société hors droits', () => {
+  // 04/10/2026 — « peux tu me garantir que la gestion des sociétés en mode
+  // client/serveur fonctionne bien ». Non, elle ne fonctionnait pas : les
+  // identifiants de sociétés sont propres à chaque navigateur (`uid('soc')`)
+  // et les droits tenus par le serveur enregistrent ces identifiants. Sur un
+  // autre poste, le périmètre ne correspondait à rien — et le repli
+  // (`state.companies[0]`) rendait active une société INTERDITE, dont le
+  // tableau de bord affichait les chiffres, pendant que l'écran d'accueil ne
+  // proposait aucune carte.
+  const savedActive = app.state.activeCompany;
+  const savedTab = app.__getTab ? app.__getTab() : undefined;
+  try {
+    // Fiche de droits bornée à une société qui n'existe pas sur ce poste.
+    app.adoptServerSession({ method: 'ldap', account: 'dir_autre_poste', displayName: 'Dir', rights: {
+      role: 'directeur', isAdmin: false, permissions: null,
+      allowedCompanies: ['soc_dun_autre_navigateur'], allowedCostCenters: null, environmentIds: [],
+    } }, null);
+    const me = app.currentUser();
+    assert.equal(app.companiesWithinRights().length, 0, 'aucune société du périmètre n’existe ici');
+    assert.equal(app.companyScopeEmpty(), true, 'le périmètre vide doit être reconnu comme tel');
+
+    app.enforceCompanyPermission();
+    assert.equal(app.state.activeCompany, null,
+      'aucune société ne doit rester active : l’ancien repli en choisissait une hors droits');
+    assert.equal(app.activeCompany(), null,
+      'activeCompany() ne doit jamais rendre une société interdite');
+
+    // Et aucun écran métier ne s’affiche à la place : on explique la cause.
+    app.__setTab(app.DIRECTOR_TAB);
+    app.render();
+    const view = document.getElementById('view').innerHTML;
+    assert.ok(view.includes('Aucune société ne vous est attribuée'),
+      'le tableau de bord doit être remplacé par l’écran qui nomme la cause');
+    for (const company of app.state.companies) {
+      assert.ok(!view.includes(company.name),
+        `le nom de « ${company.name} » ne doit pas apparaître : elle est hors droits`);
+    }
+
+    // Une personne sans fiche de droits est dans le même cas
+    // (`allowedCompanies: []`, voir serverUserFromRights) : Paramètres reste
+    // son seul écran, et il doit continuer de s’afficher.
+    app.adoptServerSession({ method: 'ldap', account: 'sans_fiche', displayName: 'Sans Fiche', rights: null }, null);
+    assert.equal(app.companyScopeEmpty(), true, 'sans fiche, aucune société non plus');
+    app.__setTab('parametres');
+    app.render();
+    assert.ok(document.getElementById('view').innerHTML.includes('pas encore configuré'),
+      'Paramètres n’est jamais remplacé : c’est là que l’administrateur corrige le périmètre');
+  } finally {
+    app.__clearServerSession();
+    app.state.activeCompany = savedActive;
+    if (savedTab !== undefined) { app.__setTab(savedTab); app.render(); }
+  }
+});
+
+check('Sociétés : sans borne de droits, le périmètre n’est jamais déclaré vide', () => {
+  // Le garde-fou ne doit pas se déclencher chez Alexis, qui travaille sans
+  // authentification : `allowedCompanyIds` rend `null` (aucune borne), et
+  // tout le portefeuille reste affiché.
+  assert.ok(!app.authEnabled(), 'ce contrôle suppose un état sans compte actif');
+  assert.equal(app.companyScopeEmpty(), false, 'sans compte, aucun périmètre à opposer');
+  assert.ok(app.activeCompany(), 'et une société reste active');
 });
 
 /* --- 5. Verdict ------------------------------------------------------- */

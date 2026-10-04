@@ -505,6 +505,7 @@ const app = await importApp(
     '  authEditorScopeFieldsHtml,\n' +
     '  SENSITIVE_TABS, ENVIRONMENT_ALL, welcomeEnvironmentCardsHtml,\n' +
     '  companiesWithinRights, pickableCompanies, environmentNameForCompany, viewAffichage,\n' +
+    '  companyScopeEmpty, companyScopeEmptyPageHtml,\n' +
     '  setEnvironmentLogo, removeEnvironmentLogo, normalizeLogoToPng,\n' +
     '  companiesForWelcomeStep, autoAdvanceWelcomeToCompanyStepIfNeeded, resetWelcomeCompanyStep,\n' +
     '  welcomeCompanyCardsHtml, environmentColorHex, goBackToWelcomeEnvironmentStep,\n' +
@@ -18515,6 +18516,69 @@ check('Pied de page : plus de mention « Hors ligne »', () => {
     assert.ok(appSource.includes("seal(globalThis, '" + name + "'"),
       name + ' doit rester neutralisé par sealNetwork()');
   }
+});
+
+check('Sociétés : un périmètre vide n’affiche JAMAIS une société hors droits', () => {
+  // 04/10/2026 — « peux tu me garantir que la gestion des sociétés en mode
+  // client/serveur fonctionne bien ». Non, elle ne fonctionnait pas : les
+  // identifiants de sociétés sont propres à chaque navigateur (`uid('soc')`)
+  // et les droits tenus par le serveur enregistrent ces identifiants. Sur un
+  // autre poste, le périmètre ne correspondait à rien — et le repli
+  // (`state.companies[0]`) rendait active une société INTERDITE, dont le
+  // tableau de bord affichait les chiffres, pendant que l'écran d'accueil ne
+  // proposait aucune carte.
+  const savedActive = app.state.activeCompany;
+  const savedTab = app.__getTab ? app.__getTab() : undefined;
+  try {
+    // Fiche de droits bornée à une société qui n'existe pas sur ce poste.
+    app.adoptServerSession({ method: 'ldap', account: 'dir_autre_poste', displayName: 'Dir', rights: {
+      role: 'directeur', isAdmin: false, permissions: null,
+      allowedCompanies: ['soc_dun_autre_navigateur'], allowedCostCenters: null, environmentIds: [],
+    } }, null);
+    const me = app.currentUser();
+    assert.equal(app.companiesWithinRights().length, 0, 'aucune société du périmètre n’existe ici');
+    assert.equal(app.companyScopeEmpty(), true, 'le périmètre vide doit être reconnu comme tel');
+
+    app.enforceCompanyPermission();
+    assert.equal(app.state.activeCompany, null,
+      'aucune société ne doit rester active : l’ancien repli en choisissait une hors droits');
+    assert.equal(app.activeCompany(), null,
+      'activeCompany() ne doit jamais rendre une société interdite');
+
+    // Et aucun écran métier ne s’affiche à la place : on explique la cause.
+    app.__setTab(app.DIRECTOR_TAB);
+    app.render();
+    const view = document.getElementById('view').innerHTML;
+    assert.ok(view.includes('Aucune société ne vous est attribuée'),
+      'le tableau de bord doit être remplacé par l’écran qui nomme la cause');
+    for (const company of app.state.companies) {
+      assert.ok(!view.includes(company.name),
+        `le nom de « ${company.name} » ne doit pas apparaître : elle est hors droits`);
+    }
+
+    // Une personne sans fiche de droits est dans le même cas
+    // (`allowedCompanies: []`, voir serverUserFromRights) : Paramètres reste
+    // son seul écran, et il doit continuer de s’afficher.
+    app.adoptServerSession({ method: 'ldap', account: 'sans_fiche', displayName: 'Sans Fiche', rights: null }, null);
+    assert.equal(app.companyScopeEmpty(), true, 'sans fiche, aucune société non plus');
+    app.__setTab('parametres');
+    app.render();
+    assert.ok(document.getElementById('view').innerHTML.includes('pas encore configuré'),
+      'Paramètres n’est jamais remplacé : c’est là que l’administrateur corrige le périmètre');
+  } finally {
+    app.__clearServerSession();
+    app.state.activeCompany = savedActive;
+    if (savedTab !== undefined) { app.__setTab(savedTab); app.render(); }
+  }
+});
+
+check('Sociétés : sans borne de droits, le périmètre n’est jamais déclaré vide', () => {
+  // Le garde-fou ne doit pas se déclencher chez Alexis, qui travaille sans
+  // authentification : `allowedCompanyIds` rend `null` (aucune borne), et
+  // tout le portefeuille reste affiché.
+  assert.ok(!app.authEnabled(), 'ce contrôle suppose un état sans compte actif');
+  assert.equal(app.companyScopeEmpty(), false, 'sans compte, aucun périmètre à opposer');
+  assert.ok(app.activeCompany(), 'et une société reste active');
 });
 
 /* --- 5. Verdict ------------------------------------------------------- */

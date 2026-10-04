@@ -3383,7 +3383,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-04.2';
+const APP_BUILD = '2026-10-04.3';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -9027,7 +9027,41 @@ function enforceCompanyPermission() {
   // à l'environnement affiché, sinon basculer d'environnement laisserait
   // une société étrangère sélectionnée dans l'en-tête.
   if (visible.some(function (c) { return c.id === state.activeCompany; })) return;
-  state.activeCompany = visible[0] ? visible[0].id : (state.companies[0] ? state.companies[0].id : null);
+  if (visible[0]) { state.activeCompany = visible[0].id; return; }
+  // Rien dans l'environnement affiché : on reste dans le périmètre de
+  // DROITS avant tout autre repli — une société autorisée mais rangée dans
+  // un autre environnement vaut mieux qu'aucune, et mieux encore qu'une
+  // société interdite.
+  const within = companiesWithinRights();
+  if (within[0]) { state.activeCompany = within[0].id; return; }
+  // Périmètre vide : AUCUNE société active.
+  //
+  // 04/10/2026 — l'ancien repli (`state.companies[0]`) rendait active une
+  // société hors droits dès que le périmètre ne correspondait à rien sur ce
+  // poste : le tableau de bord affichait ses chiffres alors que l'écran
+  // d'accueil ne proposait aucune carte. Cas courant en mode client/serveur,
+  // les identifiants de sociétés étant propres à chaque navigateur
+  // (`uid('soc')`), et cas d'une personne sans fiche de droits
+  // (`allowedCompanies: []`, voir `serverUserFromRights`). `renderTabView`
+  // affiche désormais l'écran qui l'explique (`companyScopeEmpty`).
+  state.activeCompany = null;
+}
+
+/**
+ * La personne connectée est-elle bornée à des sociétés dont AUCUNE n'existe
+ * sur ce poste ? C'est le seul cas où l'application n'a rien de légitime à
+ * montrer : ni société active, ni carte d'accueil.
+ *
+ * Sans borne de droits (`allowedCompanyIds` à `null`) la réponse est
+ * toujours non, même sur un état vide — un portefeuille vide se règle en
+ * créant une société, ce n'est pas une affaire de droits.
+ */
+function companyScopeEmpty() {
+  const user = authEnabled() ? currentUser() : null;
+  if (!user) return false;
+  const allowed = allowedCompanyIds(user);
+  if (!allowed) return false;
+  return !state.companies.some(function (c) { return allowed.has(c.id); });
 }
 
 /**
@@ -9150,13 +9184,20 @@ function resetStateIndexes() {
  * recale déjà `state.activeCompany` sur une société autorisée avant que
  * les onglets ne l'utilisent ; ce repli n'est qu'une garde supplémentaire
  * pour les rares appels hors cycle de rendu.
+ *
+ * Ne rend JAMAIS une société hors du périmètre de droits : `null` quand il
+ * n'y en a aucune d'autorisée (04/10/2026 — voir `enforceCompanyPermission`).
+ * Un périmètre vide n'atteint aucun écran métier, `renderTabView` les
+ * remplaçant par un message explicite.
  */
 function activeCompany() {
   const current = companyById(state.activeCompany);
   const user = authEnabled() ? currentUser() : null;
   if (current && isCompanyAllowed(user, current.id)) return current;
   const visible = visibleCompanies();
-  return visible[0] || state.companies[0];
+  if (visible[0]) return visible[0];
+  const within = companiesWithinRights();
+  return within[0] || null;
 }
 
 /**
@@ -10886,8 +10927,39 @@ function viewForTab(tabId) {
  * nommer, et ne pas emporter le reste de l'application : les autres
  * onglets restent atteignables depuis le message.
  */
+/**
+ * Écran affiché à la place de tous les onglets métier quand le périmètre de
+ * sociétés est vide (`companyScopeEmpty`). Il nomme la cause et renvoie vers
+ * la seule personne qui peut la lever, plutôt que de laisser une application
+ * muette — ou, comme avant le 04/10/2026, les chiffres d'une société
+ * interdite.
+ */
+function companyScopeEmptyPageHtml() {
+  return viewPage({
+    title: 'Aucune société ne vous est attribuée',
+    hint: 'Vos droits ouvrent bien l’application, mais aucune société de votre périmètre n’est disponible ici.',
+    body: '<div class="alert">' +
+      '<p style="margin:0 0 8px">Deux causes possibles :</p>' +
+      '<ul style="margin:0 0 8px;padding-left:18px">' +
+      '<li>aucune société ne vous a encore été attribuée dans <strong>Paramètres › Droits d’accès</strong> ;</li>' +
+      '<li>les sociétés de votre périmètre n’existent pas sur ce poste — les budgets sont enregistrés ' +
+      'dans chaque navigateur, pas sur le serveur.</li>' +
+      '</ul>' +
+      '<p class="muted" style="margin:0;font-size:12px">Demandez à un administrateur de vérifier votre ' +
+      'périmètre de sociétés. Vos autres droits (rôle, onglets, centres de coûts) sont intacts.</p>' +
+      '</div>',
+  });
+}
+
 function renderTabView(transitionClass) {
   let html;
+  // Périmètre de sociétés vide : aucun écran métier n'a de sens, et aucun ne
+  // doit s'afficher avec une société hors droits. Paramètres reste ouvert —
+  // c'est là que l'administrateur corrige le périmètre.
+  if (tab !== 'parametres' && companyScopeEmpty()) {
+    setViewHtml(companyScopeEmptyPageHtml(), transitionClass);
+    return;
+  }
   try {
     html = viewForTab(tab);
   } catch (error) {
