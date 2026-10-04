@@ -18535,6 +18535,30 @@ check('Invitation : le message s’ouvre dans la messagerie du poste', () => {
   assert.ok(/function openInviteMail\(/.test(source), 'l’ouverture passe par une fonction unique');
 });
 
+check('Pied de page : plus de mention « Hors ligne »', () => {
+  // 04/10/2026 — Alexis : « ca porte à confusion ». La phrase « Hors ligne :
+  // aucune donnée ne quitte ce poste » se lisait comme un état de connexion,
+  // et elle était devenue inexacte au mot près depuis que la page interroge
+  // le serveur pour les droits d'accès (`serverRequest`). Le pied de page ne
+  // garde que la version, le plan comptable et l'état du chiffrement.
+  // Le contrôle porte sur la seule affectation du pied de page : la même
+  // idée, formulée avec sa réserve (« tant qu'elle n'est pas connectée à un
+  // serveur »), reste légitime dans « À propos » et sur l'écran de connexion.
+  const footerStart = appSource.indexOf("getElementById('footer').innerHTML =");
+  assert.ok(footerStart !== -1, 'l’affectation du pied de page doit exister');
+  const footerBlock = appSource.slice(footerStart, appSource.indexOf(';', footerStart));
+  assert.ok(!/Hors ligne|quitte ce poste/.test(footerBlock),
+    'le pied de page ne doit plus annoncer que les données ne quittent pas le poste');
+  assert.match(footerBlock, /importé le '[\s\S]*?\(isProtected\(\)/,
+    'le pied de page enchaîne directement le plan comptable et l’état du chiffrement');
+  // Le sas réseau lui-même reste entier : c'est une phrase d'affichage qui
+  // disparaît, pas une protection.
+  for (const name of ['fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource']) {
+    assert.ok(appSource.includes("seal(globalThis, '" + name + "'"),
+      name + ' doit rester neutralisé par sealNetwork()');
+  }
+});
+
 /* --- 5. Verdict ------------------------------------------------------- */
 
 if (problems.length) {

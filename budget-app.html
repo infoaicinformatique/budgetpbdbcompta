@@ -3412,7 +3412,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-09-28.2';
+const APP_BUILD = '2026-10-04.1';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -11491,7 +11491,14 @@ function render() {
     'Version <strong>' + escapeHtml(APP_BUILD) + '</strong> — ' +
     'Plan comptable : ' + escapeHtml(PCG_SOURCE) + ' — ' + ACCOUNTS.length +
     ' comptes, importé le ' + escapeHtml(PCG_GENERATED_AT) + '. ' +
-    '<strong>Hors ligne</strong> : aucune donnée ne quitte ce poste. ' +
+    // Le pied de page n'annonce plus l'absence de sortie réseau : Alexis
+    // trouvait la phrase source de confusion (04/10/2026). Elle se lisait
+    // comme un état de connexion alors qu'elle énonçait une propriété de
+    // conception, et elle était devenue inexacte au mot près depuis que la
+    // page dialogue avec le serveur pour les droits d'accès (`serverRequest`,
+    // SAS RÉSEAU). Le sas réseau et la CSP restent entiers, de même que la
+    // formulation nuancée d'« À propos » et de l'écran de connexion : seule
+    // cette phrase-là disparaît.
     (isProtected()
       ? 'Stockage chiffré par code d’accès.'
       : 'Stockage <strong>non chiffré</strong> — voir l’onglet Sécurité.');

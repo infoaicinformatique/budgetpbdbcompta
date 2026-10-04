@@ -77,6 +77,39 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Pied de page : retrait de la mention « Hors ligne » (04/10/2026)
+
+Alexis, après explication de la phrase : « ok trés bien mais ca porte à
+confusion, peux tu me retirer cette ligne ? » Le pied de page annonçait
+« **Hors ligne** : aucune donnée ne quitte ce poste. » entre le plan comptable
+et l'état du chiffrement.
+
+Deux raisons de la retirer :
+
+- elle se lisait comme un **état de connexion** (« vous êtes hors ligne »)
+  alors qu'elle énonçait une propriété de conception — texte fixe, sans aucun
+  `navigator.onLine` derrière ;
+- elle était devenue **inexacte au mot près** depuis le 28/09/2026 : la page
+  interroge bien le serveur pour les droits d'accès (`serverRequest`, limité
+  à `/api/droits`). Aucune donnée budgétaire ne sort, mais la phrase ne le
+  disait pas.
+
+Seule la phrase d'affichage disparaît. Le **sas réseau** (`sealNetwork` :
+`fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `sendBeacon`
+neutralisés) et la CSP `default-src 'none'` restent entiers. L'écran de
+connexion garde sa formulation, qui était déjà prudente : « les données ne
+quittent jamais ce poste tant que l'application n'est pas connectée à un
+serveur. »
+
+Contrôles ajoutés (`check-budget-app.mjs`, « Pied de page : plus de mention
+*Hors ligne* ») : le texte « aucune donnée ne quitte ce poste » est absent du
+fichier, le pied de page enchaîne directement le plan comptable et l'état du
+chiffrement, et les quatre portes de sortie réseau restent scellées — ce
+dernier point pour qu'un futur nettoyage du pied de page ne soit pas confondu
+avec un relâchement du sas.
+
+`APP_BUILD` : `2026-10-04.1`.
+
 ### Droits d'accès tenus par le serveur, réglés dans Paramètres (28/09/2026)
 
 Demande : « intègre uniquement les personnes du groupe budgetpbdbcompta
