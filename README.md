@@ -92,7 +92,48 @@ centres de coûts — sont tenus par le serveur, les mêmes sur tous les postes.
 - **Administrateurs** : ceux que l'écran désigne (case « Administrateur »),
   plus ceux de `RIGHTS_ADMINS` dans `.env`, toujours administrateurs — il en
   faut au moins un pour le premier réglage. Le compte local de secours
-  (`BASIC_AUTH_*`) est lui aussi administrateur.
+  (`BASIC_AUTH_*`), s'il est configuré, est lui aussi administrateur.
+
+### Désigner les administrateurs (état au 04/10/2026)
+
+Seuls **`a.porrati`** (Alexis Porrati) et **`n.hovnanian`** (Nicolas Hovnanian)
+sont administrateurs, par les deux voies à la fois — fiche cochée
+« Administrateur » **et** `RIGHTS_ADMINS=a.porrati, n.hovnanian` — pour qu'ils ne
+puissent pas se retirer l'accès mutuellement par erreur.
+
+Le **compte local de secours a été retiré** à cette occasion : il n'existe plus
+aucun passe-partout, l'accès passe uniquement par l'annuaire. Si LDAP devient
+injoignable, personne n'entre. Pour rétablir un accès en urgence :
+
+```bash
+cd /opt/docker/budgetpbdbcompta
+sudo nano .env          # renseigner BASIC_AUTH_USER et BASIC_AUTH_PASSWORD
+sudo docker compose up -d
+sudo docker logs --tail 8 budgetpbdbcompta | grep 'compte local'   # doit dire « oui »
+```
+
+Pour changer la liste des administrateurs :
+
+```bash
+# 1. sauvegarder avant toute chose (hors du dépôt : le .env contient des mots de passe)
+sudo mkdir -p /root/sauvegardes-budgetpbdbcompta/$(date +%F)
+sudo docker exec budgetpbdbcompta cat /data/droits.json \
+  > /root/sauvegardes-budgetpbdbcompta/$(date +%F)/droits.avant.json
+sudo cp .env /root/sauvegardes-budgetpbdbcompta/$(date +%F)/env.avant
+
+# 2. la case « Administrateur » de chaque personne : dans l'application,
+#    Paramètres › Droits d'accès (c'est la voie normale)
+
+# 3. les administrateurs désignés, qui le restent quoi qu'il arrive au fichier
+sudo nano .env          # RIGHTS_ADMINS=prenom.nom, autre.nom
+sudo docker compose up -d
+sudo docker logs --tail 8 budgetpbdbcompta | grep 'administrateurs désignés'
+```
+
+Les identifiants attendus sont ceux de l'annuaire (`sAMAccountName`, de la forme
+`a.porrati`). Pour les retrouver :
+`sudo docker logs budgetpbdbcompta | grep -i ldap`, ou côté contrôleur de
+domaine `Get-ADGroupMember budgetpbdbcompta | Get-ADUser | Select SamAccountName, Name`.
 - **Stockage** : `RIGHTS_FILE` (Docker : `/data/droits.json`, volume nommé
   `droits`, conservé quand le conteneur est recréé). Chaque changement y est
   journalisé (qui, quand, pour qui) et dans `docker logs`.
