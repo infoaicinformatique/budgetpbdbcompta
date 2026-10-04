@@ -77,6 +77,111 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Trois nettoyages d'interface (04/10/2026)
+
+Trois demandes d'Alexis dans la même session, indépendantes du passage des
+données sur le serveur (02/10/2026) sur lequel elles s'appuient.
+
+#### 1. Pied de page : retrait de la mention « Hors ligne »
+
+Alexis, après explication de la phrase : « ok trés bien mais ca porte à
+confusion, peux tu me retirer cette ligne ? » Le pied de page annonçait
+« **Hors ligne** : aucune donnée ne quitte ce poste. »
+
+Deux raisons de la retirer : elle se lisait comme un **état de connexion**
+alors qu'elle énonçait une propriété de conception (texte fixe, aucun
+`navigator.onLine` derrière) ; et depuis que les données sont tenues par le
+serveur, elle est tout simplement **fausse**.
+
+À sa place, ce qui est vrai et utile : où le budget est enregistré. En mode
+serveur, « Données **sur le serveur** (révision N), protégées par
+l'authentification » ; sinon « Stockage sur ce poste », chiffré ou non. Le sas
+réseau et la CSP ne bougent pas, et la formulation nuancée d'« À propos » et de
+l'écran de connexion (« tant que l'application n'est pas connectée à un
+serveur ») reste en place.
+
+#### 2. Retrait de la bascule de mode : la vue suit le rôle
+
+Alexis : « supprime le mode switch (dans le menu) passage mode directeur ou vue
+complete et assure toi que ca soit dans les droits des utilisateurs lors de la
+configuration de ses droits ».
+
+Le menu du compte portait un bouton « Passer en vue Directeur » / « Revenir à la
+vue complète » (19/08/2026), doublé d'un **aperçu** qui appliquait le périmètre
+type d'un directeur à la session en cours. Deux réponses concurrentes à la même
+question — « que voit cette personne ? » — dont une seule fait foi : le **rôle**
+de la fiche de droits.
+
+Disparaissent : le bouton `#director-mode-toggle`, son libellé synchronisé dans
+`renderHeader()` et son écouteur ; `directorModeOverride`, `setDirectorMode()` ;
+tout l'aperçu (`directorPreviewActive()`, `directorPreviewAllowsTab()`,
+`directorPreviewAllowsPage()`, `directorPreviewBanner()`, le bandeau posé par
+`setViewHtml()`, `data-exit-director-preview`, les styles
+`.director-preview-bar` / `.director-preview-dot`, la pastille morte
+`.dir-mode-badge`) ; et les court-circuits d'aperçu dans
+`allowedCostCenterIds()`, `visibleCostCenters()`, `tabAllowedNow()`,
+`applyPagePermissions()`, `canValidateCompanyBudget()` et `canEditObjectives()`.
+
+`directorModeActive()` ne lit plus que `user.role === 'directeur'` et n'est plus
+consulté que par `canEditLineStructure()`. Les constantes `DIRECTEUR_DEFAULT_*`
+gardent leur seul rôle légitime : les droits de départ d'un directeur
+fraîchement créé. Le texte d'aide du panneau Rôle (Paramètres › Droits d'accès)
+le dit maintenant en clair : « Le rôle décide de la vue… Il n'y a pas d'autre
+réglage ailleurs dans l'application. »
+
+Contrepartie assumée : il n'existe plus de moyen de prévisualiser l'application
+« comme un directeur » depuis son propre compte. Pour vérifier un périmètre, on
+se connecte avec un compte de ce rôle.
+
+#### 3. Périmètre de sociétés vide : plus jamais une société hors droits
+
+Trouvé en répondant à « peux tu me garantir que la gestion des sociétés en mode
+client/serveur fonctionne bien ». Réponse : non, à cause de ceci.
+
+`enforceCompanyPermission()` et `activeCompany()` retombaient tous deux sur
+`state.companies[0]` **sans vérifier les droits**. Mesuré avant correction :
+`périmètre=[] visibles=0 activeCompany()="Palm Beach Test" autorisée ? false`,
+et le tableau de bord affichait ses chiffres (5 116 caractères) pendant que
+l'écran d'accueil ne proposait aucune carte. Cas atteint par une personne
+**sans fiche de droits** (`allowedCompanies: []`, `serverUserFromRights`), par
+un périmètre dont les sociétés ont disparu, ou par un état importé d'un autre
+poste — ce qui contredisait l'intention affichée du code (« pas même leur nom
+dans l'en-tête »).
+
+Le correctif : les deux fonctions essaient l'environnement affiché, puis le
+périmètre de droits entier (`companiesWithinRights`), et rendent `null` plutôt
+qu'une société interdite. Nouveau `companyScopeEmpty()` — la personne est-elle
+bornée à des sociétés dont aucune n'est présente dans l'état chargé ? Sans borne
+de droits, la réponse est toujours non. `renderTabView()` remplace alors **tous**
+les écrans métier par `companyScopeEmptyPageHtml()` (« Aucune société ne vous est
+attribuée »), Paramètres excepté : c'est là que l'administrateur corrige le
+périmètre. Effet de bord bienvenu : le fil d'Ariane ne peut plus afficher le nom
+d'une société hors périmètre.
+
+#### Contrôles (`check-budget-app.mjs`, 522 contrôles)
+
+- « Pied de page : plus de mention *Hors ligne* » — l'affectation de `#footer`
+  ne doit plus annoncer que les données ne quittent pas le poste, doit dire où le
+  budget est enregistré, et les quatre portes de sortie réseau restent scellées ;
+- « Vue Directeur : plus de bascule dans le menu, la vue se règle dans les
+  droits » — absence du bouton, du bandeau, de son style, des six fonctions
+  d'aperçu et de l'état de session ; `directorModeActive()` réduit à la lecture
+  du rôle ; le panneau des droits porte le choix du rôle et le texte qui
+  l'annonce ;
+- « Sociétés : un périmètre vide n'affiche JAMAIS une société hors droits » —
+  aucune société active, `activeCompany()` à `null`, l'écran explicatif à la
+  place du tableau de bord, **aucun nom de société** dans le rendu, et Paramètres
+  préservé. Vérifié en rétablissant l'ancien repli : le contrôle échoue
+  (`'soc_test' !== null`) ;
+- « Sociétés : sans borne de droits, le périmètre n'est jamais déclaré vide » —
+  le garde-fou ne se déclenche pas sans authentification ;
+- les contrôles Objectifs, Validation hiérarchique et « le mode suit le rôle »
+  passent par de **vrais comptes connectés** (directeur puis contrôleur) au lieu
+  de la bascule qui leur servait de raccourci ; celui du bandeau d'aperçu est
+  supprimé, son objet n'existant plus.
+
+`APP_BUILD` : `2026-10-04.1`.
+
 ### Données tenues par le serveur : rien dans le navigateur (02/10/2026)
 
 Demande : « ne stocke rien dans le navigateur. Lorsqu'un administrateur
@@ -10803,6 +10908,7 @@ const app = await importApp(
     '  authEditorScopeFieldsHtml,\n' +
     '  SENSITIVE_TABS, ENVIRONMENT_ALL, welcomeEnvironmentCardsHtml,\n' +
     '  companiesWithinRights, pickableCompanies, environmentNameForCompany, viewAffichage,\n' +
+    '  companyScopeEmpty, companyScopeEmptyPageHtml,\n' +
     '  setEnvironmentLogo, removeEnvironmentLogo, normalizeLogoToPng,\n' +
     '  companiesForWelcomeStep, autoAdvanceWelcomeToCompanyStepIfNeeded, resetWelcomeCompanyStep,\n' +
     '  welcomeCompanyCardsHtml, environmentColorHex, goBackToWelcomeEnvironmentStep,\n' +
@@ -10810,7 +10916,13 @@ const app = await importApp(
     'export { viewSecurite, securiteBody, affichageBody, autorisationsBody,\n' +
     '  viewParametres, serverAuthInfo, parametresLdapBody, SERVER_AUTH_COOKIE,\n' +
     '  serverRequest, adoptServerSession, buildServerDirectory, serverRightsPayload, serverUserFromRights,\n' +
-    '  serverLandingTab, sessionUsername, isServerUserId, applyPagePermissions };\n' +
+    '  serverLandingTab, sessionUsername, isServerUserId, applyPagePermissions,\n' +
+    '  applyRefreshedServerRights, serverRightsSignature,\n' +
+    '  serverStatePayload, emptyServerState, adoptServerState, parametresDonneesPanel, SERVER_PRIVATE_KEYS,\n' +
+    '  serverDataHasPendingChanges, markServerDataInSync, serverChangesBetween };\n' +
+    'export function __setServerData(v) { serverData = v; }\n' +
+    'export function __getServerData() { return serverData; }\n' +
+    'export function __clearSaveTimer() { if (saveTimer !== null) { clearTimeout(saveTimer); saveTimer = null; } }\n' +
     'export function __clearServerSession() { serverSession = null; serverDirectory = null; }\n' +
     'export function __setServerDirectory(v) { serverDirectory = v; }\n' +
     'export function __setAuthPermissionsIdForTest(v) { authPermissionsId = v; }\n' +
@@ -10855,13 +10967,11 @@ const app = await importApp(
     'export function __getStorageBackendIsIndexedDb() { return storageBackendIsIndexedDb; }\n' +
     'export function __setStorageBackendIsIndexedDb(v) { storageBackendIsIndexedDb = v; }\n' +
     'export { exportFullAppData, importFullAppData, fullExportImportCard };\n' +
-    'export { DIRECTOR_TAB, directorModeActive, setDirectorMode, defaultTabForCurrentUser,\n' +
+    'export { DIRECTOR_TAB, directorModeActive, defaultTabForCurrentUser,\n' +
     '  landingTabAfterCompanySelection,\n' +
     '  viewDirecteur, directorMatrixCard, dirRatioTone, dirAmountTone,\n' +
-    '  directorPreviewActive, directorPreviewAllowsTab, directorPreviewAllowsPage,\n' +
-    '  directorPreviewBanner, DIRECTEUR_DEFAULT_PAGES, objectivesSummaryHtml };\n' +
-    'export function __getDirectorModeOverride() { return directorModeOverride; }\n' +
-    'export function __setDirectorModeOverride(v) { directorModeOverride = v; }\n' +
+    '  DIRECTEUR_DEFAULT_PAGES, objectivesSummaryHtml };\n' +
+
     'export { MATRIX_SERVICES, normalizeServiceMatrix, serviceMatrixOf, serviceMatrixValue,\n' +
     '  setServiceMatrixValue, matrixDayKeys, matrixServiceRevenue, matrixTotalCovers,\n' +
     '  matrixTotalRevenue, weekTotal, matrixOverallTicket, matrixYearTotals, matrixMonthlySeries,\n' +
@@ -11304,7 +11414,7 @@ check('Paramètres : rubrique LDAP lue dans le cookie déposé par le serveur (2
   const serverSource = readFileSync(join(root, '..', 'server.mjs'), 'utf8');
   assert.ok(serverSource.includes("const AUTH_INFO_COOKIE = '" + app.SERVER_AUTH_COOKIE + "'"),
     'server.mjs et budget-app.html doivent parler du même cookie');
-  assert.ok(/'Set-Cookie': authInfoCookie\(req, auth\)/.test(serverSource),
+  assert.ok(/'Set-Cookie': \[authInfoCookie\(req, auth\)\]/.test(serverSource),
     'le serveur doit déposer le cookie en servant la page (200 comme 304)');
 
   const info = {
@@ -11403,6 +11513,167 @@ check('Droits tenus par le serveur : directeur borné par sa fiche, Autorisation
   }
 });
 
+check('Droits mis à jour sans recharger la page (02/10/2026)', () => {
+  const savedTab = app.__getTab();
+  try {
+    app.adoptServerSession({ method: 'ldap', account: 'f.dupont', displayName: 'F. Dupont', rights: {
+      role: 'directeur', isAdmin: false, permissions: { saisie: ['saisie-ajouter'] },
+      allowedCompanies: null, allowedCostCenters: null, environmentIds: [],
+    } }, null);
+    const own = app.currentUser();
+    app.__setTab('saisie');
+    assert.equal(app.tabAllowedNow('pnl'), false);
+
+    // Fiche inchangée : rien ne bouge.
+    assert.equal(app.applyRefreshedServerRights({ account: 'f.dupont', rights: {
+      role: 'directeur', isAdmin: false, permissions: { saisie: ['saisie-ajouter'] },
+      allowedCompanies: null, allowedCostCenters: null, environmentIds: [],
+    } }), false, 'une fiche identique ne doit pas réafficher');
+
+    // L'administrateur ouvre P&L et retire Saisie : appliqué sans rechargement.
+    assert.equal(app.applyRefreshedServerRights({ account: 'f.dupont', rights: {
+      role: 'directeur', isAdmin: false, permissions: { pnl: ['graphiques'] },
+      allowedCompanies: null, allowedCostCenters: null, environmentIds: [],
+    } }), true, 'un changement de fiche doit être détecté');
+    assert.strictEqual(app.currentUser(), own, 'le compte garde son objet (partagé avec l’écran d’administration)');
+    assert.equal(app.tabAllowedNow('pnl'), true, 'le nouvel onglet s’ouvre sans recharger');
+    assert.equal(app.tabAllowedNow('saisie'), false, 'l’onglet retiré se ferme sans recharger');
+    assert.notEqual(app.__getTab(), 'saisie', 'l’écran affiché quitte un onglet devenu interdit');
+
+    // Fiche retirée : plus que Paramètres.
+    assert.equal(app.applyRefreshedServerRights({ account: 'f.dupont', rights: null }), true);
+    assert.equal(app.tabAllowedNow('pnl'), false);
+    assert.equal(app.__getTab(), 'parametres');
+
+    // La relecture est bien branchée au démarrage.
+    assert.ok(/await loadServerSession\(\);\s*\/\/[^\n]*\n\s*startServerRightsRefresh\(\);/.test(html),
+      'boot() doit lancer la relecture des droits après loadServerSession');
+  } finally {
+    app.__clearServerSession();
+    app.__setTab(savedTab);
+  }
+});
+
+check('Données tenues par le serveur : rien dans le navigateur (02/10/2026)', () => {
+  // L'enregistrement part au serveur avant toute écriture locale, et le
+  // démarrage en mode serveur ne lit jamais le stockage du navigateur.
+  assert.ok(/async function persist\(\) \{\s*if \(!state\) return;\s*\/\/[^\n]*\n\s*if \(serverData\) return persistToServer\(\);/.test(html),
+    'persist() doit envoyer au serveur sans écrire dans le navigateur en mode serveur');
+  const bootBody = html.slice(html.indexOf('async function boot()'));
+  const serverBranch = bootBody.slice(bootBody.indexOf('if (serverSession) {'), bootBody.indexOf('let parsed = null;'));
+  assert.ok(serverBranch.includes('await loadServerData();') && serverBranch.includes('return;'),
+    'boot() doit charger les données du serveur et s’arrêter là');
+  assert.ok(!/storageGetRaw|seedFromEmbeddedSnapshotIfNeeded/.test(serverBranch), 'aucune lecture locale en mode serveur');
+  const persistToServerBody = html.slice(html.indexOf('async function persistToServer()'), html.indexOf('async function refreshServerData()'));
+  assert.ok(!/storageSetRaw|writeAutoBackup/.test(persistToServerBody), 'aucune écriture locale en mode serveur');
+  for (const name of ['exportFullAppData', 'exportStandaloneAppData']) {
+    const body = html.slice(html.indexOf('async function ' + name + '()'));
+    assert.ok(/raw = serverData \? JSON\.stringify\(serverStatePayload\(state\)\) : await storageGetRaw/.test(body.slice(0, 600)),
+      name + ' doit exporter l’état affiché en mode serveur, pas une vieille copie locale');
+  }
+});
+
+check('Données tenues par le serveur : ce qui part, état vide, choix du poste', () => {
+  const savedState = app.state;
+  try {
+    const payload = app.serverStatePayload({ companies: [{ id: 'a' }], users: [{ passwordHash: 'x' }], authLog: [1],
+      activeCompany: 'a', activeEnvironmentId: 'e', activeScenario: 's', lastSavedAt: 'hier', scenarios: [] });
+    assert.deepEqual(Object.keys(payload).sort(), ['companies', 'scenarios'],
+      'ni comptes locaux, ni journal de sécurité, ni choix d’affichage ne partent au serveur');
+    assert.deepEqual(app.SERVER_PRIVATE_KEYS.slice().sort(),
+      ['activeCompany', 'activeEnvironmentId', 'activeScenario', 'authLog', 'lastSavedAt', 'users'],
+      'même liste que PRIVATE_KEYS dans data.mjs');
+
+    // Périmètre vide : aucune société inventée (adoptState mettrait celles d'origine).
+    const empty = app.adoptServerState({ companies: [], scenarios: [{ id: 'scn', name: 'Base' }] }, '2026-10-02T10:00:00Z');
+    assert.equal(empty.companies.length, 0);
+    assert.equal(empty.lines.length, 0);
+    assert.equal(empty.scenarios.length, 1, 'éléments communs repris');
+    assert.equal(empty.lastSavedAt, '2026-10-02T10:00:00Z', 'fraîcheur = dernier enregistrement du serveur');
+
+    // Les choix d'affichage du poste survivent à un rechargement des données.
+    const reference = JSON.parse(JSON.stringify(savedState));
+    const companyId = reference.companies[reference.companies.length - 1].id;
+    app.__setState(Object.assign({}, reference, { activeCompany: companyId, activeScenario: 'scn_x' }));
+    const reloaded = app.adoptServerState(app.serverStatePayload(reference), null);
+    assert.equal(reloaded.activeCompany, companyId);
+    assert.equal(reloaded.activeScenario, 'scn_x');
+    assert.deepEqual(reloaded.users, [], 'aucun compte local en mode serveur');
+  } finally {
+    app.__setState(savedState);
+  }
+});
+
+check('Données tenues par le serveur : un envoi ne déclare que ce que ce poste a modifié', () => {
+  const before = { companies: [{ id: 'a' }, { id: 'b' }], lines: [{ id: 'la', companyId: 'a', amounts: [1] }, { id: 'lb', companyId: 'b', amounts: [2] }],
+    priorActuals: { a: { ca: 1 } }, caEvents: [{ id: 'e', companyIds: ['a', 'b'] }], scenarios: [] };
+  const same = JSON.parse(JSON.stringify(before));
+  assert.deepEqual(app.serverChangesBetween(before, same), { changedCompanies: [], sharedChanged: false });
+
+  const edited = JSON.parse(JSON.stringify(before));
+  edited.lines[1].amounts = [20];
+  assert.deepEqual(app.serverChangesBetween(before, edited), { changedCompanies: ['b'], sharedChanged: false });
+
+  const dict = JSON.parse(JSON.stringify(before));
+  dict.priorActuals.a.ca = 5;
+  assert.deepEqual(app.serverChangesBetween(before, dict).changedCompanies, ['a'], 'dictionnaire par société');
+
+  const event = JSON.parse(JSON.stringify(before));
+  event.caEvents[0].name = 'Salon';
+  assert.deepEqual(app.serverChangesBetween(before, event).changedCompanies.sort(), ['a', 'b'], 'événement partagé : ses deux sociétés');
+
+  const structure = JSON.parse(JSON.stringify(before));
+  structure.companies = [{ id: 'a' }, { id: 'c' }];
+  structure.lines = structure.lines.filter((l) => l.companyId !== 'b');
+  structure.scenarios = [{ id: 'scn' }];
+  const changes = app.serverChangesBetween(before, structure);
+  assert.deepEqual(changes.changedCompanies.sort(), ['b', 'c'], 'suppression et ajout déclarés');
+  assert.equal(changes.sharedChanged, true, 'élément commun modifié');
+  assert.ok(/serverChangesBetween\(serverData\.lastSentJson/.test(html), 'persistToServer doit envoyer la déclaration');
+});
+
+check('Données tenues par le serveur : Paramètres › Données', () => {
+  const savedState = app.state;
+  try {
+    app.adoptServerSession({ method: 'ldap', account: 'chef', displayName: 'Le Chef',
+      rights: { role: 'controleur', isAdmin: true, permissions: null } }, null);
+    const base = { ready: false, revision: 0, empty: true, access: { unrestricted: true, shared: true }, updatedAt: null,
+      updatedBy: null, error: null, sending: false, lastSentJson: null, retryTimer: null,
+      localCopy: { encrypted: false, companies: 4, lastSavedAt: '2026-10-01T09:00:00Z', parsed: { companies: [{}, {}, {}, {}] } } };
+    app.__setServerData(base);
+    let html2 = app.parametresDonneesPanel();
+    assert.ok(html2.includes('La base du serveur est vide'), 'base vide expliquée');
+    assert.ok(html2.includes('4 société(s)') && html2.includes('data-server-data-publish'), 'publication proposée à un administrateur');
+    assert.ok(html2.includes('data-server-data-clear'), 'effacement de la copie locale proposé');
+
+    app.__setServerData(Object.assign({}, base, { access: { unrestricted: false, shared: false } }));
+    html2 = app.parametresDonneesPanel();
+    assert.ok(!html2.includes('data-server-data-publish'), 'pas de publication sans périmètre complet');
+    assert.ok(html2.includes('pas encore été publiées'));
+
+    app.__setServerData(Object.assign({}, base, { ready: true, empty: false, revision: 7, updatedBy: 'alexis',
+      updatedAt: '2026-10-02T10:00:00Z', localCopy: null, access: { unrestricted: false, shared: false } }));
+    html2 = app.parametresDonneesPanel();
+    assert.ok(html2.includes('rien dans ce navigateur') && html2.includes('Révision 7') && html2.includes('alexis'));
+    assert.ok(app.viewParametres().includes('data-panel="parametres-donnees"'), 'rubrique Données dans Paramètres');
+
+    app.__clearSaveTimer();
+    // FS_ACCESS_SUPPORTED est faux sous Node : on vérifie les gardes dans le source.
+    assert.ok(/function backupDirCard\(\) \{[\s\S]{0,400}?if \(serverData\) return '';/.test(html),
+      'pas de dossier de sauvegarde automatique proposé en mode serveur');
+    assert.ok(/async function writeAutoBackup\(\) \{\s*if \(!backupDirHandle \|\| !state \|\| serverData\) return;/.test(html),
+      'aucune sauvegarde automatique écrite sur le poste en mode serveur');
+    app.markServerDataInSync();
+    assert.equal(app.serverDataHasPendingChanges(), false);
+    app.state.exchangeRates = Object.assign({}, app.state.exchangeRates, { XXX: 2 });
+    assert.equal(app.serverDataHasPendingChanges(), true, 'une modification non envoyée est détectée');
+  } finally {
+    app.__setServerData(null);
+    app.__clearServerSession();
+    app.__setState(savedState);
+  }
+});
+
 check('Droits tenus par le serveur : l’administrateur règle les droits dans Paramètres', () => {
   try {
     app.adoptServerSession({ method: 'ldap', account: 'chef', displayName: 'Le Chef',
@@ -11443,6 +11714,19 @@ check('Droits tenus par le serveur : l’administrateur règle les droits dans P
     app.__setAuthPermissionsIdForTest(null);
     app.__clearServerSession();
   }
+});
+
+check('Déconnexion : identifié par l’annuaire, le bouton passe par /deconnexion (28/09/2026)', () => {
+  // Basic n'a pas de déconnexion : seul un 401 du serveur fait oublier au
+  // navigateur ses identifiants. Le bouton doit donc y mener, et rester visible.
+  assert.ok(/if \(serverSession\) \{\s*location\.href = '\/deconnexion';/.test(appSource),
+    'en mode serveur, « Déconnexion » doit mener à /deconnexion');
+  assert.ok(/signOutButton\.hidden = !user;/.test(appSource), 'le bouton reste visible pour une personne de l’annuaire');
+  const serverSource = readFileSync(join(root, '..', 'server.mjs'), 'utf8');
+  assert.ok(/url\.pathname === '\/deconnexion'[\s\S]{0,120}handleLogout\(req, res\)/.test(serverSource),
+    'server.mjs doit traiter /deconnexion avant le contrôle d’accès');
+  assert.ok(/res\.writeHead\(401, \{\s*'WWW-Authenticate': 'Basic realm="Budget Manager"/.test(serverSource),
+    '/deconnexion doit répondre 401 dans le même domaine d’authentification');
 });
 
 check('Paramètres : ses rubriques ne sont jamais retirées par la matrice des droits', () => {
@@ -17639,10 +17923,11 @@ check('la politique de sécurité interdit les connexions sortantes', () => {
   }
 });
 
-await checkAsync('la seule sortie réseau restante ne vise que /api/droits', async () => {
+await checkAsync('les seules sorties réseau restantes visent /api/droits et /api/donnees', async () => {
   assert.equal(typeof app.serverRequest, 'function', 'serverRequest doit exister là où fetch existe');
   for (const path of ['https://example.invalid/api/droits', '//example.invalid/api/droits', '/api/budgets',
-    '/api/droits/../budgets', '/api/droits/a/b', '/']) {
+    '/api/droits/../budgets', '/api/droits/a/b', '/', '/api/donnees/x', '/api/donnees/revision/x',
+    '/api/donneesx', 'https://example.invalid/api/donnees']) {
     await assert.rejects(app.serverRequest('GET', path), /interdite/, 'chemin refusé attendu : ' + path);
   }
 });
@@ -22762,81 +23047,57 @@ await checkAsync('copie complète : import (fichier en clair) adopte le nouvel �
 check('Vue Directeur : tous les onglets restent accessibles, rien n’est retiré de la navigation', () => {
   // La consigne des supérieurs d'Alexis est explicite : « ne PAS supprimer
   // des fonctionnalités pour simplifier », « ne PAS cacher des
-  // fonctionnalités dans des sous-menus complexes ». Le mode Directeur est
-  // donc un réglage d'affichage : il ajoute un écran, il n'en retire aucun.
-  const before = app.TAB_GROUPS.flatMap((g) => g.tabs).slice().sort();
-  const saved = app.__getDirectorModeOverride();
-  try {
-    app.__setDirectorModeOverride(true);
-    const during = app.TAB_GROUPS.flatMap((g) => g.tabs).slice().sort();
-    assert.deepEqual(during, before, 'le mode Directeur ne doit retirer aucun onglet de la barre');
-    assert.ok(before.indexOf(app.DIRECTOR_TAB) !== -1, 'la Vue Directeur doit être un onglet à part entière');
-    assert.ok(before.indexOf('objectifs') !== -1, 'les Objectifs doivent être un onglet à part entière');
-  } finally {
-    app.__setDirectorModeOverride(saved);
-  }
+  // fonctionnalités dans des sous-menus complexes ». `TAB_GROUPS` ne dépend
+  // d'aucun mode — c'est le catalogue, les droits filtrent ensuite à
+  // l'affichage (`renderNavPermissions`).
+  const tabs = app.TAB_GROUPS.flatMap((g) => g.tabs);
+  assert.ok(tabs.indexOf(app.DIRECTOR_TAB) !== -1, 'la Vue Directeur doit être un onglet à part entière');
+  assert.ok(tabs.indexOf('objectifs') !== -1, 'les Objectifs doivent être un onglet à part entière');
 });
 
-check('Aperçu directeur : le bouton applique VRAIMENT le périmètre d’un directeur', () => {
-  // Défaut de la première version, signalé par Alexis (« la vue directeur
-  // n'est pas opérationnelle ») : le mode ne changeait que l'écran
-  // d'atterrissage, sans appliquer la moindre restriction. Alexis,
-  // contrôleur et administrateur, continuait de tout voir — le bouton ne
-  // montrait rien de ce qu'il promettait. Il a tranché : « quand je clique
-  // sur vue directeur je veux pouvoir voir exactement ce que le directeur
-  // verra quand il se connectera ».
-  const saved = app.__getDirectorModeOverride();
-  try {
-    app.__setDirectorModeOverride(false);
-    assert.equal(app.directorPreviewActive(), false, 'hors mode, aucun aperçu');
-    const centersBefore = app.visibleCostCenters().length;
-    assert.ok(centersBefore > 1, 'hors aperçu, tous les centres de coûts restent visibles');
-    assert.ok(app.tabAllowedNow('ajustements'), 'et tous les onglets restent ouverts');
-
-    app.__setDirectorModeOverride(true);
-    assert.equal(app.directorPreviewActive(), true, 'le mode déclenche bien un aperçu');
-
-    // Onglets : ceux du périmètre type, et eux seuls.
-    for (const open of app.DIRECTEUR_DEFAULT_TABS) {
-      assert.ok(app.tabAllowedNow(open), `« ${open} » doit rester visible en aperçu`);
-    }
-    for (const closed of ['ajustements', 'forecast', 'conso', 'societes', 'plan', 'import', 'autorisations']) {
-      assert.ok(!app.tabAllowedNow(closed), `« ${closed} » doit disparaître en aperçu`);
-    }
-
-    // Centres de coûts : le Food & Beverage seul.
-    assert.deepEqual(app.visibleCostCenters().map((c) => c.id), ['F&B'],
-      'la Saisie ne doit plus proposer que le Food & Beverage');
-
-    // Rubriques : celles de l'onglet CA sont filtrées comme pour un directeur.
-    assert.ok(app.directorPreviewAllowsPage('ca', 'ca-couverts'), 'la matrice couverts reste');
-    for (const page of ['ca-comptes', 'ca-ponderation', 'ca-ventilation']) {
-      assert.ok(!app.directorPreviewAllowsPage('ca', page), `« ${page} » doit disparaître en aperçu`);
-    }
-
-    // Et tout revient à l'identique en sortant.
-    app.__setDirectorModeOverride(false);
-    assert.equal(app.visibleCostCenters().length, centersBefore,
-      'sortir de l’aperçu doit rendre tous les centres de coûts');
-    assert.ok(app.tabAllowedNow('ajustements'), 'et tous les onglets');
-  } finally {
-    app.__setDirectorModeOverride(saved);
+check('Vue Directeur : plus de bascule dans le menu, la vue se règle dans les droits', () => {
+  // 04/10/2026 — Alexis : « supprime le mode switch (dans le menu) passage
+  // mode directeur ou vue complete et assure toi que ca soit dans les
+  // droits des utilisateurs lors de la configuration de ses droits ». Deux
+  // réponses concurrentes à « que voit cette personne ? » (une bascule de
+  // session + un aperçu, d'un côté ; le rôle de la fiche de droits, de
+  // l'autre) : il n'en reste qu'une.
+  assert.ok(!html.includes('director-mode-toggle'),
+    'le menu du compte ne doit plus porter de bascule de mode');
+  assert.ok(!html.includes('data-exit-director-preview'), 'ni de sortie d’aperçu');
+  assert.ok(!html.includes('director-preview-bar'),
+    'le bandeau d’aperçu et son style doivent avoir disparu');
+  for (const gone of ['function setDirectorMode', 'function directorPreviewActive',
+    'function directorPreviewAllowsTab', 'function directorPreviewAllowsPage',
+    'function directorPreviewBanner', 'let directorModeOverride',
+    'directorPreviewActive()']) {
+    assert.ok(!appSource.includes(gone), `« ${gone} » ne doit plus exister`);
   }
+
+  // Le mode ne se déduit plus que du rôle de la personne connectée.
+  assert.match(appSource,
+    /function directorModeActive\(\) \{\s*\n\s*const user = currentUser\(\);\s*\n\s*return Boolean\(user\) && user\.role === 'directeur';\s*\n\}/,
+    'directorModeActive() doit suivre le seul rôle, sans choix de session');
+
+  // Et le réglage est annoncé là où il se fait : Paramètres › Droits d'accès.
+  assert.ok(appSource.includes("'<select id=\"server-rights-role\">' + roleOptions + '</select>'"),
+    'le panneau des droits doit porter le choix du rôle');
+  assert.ok(appSource.includes('Le rôle décide de la vue'),
+    'et dire en clair que c’est le rôle qui décide de la vue, la bascule ayant disparu');
+  assert.ok(appSource.includes('Il n’y a pas d’autre réglage ailleurs dans l’application.'),
+    'pour qu’on ne cherche plus l’ancien interrupteur du menu');
 });
 
-await checkAsync('Aperçu directeur : un vrai directeur garde SON périmètre, jamais un aperçu', async () => {
-  // Un directeur peut avoir reçu un accès supplémentaire dans Autorisations.
-  // L'aperçu montre le périmètre type ; lui doit vivre dans le sien, sinon
-  // l'accès qu'on vient de lui ouvrir serait annulé à l'écran.
+await checkAsync('Vue Directeur : un directeur vit dans SON périmètre, celui de ses droits', async () => {
+  // Un directeur peut avoir reçu un accès supplémentaire dans sa fiche de
+  // droits. Rien ne doit plus superposer un « périmètre type » à sa session
+  // (c'était le rôle de l'aperçu, retiré le 04/10/2026) : sinon l'accès
+  // qu'on vient de lui ouvrir serait annulé à l'écran.
   authFixture();
-  const savedOverride = app.__getDirectorModeOverride();
   try {
-    app.__setDirectorModeOverride(null);
-    const directeur = await app.createUser({ username: 'dir_apercu', role: 'directeur', password: 'MotDePasse1!xyz' });
-    await app.signIn('dir_apercu', 'MotDePasse1!xyz');
+    const directeur = await app.createUser({ username: 'dir_perimetre', role: 'directeur', password: 'MotDePasse1!xyz' });
+    await app.signIn('dir_perimetre', 'MotDePasse1!xyz');
     assert.equal(app.directorModeActive(), true, 'un directeur est bien en mode Directeur');
-    assert.equal(app.directorPreviewActive(), false,
-      'mais il n’est pas « en aperçu » : c’est sa vraie vue');
 
     app.setUserPermissions(directeur.id, Object.assign({}, directeur.permissions, {
       ajustements: app.pagesOfTab('ajustements'),
@@ -22844,7 +23105,6 @@ await checkAsync('Aperçu directeur : un vrai directeur garde SON périmètre, j
     assert.ok(app.tabAllowedNow('ajustements'),
       'un accès rouvert à ce directeur précis doit lui rester ouvert');
   } finally {
-    app.__setDirectorModeOverride(savedOverride);
     authFixture();
   }
 });
@@ -23010,112 +23270,90 @@ check('Objectifs : le Chiffre d’affaires peut être restreint à certaines cat
   }
 });
 
-check('Objectifs : un directeur a tout le menu Pilotage, mais en lecture seule', () => {
+await checkAsync('Objectifs : un directeur a tout le menu Pilotage, mais en lecture seule', async () => {
   // Alexis : « il faut que les directeurs aient accès à tout le menu
   // Pilotage ; pour les objectifs, eux ne peuvent pas les définir, seuls
   // les CDG peuvent le faire — les directeurs ont uniquement la vue sur
   // les objectifs mis et leur avancement. »
+  //
+  // 04/10/2026 : le contrôle passe par de VRAIS comptes connectés, l'un
+  // directeur et l'autre contrôleur. Il s'appuyait jusque-là sur la
+  // bascule de mode du menu du compte, retirée à la demande d'Alexis —
+  // c'est désormais le rôle de la fiche de droits, et lui seul, qui décide.
   const company = app.state.companies[0];
-  const savedOverride = app.__getDirectorModeOverride();
   const savedTab = app.__getTab ? app.__getTab() : undefined;
   const savedObjectives = (app.state.objectives || []).slice();
+  authFixture();
   try {
     app.state.objectives = [
       { id: 'obj_lecture', companyId: company.id, scope: 'revenue', target: 1000000,
         label: 'Objectif imposé', createdAt: Date.now(), createdBy: 'cdg' },
     ];
 
-    // Tout le menu Pilotage est dans le périmètre type d'un directeur.
+    // Tout le menu Pilotage est dans les droits de départ d'un directeur.
     const pilotage = app.TAB_GROUPS.find((g) => g.id === 'pilotage');
     assert.ok(pilotage, 'le menu Pilotage doit exister');
     for (const tabId of pilotage.tabs) {
       assert.ok(app.DIRECTEUR_DEFAULT_TABS.indexOf(tabId) !== -1,
         `« ${tabId} » du menu Pilotage doit être ouvert aux directeurs`);
-      assert.ok(app.directorPreviewAllowsTab(tabId),
-        `« ${tabId} » doit rester visible en aperçu directeur`);
-    }
-    // Et toutes leurs rubriques, sans restriction.
-    for (const tabId of pilotage.tabs) {
-      for (const page of app.pagesOfTab(tabId)) {
-        assert.ok(app.directorPreviewAllowsPage(tabId, page),
-          `la rubrique « ${page} » doit rester visible à un directeur`);
-      }
     }
 
-    // En aperçu, le formulaire de création disparaît : un directeur ne
-    // fixe jamais d'objectif. C'était le défaut — Alexis étant contrôleur,
-    // l'aperçu lui montrait un formulaire qu'un directeur ne voit pas.
-    app.__setDirectorModeOverride(true);
-    assert.equal(app.canEditObjectives(), false,
-      'un directeur ne peut pas fixer d’objectif, l’aperçu doit le refléter');
+    // Connecté en directeur : le formulaire de création disparaît.
+    await app.createUser({ username: 'dir_objectifs', role: 'directeur', password: 'MotDePasse1!xyz' });
+    await app.signIn('dir_objectifs', 'MotDePasse1!xyz');
+    for (const tabId of pilotage.tabs) {
+      assert.ok(app.tabAllowedNow(tabId), `« ${tabId} » doit rester ouvert à un directeur`);
+    }
+    assert.equal(app.canEditObjectives(), false, 'un directeur ne peut pas fixer d’objectif');
     app.__setTab('objectifs');
     app.render();
     const asDirector = document.getElementById('view').innerHTML;
-    assert.ok(!asDirector.includes('objective-add'),
-      'aucun formulaire de création en vue directeur');
-    assert.ok(!asDirector.includes('data-delete-objective'),
-      'ni bouton de suppression');
+    assert.ok(!asDirector.includes('objective-add'), 'aucun formulaire de création en vue directeur');
+    assert.ok(!asDirector.includes('data-delete-objective'), 'ni bouton de suppression');
     // Mais il voit bien l'objectif et son avancement.
     assert.ok(asDirector.includes('Objectif imposé'), 'l’objectif fixé doit lui être visible');
     assert.ok(asDirector.includes('dir-bar'), 'avec sa barre de progression');
     assert.ok(asDirector.includes('dir-gauge'), 'et une jauge d’avancement d’ensemble');
 
     // Le contrôleur, lui, garde le formulaire.
-    app.__setDirectorModeOverride(false);
+    app.signOut();
+    await app.createUser({ username: 'cdg_objectifs', role: 'controleur', password: 'MotDePasse1!xyz' });
+    await app.signIn('cdg_objectifs', 'MotDePasse1!xyz');
     assert.equal(app.canEditObjectives(), true, 'un contrôleur fixe les objectifs');
+    app.__setTab('objectifs');
     app.render();
     const asControleur = document.getElementById('view').innerHTML;
-    assert.ok(asControleur.includes('objective-add'), 'le formulaire revient hors aperçu');
+    assert.ok(asControleur.includes('objective-add'), 'le formulaire revient pour un contrôleur');
     assert.ok(asControleur.includes('data-delete-objective'), 'ainsi que la suppression');
   } finally {
     app.state.objectives = savedObjectives;
-    app.__setDirectorModeOverride(savedOverride);
+    authFixture();
     if (savedTab !== undefined) { app.__setTab(savedTab); app.render(); }
   }
 });
 
-check('Aperçu directeur : un bandeau le signale sur tous les écrans', () => {
-  const saved = app.__getDirectorModeOverride();
+await checkAsync('Vue Directeur : le mode suit le rôle, et rien d’autre', async () => {
+  // Plus de choix de session depuis le 04/10/2026 : le rôle de la fiche de
+  // droits est le seul réglage. Sans compte créé, on reste sur la vue
+  // technique — basculer d'office aurait changé l'écran d'accueil d'Alexis
+  // sans qu'il le demande.
   const savedTab = app.__getTab ? app.__getTab() : undefined;
+  authFixture();
   try {
-    app.__setDirectorModeOverride(false);
-    assert.equal(app.directorPreviewBanner(), '', 'aucun bandeau hors aperçu');
-
-    app.__setDirectorModeOverride(true);
-    const banner = app.directorPreviewBanner();
-    assert.ok(banner.includes('director-preview-bar'), 'le bandeau doit apparaître en aperçu');
-    assert.ok(banner.includes('data-exit-director-preview'),
-      'et porter sa propre sortie, pour ne pas rester coincé dedans');
-
-    // Posé dans setViewHtml : il suit donc TOUS les onglets, pas seulement
-    // le tableau de bord — c'est en ouvrant la Saisie restreinte qu'on se
-    // demande si l'application est cassée.
-    for (const t of [app.DIRECTOR_TAB, 'saisie', 'ca', 'pnl']) {
-      app.__setTab(t);
-      app.render();
-      assert.ok(document.getElementById('view').innerHTML.includes('director-preview-bar'),
-        `le bandeau doit être présent sur l’onglet « ${t} »`);
-    }
-  } finally {
-    app.__setDirectorModeOverride(saved);
-    if (savedTab !== undefined) { app.__setTab(savedTab); app.render(); }
-  }
-});
-
-check('Vue Directeur : le mode suit le rôle par défaut, un choix manuel prime', () => {
-  const saved = app.__getDirectorModeOverride();
-  try {
-    app.__setDirectorModeOverride(null);
-    // Sans compte créé, on reste sur la vue technique : basculer d'office
-    // aurait changé l'écran d'accueil d'Alexis sans qu'il le demande.
     assert.equal(app.directorModeActive(), false,
       'sans authentification, le mode Directeur ne doit pas s’activer tout seul');
-    app.__setDirectorModeOverride(true);
-    assert.equal(app.directorModeActive(), true, 'un choix manuel doit primer sur le rôle');
-    app.__setDirectorModeOverride(false);
-    assert.equal(app.directorModeActive(), false, 'le retour à la vue complète doit primer aussi');
+
+    await app.createUser({ username: 'dir_mode', role: 'directeur', password: 'MotDePasse1!xyz' });
+    await app.signIn('dir_mode', 'MotDePasse1!xyz');
+    assert.equal(app.directorModeActive(), true, 'un directeur est en mode Directeur');
+
+    app.signOut();
+    await app.createUser({ username: 'cdg_mode', role: 'controleur', password: 'MotDePasse1!xyz' });
+    await app.signIn('cdg_mode', 'MotDePasse1!xyz');
+    assert.equal(app.directorModeActive(), false, 'un contrôleur reste sur la vue complète');
   } finally {
-    app.__setDirectorModeOverride(saved);
+    authFixture();
+    if (savedTab !== undefined) { app.__setTab(savedTab); app.render(); }
   }
 });
 
@@ -28669,18 +28907,22 @@ check('Validation hiérarchique : brouillon → soumis → validé fige une vers
   }
 });
 
-check('Validation hiérarchique : valider est réservé au contrôleur, soumettre reste ouvert en aperçu directeur', () => {
+await checkAsync('Validation hiérarchique : valider est réservé au contrôleur, soumettre reste ouvert à un directeur', async () => {
   assert.ok(!app.authEnabled(), 'ce contrôle suppose un état de départ sans compte actif');
   assert.strictEqual(app.canValidateCompanyBudget(), true,
     'sans aucun compte créé, tout le monde peut (même logique que canEditObjectives)');
+  authFixture();
   try {
-    app.__setDirectorModeOverride(true);
+    // Par un vrai compte connecté : la bascule de mode du menu, qui servait
+    // ici de raccourci, a été retirée le 04/10/2026.
+    await app.createUser({ username: 'dir_validation', role: 'directeur', password: 'MotDePasse1!xyz' });
+    await app.signIn('dir_validation', 'MotDePasse1!xyz');
     assert.strictEqual(app.canValidateCompanyBudget(), false,
-      'un directeur ne valide ni ne rouvre un budget — l’aperçu doit le refléter');
+      'un directeur ne valide ni ne rouvre un budget');
     assert.strictEqual(app.canSubmitCompanyValidation('peu importe'), true,
       'soumettre reste ouvert, y compris à un directeur, contrairement à valider');
   } finally {
-    app.__setDirectorModeOverride(false);
+    authFixture();
   }
 });
 
@@ -28831,6 +29073,89 @@ check('Invitation : le message s’ouvre dans la messagerie du poste', () => {
   assert.strictEqual(openCalls.length, 3,
     'création, renvoi confirmé et renvoi direct ouvrent tous les trois la messagerie');
   assert.ok(/function openInviteMail\(/.test(source), 'l’ouverture passe par une fonction unique');
+});
+
+check('Pied de page : plus de mention « Hors ligne »', () => {
+  // 04/10/2026 — Alexis : « ca porte à confusion ». La phrase « Hors ligne :
+  // aucune donnée ne quitte ce poste » se lisait comme un état de connexion,
+  // et depuis que les données sont tenues par le serveur elle est fausse. Le
+  // contrôle porte sur la seule affectation du pied de page : la même idée,
+  // formulée avec sa réserve (« tant qu'elle n'est pas connectée à un
+  // serveur »), reste légitime dans « À propos » et sur l'écran de connexion.
+  const footerStart = appSource.indexOf("getElementById('footer').innerHTML =");
+  assert.ok(footerStart !== -1, 'l’affectation du pied de page doit exister');
+  const footerBlock = appSource.slice(footerStart, appSource.indexOf('\n\n', footerStart));
+  assert.ok(!/Hors ligne|quitte ce poste/.test(footerBlock),
+    'le pied de page ne doit plus annoncer que les données ne quittent pas le poste');
+  assert.match(footerBlock, /serverData\s*\n?\s*\?\s*'Données <strong>sur le serveur<\/strong>'/,
+    'il doit dire où le budget est enregistré : sur le serveur en mode serveur…');
+  assert.match(footerBlock, /Stockage sur ce poste/, '…et sur le poste sinon');
+  // Le sas réseau lui-même reste entier : c'est une phrase d'affichage qui
+  // disparaît, pas une protection.
+  for (const name of ['fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource']) {
+    assert.ok(appSource.includes("seal(globalThis, '" + name + "'"),
+      name + ' doit rester neutralisé par sealNetwork()');
+  }
+});
+
+check('Sociétés : un périmètre vide n’affiche JAMAIS une société hors droits', () => {
+  // 04/10/2026 — « peux tu me garantir que la gestion des sociétés en mode
+  // client/serveur fonctionne bien ». Non : quand le périmètre d'une
+  // personne ne correspondait à aucune société de l'état chargé, le repli
+  // (`state.companies[0]`) rendait active une société INTERDITE, dont le
+  // tableau de bord affichait les chiffres, pendant que l'écran d'accueil ne
+  // proposait aucune carte.
+  const savedActive = app.state.activeCompany;
+  const savedTab = app.__getTab ? app.__getTab() : undefined;
+  try {
+    // Fiche de droits bornée à une société absente de l'état chargé.
+    app.adoptServerSession({ method: 'ldap', account: 'dir_hors_perimetre', displayName: 'Dir', rights: {
+      role: 'directeur', isAdmin: false, permissions: null,
+      allowedCompanies: ['soc_absente_de_cet_etat'], allowedCostCenters: null, environmentIds: [],
+    } }, null);
+    assert.equal(app.companiesWithinRights().length, 0, 'aucune société du périmètre n’est présente');
+    assert.equal(app.companyScopeEmpty(), true, 'le périmètre vide doit être reconnu comme tel');
+
+    app.enforceCompanyPermission();
+    assert.equal(app.state.activeCompany, null,
+      'aucune société ne doit rester active : l’ancien repli en choisissait une hors droits');
+    assert.equal(app.activeCompany(), null,
+      'activeCompany() ne doit jamais rendre une société interdite');
+
+    // Et aucun écran métier ne s’affiche à la place : on explique la cause.
+    app.__setTab(app.DIRECTOR_TAB);
+    app.render();
+    const view = document.getElementById('view').innerHTML;
+    assert.ok(view.includes('Aucune société ne vous est attribuée'),
+      'le tableau de bord doit être remplacé par l’écran qui nomme la cause');
+    for (const company of app.state.companies) {
+      assert.ok(!view.includes(company.name),
+        `le nom de « ${company.name} » ne doit pas apparaître : elle est hors droits`);
+    }
+
+    // Une personne sans fiche de droits est dans le même cas
+    // (`allowedCompanies: []`, voir serverUserFromRights) : Paramètres reste
+    // son seul écran, et il doit continuer de s’afficher.
+    app.adoptServerSession({ method: 'ldap', account: 'sans_fiche', displayName: 'Sans Fiche', rights: null }, null);
+    assert.equal(app.companyScopeEmpty(), true, 'sans fiche, aucune société non plus');
+    app.__setTab('parametres');
+    app.render();
+    assert.ok(document.getElementById('view').innerHTML.includes('pas encore configuré'),
+      'Paramètres n’est jamais remplacé : c’est là que l’administrateur corrige le périmètre');
+  } finally {
+    app.__clearServerSession();
+    app.state.activeCompany = savedActive;
+    if (savedTab !== undefined) { app.__setTab(savedTab); app.render(); }
+  }
+});
+
+check('Sociétés : sans borne de droits, le périmètre n’est jamais déclaré vide', () => {
+  // Le garde-fou ne doit pas se déclencher chez Alexis, qui travaille sans
+  // authentification : `allowedCompanyIds` rend `null` (aucune borne), et
+  // tout le portefeuille reste affiché.
+  assert.ok(!app.authEnabled(), 'ce contrôle suppose un état sans compte actif');
+  assert.equal(app.companyScopeEmpty(), false, 'sans compte, aucun périmètre à opposer');
+  assert.ok(app.activeCompany(), 'et une société reste active');
 });
 
 /* --- 5. Verdict ------------------------------------------------------- */
