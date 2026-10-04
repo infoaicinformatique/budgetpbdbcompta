@@ -142,7 +142,7 @@ export async function ldapAuthenticate(config, username, password, ClientClass) 
 
 /**
  * Comme `ldapAuthenticate`, mais renvoie l'entrée : `{ dn, account,
- * displayName }`. `account` est l'identifiant CANONIQUE de la personne
+ * displayName, mail }`. `account` est l'identifiant CANONIQUE de la personne
  * (sAMAccountName, sinon uid, sinon l'identifiant saisi sans son
  * « @domaine »), en minuscules : c'est la clé de ses droits dans
  * l'application, qu'elle se connecte en « prenom.nom » ou avec son UPN.
@@ -158,7 +158,7 @@ export async function ldapAuthenticateEntry(config, username, password, ClientCl
 }
 
 /**
- * Membres du groupe LDAP_GROUP_DN : `[{ dn, account, displayName }]`, triés
+ * Membres du groupe LDAP_GROUP_DN : `[{ dn, account, displayName, mail }]`, triés
  * par nom affiché. Sert à l'écran des droits de l'application, pour que
  * l'administrateur voie qui peut entrer sans connaître l'annuaire. Lu au
  * nom du compte de service ; `[]` sans groupe configuré.
@@ -185,7 +185,11 @@ export async function ldapListGroupMembers(config, ClientClass) {
         // on le montre quand même, par son DN.
       }
       const account = entry ? accountOf(entry, '') : '';
-      members.push({ dn: dn, account: account, displayName: entry ? displayNameOf(entry) : '' });
+      members.push({
+        dn: dn, account: account,
+        displayName: entry ? displayNameOf(entry) : '',
+        mail: entry ? mailOf(entry) : '',
+      });
     }
     return members.sort(function (a, b) {
       return (a.displayName || a.account || a.dn).localeCompare(b.displayName || b.account || b.dn, 'fr');
@@ -229,7 +233,10 @@ function isConnectionError(err) {
     || /timeout|timed out|connect/i.test(String(err && err.message));
 }
 
-const ENTRY_ATTRIBUTES = ['sAMAccountName', 'uid', 'displayName', 'cn'];
+const ENTRY_ATTRIBUTES = ['sAMAccountName', 'uid', 'displayName', 'cn', 'mail'];
+
+/** Une adresse plausible : on ne devine pas, on refuse ce qui n'en a pas la forme. */
+const MAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** Valeurs d'un attribut ldapts (absent, chaîne ou tableau), en chaînes. */
 function values(value) {
@@ -254,6 +261,20 @@ function accountOf(entry, typed) {
 
 function displayNameOf(entry) {
   return (attribute(entry, 'displayName')[0] || attribute(entry, 'cn')[0] || '').trim();
+}
+
+/**
+ * Adresse de courrier de l'entrée, en minuscules, `''` si l'annuaire n'en
+ * porte pas. SEUL l'attribut `mail` est lu : le `userPrincipalName` d'un
+ * Active Directory ressemble à une adresse (« prenom.nom@domaine ») sans en
+ * être forcément une — s'en servir enverrait du courrier dans le vide.
+ * L'adresse appartient à l'annuaire : l'application l'affiche, ne la
+ * conserve pas et ne la modifie jamais.
+ */
+function mailOf(entry) {
+  const found = attribute(entry, 'mail').map(function (v) { return v.trim().toLowerCase(); })
+    .find(function (v) { return MAIL_PATTERN.test(v); });
+  return found || '';
 }
 
 async function checkOnServer(client, config, username, password) {
@@ -295,7 +316,7 @@ async function checkOnServer(client, config, username, password) {
     });
     if (!searchEntries.length) return null;
   }
-  return { dn: userDn, account: accountOf(entry, username), displayName: displayNameOf(entry) };
+  return { dn: userDn, account: accountOf(entry, username), displayName: displayNameOf(entry), mail: mailOf(entry) };
 }
 
 async function bindService(client, config) {

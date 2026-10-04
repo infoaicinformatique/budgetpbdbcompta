@@ -178,8 +178,11 @@ function adDirectory() {
   const OTHER = 'CN=Autre,OU=UniversalUsers,DC=pb,DC=org';
   const GRP = 'CN=budgetpbdbcompta,OU=Groupes,DC=pb,DC=org';
   const entries = {
-    [USER]: { dn: USER, sAMAccountName: 'Prenom.Nom', displayName: 'Prénom Nom' },
-    [OTHER]: { dn: OTHER, sAMAccountName: 'autre', cn: 'Autre' },
+    [USER]: { dn: USER, sAMAccountName: 'Prenom.Nom', displayName: 'Prénom Nom',
+      mail: 'Prenom.Nom@pb.org', userPrincipalName: 'prenom.nom@pbcannes.org' },
+    // Sans `mail` : l'annuaire de production en compte beaucoup. Le
+    // userPrincipalName ne doit PAS servir de repli.
+    [OTHER]: { dn: OTHER, sAMAccountName: 'autre', cn: 'Autre', userPrincipalName: 'autre@pbcannes.org' },
     [GRP]: { dn: GRP, member: [USER, OTHER, 'CN=Supprimé,DC=pb,DC=org'] },
   };
   class AdClient {
@@ -210,7 +213,7 @@ function adDirectory() {
 test('ldapAuthenticateEntry : identifiant canonique et nom affiché lus dans l’annuaire', async () => {
   const { AdClient, config, USER } = adDirectory();
   assert.deepEqual(await ldapAuthenticateEntry(config, 'prenom.nom@pb.org', 'secret', AdClient),
-    { dn: USER, account: 'prenom.nom', displayName: 'Prénom Nom' });
+    { dn: USER, account: 'prenom.nom', displayName: 'Prénom Nom', mail: 'prenom.nom@pb.org' });
   assert.equal(await ldapAuthenticate(config, 'prenom.nom', 'secret', AdClient), USER, 'ldapAuthenticate rend toujours le DN');
   assert.equal(await ldapAuthenticateEntry(config, 'prenom.nom', 'faux', AdClient), null);
 });
@@ -218,16 +221,28 @@ test('ldapAuthenticateEntry : identifiant canonique et nom affiché lus dans l�
 test('ldapAuthenticateEntry en bind direct : identifiant saisi sans son domaine', async () => {
   const { FakeClient } = fakeDirectory();
   const entry = await ldapAuthenticateEntry(direct(), 'alice', 'secret', FakeClient);
-  assert.deepEqual(entry, { dn: ALICE, account: 'alice', displayName: '' });
+  assert.deepEqual(entry, { dn: ALICE, account: 'alice', displayName: '', mail: '' },
+    'bind direct : aucune entrée n’est lue, donc ni nom ni adresse');
+});
+
+test('adresse de courrier : l’attribut mail seulement, jamais le userPrincipalName (04/10/2026)', async () => {
+  const { AdClient, config, USER } = adDirectory();
+  const entry = await ldapAuthenticateEntry(config, 'prenom.nom', 'secret', AdClient);
+  assert.equal(entry.mail, 'prenom.nom@pb.org', 'l’adresse est reprise de l’annuaire, en minuscules');
+  assert.equal(entry.dn, USER);
+  const members = await ldapListGroupMembers(config, AdClient);
+  const sansMail = members.find((m) => m.account === 'autre');
+  assert.equal(sansMail.mail, '', 'sans attribut mail : adresse vide, et surtout pas l’UPN');
+  assert.ok(!JSON.stringify(members).includes('pbcannes.org'), 'aucun userPrincipalName ne doit filtrer');
 });
 
 test('ldapListGroupMembers : membres du groupe, même ceux qu’on ne peut pas lire', async () => {
   const { AdClient, config, USER, OTHER } = adDirectory();
   const members = await ldapListGroupMembers(config, AdClient);
   assert.deepEqual(members, [
-    { dn: OTHER, account: 'autre', displayName: 'Autre' },
-    { dn: 'CN=Supprimé,DC=pb,DC=org', account: '', displayName: '' },
-    { dn: USER, account: 'prenom.nom', displayName: 'Prénom Nom' },
+    { dn: OTHER, account: 'autre', displayName: 'Autre', mail: '' },
+    { dn: 'CN=Supprimé,DC=pb,DC=org', account: '', displayName: '', mail: '' },
+    { dn: USER, account: 'prenom.nom', displayName: 'Prénom Nom', mail: 'prenom.nom@pb.org' },
   ], 'triés par nom affiché, à défaut par identifiant puis DN');
   assert.deepEqual(await ldapListGroupMembers(search(), AdClient), [], 'sans groupe configuré : liste vide');
 });

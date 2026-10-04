@@ -1315,6 +1315,64 @@ check('Droits tenus par le serveur : l’administrateur règle les droits dans P
   }
 });
 
+check('Adresses de courrier : lues dans l’annuaire, affichées, jamais conservées (04/10/2026)', () => {
+  // Alexis : « récupérer / synchroniser les adresses mails des utilisateurs
+  // via LDAP ». Le serveur lit l'attribut `mail` (auth-ldap.mjs) et le passe
+  // dans /api/droits ; l'application l'affiche et ne le stocke nulle part.
+  const rights = { role: 'controleur', isAdmin: true, permissions: null };
+  try {
+    app.adoptServerSession({ method: 'ldap', account: 'chef', displayName: 'Le Chef',
+      mail: 'Chef@Pb.Org', rights: rights }, null);
+    const own = app.currentUser();
+    assert.equal(own.email, 'chef@pb.org', 'l’adresse de l’annuaire est reprise, en minuscules');
+    assert.ok(!Object.keys(app.serverRightsPayload(own)).includes('email'),
+      'l’adresse ne repart jamais au serveur : elle appartient à l’annuaire');
+
+    const directory = app.buildServerDirectory({
+      groupDn: 'CN=budgetpbdbcompta,DC=pb,DC=org',
+      members: [
+        { dn: 'CN=Chef', account: 'chef', displayName: 'Le Chef', mail: 'chef@pb.org' },
+        { dn: 'CN=Avec', account: 'avec', displayName: 'Avec Adresse', mail: 'Avec@Pb.Org' },
+        { dn: 'CN=Sans', account: 'sans', displayName: 'Sans Adresse' },
+      ],
+      users: {
+        chef: { role: 'controleur', isAdmin: true, permissions: null },
+        avec: { role: 'directeur', isAdmin: false, permissions: {} },
+      },
+      admins: [],
+    });
+    app.__setServerDirectory(directory);
+    assert.equal(app.userById('annuaire:avec').email, 'avec@pb.org', 'adresse du membre, en minuscules');
+    assert.equal(app.userById('annuaire:sans').email, '',
+      'sans attribut mail dans l’annuaire : aucune adresse inventée (pas l’UPN)');
+    const html = app.viewParametres();
+    assert.ok(html.includes('avec@pb.org'), 'le tableau des membres doit montrer l’adresse de l’annuaire');
+    assert.ok(html.includes('Adresse de courrier'), 'Mon compte doit montrer l’adresse de la personne connectée');
+
+    // Une adresse qui change dans l'annuaire n'est pas un changement de
+    // droits : elle se met à jour en silence, sans message ni réaffichage.
+    const changed = app.applyRefreshedServerRights({ method: 'ldap', account: 'chef',
+      displayName: 'Le Chef', mail: 'neuf@pb.org', rights: rights });
+    assert.equal(changed, false, 'changer d’adresse ne doit pas annoncer un changement de droits');
+    assert.equal(app.currentUser().email, 'neuf@pb.org', 'l’adresse suit l’annuaire à chaque relecture');
+    app.applyRefreshedServerRights({ method: 'ldap', account: 'chef', displayName: 'Le Chef', rights: rights });
+    assert.equal(app.currentUser().email, '',
+      'adresse effacée dans l’annuaire : elle disparaît aussi ici, sans rémanence');
+  } finally {
+    app.__setServerDirectory(null);
+    app.__clearServerSession();
+  }
+
+  // Personne sans adresse dans l'annuaire : Paramètres le dit, au lieu d'un blanc.
+  try {
+    app.adoptServerSession({ method: 'ldap', account: 'muet', displayName: 'Sans Adresse', rights: rights }, null);
+    assert.ok(app.viewParametres().includes('Non renseignée dans l’annuaire'),
+      'Mon compte doit dire qu’aucune adresse n’est renseignée, sans en fabriquer une');
+  } finally {
+    app.__clearServerSession();
+  }
+});
+
 check('Déconnexion : identifié par l’annuaire, le bouton passe par /deconnexion (28/09/2026)', () => {
   // Basic n'a pas de déconnexion : seul un 401 du serveur fait oublier au
   // navigateur ses identifiants. Le bouton doit donc y mener, et rester visible.

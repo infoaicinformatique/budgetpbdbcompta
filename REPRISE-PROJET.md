@@ -77,6 +77,56 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Adresses de courrier récupérées dans l'annuaire LDAP (04/10/2026)
+
+Alexis : « peux-tu récupérer/synchroniser les adresses mails des utilisateurs
+via LDAP ». Jusque-là le serveur ne lisait de l'annuaire que l'identifiant
+(`sAMAccountName`/`uid`) et le nom affiché (`displayName`/`cn`) ; le compte
+bâti pour une personne de l'annuaire avait un champ `email` vide en dur
+(`serverUserFromRights`), et l'écran des droits n'affichait donc jamais
+d'adresse.
+
+Ce qui change, du serveur à l'écran :
+
+- `auth-ldap.mjs` lit l'attribut **`mail`** (ajouté à `ENTRY_ATTRIBUTES`) et le
+  renvoie, en minuscules, dans l'entrée de `ldapAuthenticateEntry` et dans
+  chaque membre de `ldapListGroupMembers`. **Seul** `mail` est lu : le
+  `userPrincipalName` d'Active Directory ressemble à une adresse
+  (« prenom.nom@pbcannes.org ») sans en être forcément une, s'en servir
+  comme repli enverrait du courrier dans le vide. Une valeur qui n'a pas la
+  forme d'une adresse (`MAIL_PATTERN`) est ignorée.
+- `server.mjs` fait suivre l'adresse partout où il nomme déjà la personne :
+  identité d'`authenticate()` (et son cache LDAP), cookie `bm-auth`,
+  `GET /api/droits/moi`, et les membres de `GET /api/droits`.
+- `budget-app.html` : `serverUserFromRights(account, displayName, rights,
+  mail)` remplit `email`, `buildServerDirectory` porte l'adresse sur chaque
+  ligne, et Paramètres l'affiche — champ « Adresse de courrier » dans « Mon
+  compte » (« Non renseignée dans l'annuaire » à défaut), et sous
+  l'identifiant dans le tableau de Droits d'accès quand elle existe.
+
+**Synchroniser, c'est relire, pas recopier.** Rien n'est enregistré :
+`droits.json` ne gagne aucun champ (`serverRightsPayload` n'envoie pas
+l'adresse, `sanitizeRights` la refuserait), et l'état du navigateur n'en garde
+pas trace. L'adresse est relue à l'ouverture de la page, à chaque relecture des
+droits (`applyRefreshedServerRights`, toutes les minutes) et à chaque
+« Actualiser » de l'écran des droits ; l'annuaire reste le seul endroit où on
+la corrige. Une adresse qui change là-bas n'est **pas** un changement de droits :
+elle est reprise en silence, sans le message « Vos droits viennent d'être
+modifiés » (`serverRightsSignature` l'ignore).
+
+Constat sur l'annuaire de production (`CN=budgetpbdbcompta`, 35 membres) :
+**14 fiches portent un `mail`, 21 n'en ont pas** — dont `a.porrati`. Les
+adresses manquantes se complètent dans l'annuaire, l'application les reprendra
+sans rien changer ici.
+
+Contrôles ajoutés : « adresse de courrier : l'attribut mail seulement, jamais
+le userPrincipalName » dans `test/auth-ldap.test.mjs` (plus les entrées du faux
+annuaire AD, avec et sans `mail`), et « Adresses de courrier : lues dans
+l'annuaire, affichées, jamais conservées » dans `check-budget-app.mjs`
+(reprise en minuscules, aucune adresse inventée pour une fiche sans `mail`,
+affichage dans les deux écrans, rien dans la charge utile des droits, mise à
+jour silencieuse).
+
 ### Boutons import/export sur la ligne de chaque société (04/10/2026)
 
 Alexis : « rajoute le bouton imports/export par société ». Jusque-là l'import
@@ -11875,6 +11925,64 @@ check('Droits tenus par le serveur : l’administrateur règle les droits dans P
     assert.ok(!html.includes('data-server-rights-revoke="annuaire:secours"'), 'un administrateur désigné ne se retire pas d’ici');
   } finally {
     app.__setAuthPermissionsIdForTest(null);
+    app.__clearServerSession();
+  }
+});
+
+check('Adresses de courrier : lues dans l’annuaire, affichées, jamais conservées (04/10/2026)', () => {
+  // Alexis : « récupérer / synchroniser les adresses mails des utilisateurs
+  // via LDAP ». Le serveur lit l'attribut `mail` (auth-ldap.mjs) et le passe
+  // dans /api/droits ; l'application l'affiche et ne le stocke nulle part.
+  const rights = { role: 'controleur', isAdmin: true, permissions: null };
+  try {
+    app.adoptServerSession({ method: 'ldap', account: 'chef', displayName: 'Le Chef',
+      mail: 'Chef@Pb.Org', rights: rights }, null);
+    const own = app.currentUser();
+    assert.equal(own.email, 'chef@pb.org', 'l’adresse de l’annuaire est reprise, en minuscules');
+    assert.ok(!Object.keys(app.serverRightsPayload(own)).includes('email'),
+      'l’adresse ne repart jamais au serveur : elle appartient à l’annuaire');
+
+    const directory = app.buildServerDirectory({
+      groupDn: 'CN=budgetpbdbcompta,DC=pb,DC=org',
+      members: [
+        { dn: 'CN=Chef', account: 'chef', displayName: 'Le Chef', mail: 'chef@pb.org' },
+        { dn: 'CN=Avec', account: 'avec', displayName: 'Avec Adresse', mail: 'Avec@Pb.Org' },
+        { dn: 'CN=Sans', account: 'sans', displayName: 'Sans Adresse' },
+      ],
+      users: {
+        chef: { role: 'controleur', isAdmin: true, permissions: null },
+        avec: { role: 'directeur', isAdmin: false, permissions: {} },
+      },
+      admins: [],
+    });
+    app.__setServerDirectory(directory);
+    assert.equal(app.userById('annuaire:avec').email, 'avec@pb.org', 'adresse du membre, en minuscules');
+    assert.equal(app.userById('annuaire:sans').email, '',
+      'sans attribut mail dans l’annuaire : aucune adresse inventée (pas l’UPN)');
+    const html = app.viewParametres();
+    assert.ok(html.includes('avec@pb.org'), 'le tableau des membres doit montrer l’adresse de l’annuaire');
+    assert.ok(html.includes('Adresse de courrier'), 'Mon compte doit montrer l’adresse de la personne connectée');
+
+    // Une adresse qui change dans l'annuaire n'est pas un changement de
+    // droits : elle se met à jour en silence, sans message ni réaffichage.
+    const changed = app.applyRefreshedServerRights({ method: 'ldap', account: 'chef',
+      displayName: 'Le Chef', mail: 'neuf@pb.org', rights: rights });
+    assert.equal(changed, false, 'changer d’adresse ne doit pas annoncer un changement de droits');
+    assert.equal(app.currentUser().email, 'neuf@pb.org', 'l’adresse suit l’annuaire à chaque relecture');
+    app.applyRefreshedServerRights({ method: 'ldap', account: 'chef', displayName: 'Le Chef', rights: rights });
+    assert.equal(app.currentUser().email, '',
+      'adresse effacée dans l’annuaire : elle disparaît aussi ici, sans rémanence');
+  } finally {
+    app.__setServerDirectory(null);
+    app.__clearServerSession();
+  }
+
+  // Personne sans adresse dans l'annuaire : Paramètres le dit, au lieu d'un blanc.
+  try {
+    app.adoptServerSession({ method: 'ldap', account: 'muet', displayName: 'Sans Adresse', rights: rights }, null);
+    assert.ok(app.viewParametres().includes('Non renseignée dans l’annuaire'),
+      'Mon compte doit dire qu’aucune adresse n’est renseignée, sans en fabriquer une');
+  } finally {
     app.__clearServerSession();
   }
 });

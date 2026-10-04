@@ -3393,7 +3393,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-04.4';
+const APP_BUILD = '2026-10-04.5';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -8728,8 +8728,13 @@ function isServerUserId(id) {
  * Compte de l'application bâti sur une fiche du serveur. `rights` à `null` :
  * personne sans fiche — aucun onglet, périmètre de départ d'un directeur
  * pour le jour où un administrateur la configure.
+ *
+ * `mail` est l'adresse que porte l'annuaire (attribut `mail`, lu par le
+ * serveur) : elle est reprise à chaque lecture et n'est jamais enregistrée
+ * ici — l'annuaire en reste le seul détenteur. Beaucoup de fiches n'en ont
+ * pas : l'adresse vide est donc normale.
  */
-function serverUserFromRights(account, displayName, rights) {
+function serverUserFromRights(account, displayName, rights, mail) {
   const r = rights && typeof rights === 'object' ? rights : null;
   const role = r && r.role === 'controleur' ? 'controleur' : 'directeur';
   let permissions = {};
@@ -8747,7 +8752,7 @@ function serverUserFromRights(account, displayName, rights) {
     account: account,
     username: account,
     displayName: displayName || '',
-    email: '',
+    email: String(mail || '').trim().toLowerCase(),
     role: role,
     isAdmin: Boolean(r && r.isAdmin === true),
     status: 'active',
@@ -8782,7 +8787,8 @@ function adoptServerSession(me, error) {
   serverSession = {
     method: (me && me.method) || info.method || 'ldap',
     account: account,
-    user: serverUserFromRights(account, (me && me.displayName) || info.displayName || '', me ? me.rights : null),
+    user: serverUserFromRights(account, (me && me.displayName) || info.displayName || '',
+      me ? me.rights : null, (me && me.mail) || info.mail || ''),
     error: error || null,
   };
   serverDirectory = null;
@@ -8821,7 +8827,7 @@ function buildServerDirectory(data) {
   const admins = Array.isArray(data && data.admins) ? data.admins : [];
   const rows = [];
   const seen = new Set();
-  const addRow = function (account, displayName, dn, inGroup) {
+  const addRow = function (account, displayName, dn, inGroup, mail) {
     if (account && seen.has(account)) return;
     if (account) seen.add(account);
     let rights = users[account] || null;
@@ -8831,13 +8837,18 @@ function buildServerDirectory(data) {
     }
     rows.push({
       account: account, displayName: displayName || '', dn: dn || '', inGroup: inGroup,
+      mail: String(mail || '').trim().toLowerCase(),
       designatedAdmin: admins.indexOf(account) !== -1,
-      user: account ? serverUserFromRights(account, displayName, rights) : null,
+      user: account ? serverUserFromRights(account, displayName, rights, mail) : null,
     });
   };
-  for (const m of Array.isArray(data && data.members) ? data.members : []) addRow(m.account, m.displayName, m.dn, true);
-  for (const account of Object.keys(users)) addRow(account, '', '', false);
-  for (const account of admins) addRow(account, '', '', false);
+  // L'adresse ne vient que de l'annuaire : les lignes bâties sur le seul
+  // fichier des droits (hors groupe, administrateurs désignés) n'en ont pas.
+  for (const m of Array.isArray(data && data.members) ? data.members : []) {
+    addRow(m.account, m.displayName, m.dn, true, m.mail);
+  }
+  for (const account of Object.keys(users)) addRow(account, '', '', false, '');
+  for (const account of admins) addRow(account, '', '', false, '');
 
   const list = [];
   for (const row of rows) {
@@ -8845,8 +8856,10 @@ function buildServerDirectory(data) {
     if (serverSession && row.account === serverSession.account) {
       const own = serverSession.user;
       const displayName = own.displayName;
+      const email = own.email;
       Object.assign(own, row.user);
       if (!own.displayName) own.displayName = displayName;
+      if (!own.email) own.email = email;
       row.user = own;
     }
     list.push(row.user);
@@ -8928,8 +8941,13 @@ function applyRefreshedServerRights(me) {
   if (!serverSession) return false;
   const own = serverSession.user;
   const fresh = serverUserFromRights(serverSession.account,
-    (me && me.displayName) || own.displayName, me ? me.rights : null);
+    (me && me.displayName) || own.displayName, me ? me.rights : null,
+    me ? me.mail : own.email);
   serverSession.error = null;
+  // L'adresse de l'annuaire n'est pas un droit : elle se met à jour sans
+  // message ni réaffichage forcé (`serverRightsSignature` l'ignore). Une
+  // fiche relue fait foi, y compris quand l'adresse y a été effacée.
+  own.email = fresh.email;
   if (serverRightsSignature(fresh) === serverRightsSignature(own)) return false;
   Object.assign(own, fresh);
   // Écran verrouillé par le code d'accès : les droits sont pris en compte,
@@ -23297,11 +23315,13 @@ function viewParametresServeur() {
     '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px">' +
     (user.displayName ? field('Nom', user.displayName) : '') +
     field('Identifiant', user.account) +
+    field('Adresse de courrier', user.email || 'Non renseignée dans l’annuaire') +
     field('Rôle', user.configured ? roleLabel(user.role) + (isAdminUser(user) ? ' · Administrateur' : '') : 'Aucun droit') +
     field('Connexion', serverSession.method === 'local' ? 'Compte local de secours' : 'Annuaire LDAP') +
     '</div>' +
-    '<p class="muted" style="margin:14px 0 0;font-size:13px">Votre mot de passe est celui de votre session Windows : ' +
-    'il se change dans l’annuaire, pas ici.</p>';
+    '<p class="muted" style="margin:14px 0 0;font-size:13px">Votre nom, votre adresse de courrier et votre mot de passe ' +
+    'viennent de l’annuaire : ils se changent là-bas, pas ici. L’application les relit à chaque ouverture de la page et ' +
+    'n’en garde aucune copie.</p>';
 
   return viewPage({
     title: 'Paramètres',
@@ -23344,8 +23364,12 @@ function parametresDroitsPanels() {
   } else {
     const rows = (directory.rows || []).map(function (row) {
       const u = row.user;
+      // Adresse de courrier : celle de l'annuaire, affichée seulement si
+      // elle existe — beaucoup de fiches n'en portent pas.
+      const mail = row.mail || (u && u.email) || '';
       const who = '<strong>' + escapeHtml(row.displayName || (u && u.displayName) || row.account || row.dn) + '</strong>' +
-        (row.account ? '<div class="muted" style="font-size:12px">' + escapeHtml(row.account) + '</div>' : '');
+        (row.account ? '<div class="muted" style="font-size:12px">' + escapeHtml(row.account) + '</div>' : '') +
+        (mail ? '<div class="muted" style="font-size:12px;overflow-wrap:anywhere">' + escapeHtml(mail) + '</div>' : '');
       const badges = (row.inGroup ? '' : '<span class="badge grey" title="Absent du groupe : ne peut pas entrer sur le site">hors groupe</span> ') +
         (row.designatedAdmin ? '<span class="badge grey" title="Désigné par RIGHTS_ADMINS sur le serveur">administrateur désigné</span>' : '');
       if (!u) {
@@ -23367,7 +23391,9 @@ function parametresDroitsPanels() {
       (directory.groupDn ? '<strong>' + escapeHtml(directory.groupDn) + '</strong>' : 'de l’annuaire') +
       ' peuvent entrer sur le site. Ici, vous choisissez ce que chacun y voit : rôle, onglets, rubriques, sociétés et ' +
       'centres de coûts. Ces droits sont enregistrés sur le serveur et valent sur tous les postes, à la prochaine ' +
-      'ouverture de la page. Une personne sans droits n’a accès qu’à Paramètres.</p>' +
+      'ouverture de la page. Une personne sans droits n’a accès qu’à Paramètres. Nom et adresse de courrier sont lus ' +
+      'dans l’annuaire à chaque actualisation : ils ne se corrigent que là-bas, et une fiche d’annuaire sans adresse ' +
+      'n’en affiche aucune.</p>' +
       (directory.membersError
         ? '<div class="alert error">Membres du groupe illisibles : ' + escapeHtml(directory.membersError) + '</div>' : '') +
       (!directory.groupDn
