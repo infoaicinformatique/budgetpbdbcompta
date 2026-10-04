@@ -28,10 +28,14 @@ services:
       # le port 3000 (voir README, ufw).
       - TRUST_PROXY=true
     volumes:
-      # Droits d'accès de chacun (Paramètres › Droits d'accès) : volume nommé,
-      # créé au premier lancement avec les bons droits d'écriture et conservé
-      # quand le conteneur est recréé (Watchtower, docker compose up).
-      # Lire ou sauvegarder : docker exec budgetpbdbcompta cat /data/droits.json
+      # Droits d'accès de chacun (Paramètres › Droits d'accès) ET budget
+      # partagé par tous les postes (etat.json, depuis le 04/10/2026) :
+      # volume nommé, créé au premier lancement avec les bons droits
+      # d'écriture et conservé quand le conteneur est recréé (Watchtower,
+      # docker compose up).
+      # Lire ou sauvegarder :
+      #   docker exec budgetpbdbcompta cat /data/droits.json
+      #   docker exec budgetpbdbcompta cat /data/etat.json   ← les budgets
       - droits:/data
       # Autorité de certification de l'annuaire LDAP, si elle est interne :
       # déposer le fichier à côté de ce compose, décommenter, et renseigner

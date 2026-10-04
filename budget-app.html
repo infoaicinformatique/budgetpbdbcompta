@@ -3250,23 +3250,37 @@
    dans l'en-tête : si un copier-coller malheureux introduisait un jour un
    appel réseau, il échouerait bruyamment au lieu d'envoyer un budget.
    ================================================================== */
-/* Seule porte laissée entrouverte : les droits d'accès tenus par le
-   serveur qui a servi la page (Paramètres › Droits d'accès, voir
-   `loadServerSession`). `serverRequest` garde pour lui le `fetch` d'origine
-   avant qu'il ne soit neutralisé, et n'accepte qu'un chemin relatif sous
-   `/api/droits` — jamais une autre adresse, jamais un budget. `null` là où
-   `fetch` n'existe pas. */
+/* Seules portes laissées entrouvertes, vers le serveur qui a servi la page
+   et lui seul : les droits d'accès (`/api/droits`, voir `loadServerSession`)
+   et l'état budgétaire partagé (`/api/etat`, voir `loadServerState`).
+   `serverRequest` garde pour lui le `fetch` d'origine avant qu'il ne soit
+   neutralisé et n'accepte que ces deux chemins relatifs — jamais une autre
+   adresse. `null` là où `fetch` n'existe pas.
+
+   04/10/2026 : le budget passe par ici. Alexis : « je ne veux pas que les
+   informations soient enregistré dans le poste et navigateur mais plus sur
+   le serveur ». Tout le reste du sas tient : aucune autre sortie réseau
+   n'existe, et la CSP (`connect-src 'self'`) interdit toute autre origine. */
 let serverRequest = null;
 /* Session et écran d'administration des droits tenus par le serveur :
    voir « Droits tenus par le serveur (annuaire) ». */
 let serverSession = null; // { method, account, user, error }
 let serverDirectory = null; // { loading, error, rows, list, groupDn, membersError }
 
+/* État budgétaire tenu par le serveur — voir « ÉTAT TENU PAR LE SERVEUR ».
+   `serverStateMode` vrai : le serveur fait foi, le navigateur ne garde qu'un
+   filet de sécurité. Faux : fichier ouvert seul, stockage local comme avant. */
+let serverStateMode = false;
+let serverStateVersion = 0;   // version lue sur le serveur (0 = rien encore déposé)
+let serverStateSync = 'local'; // 'local' | 'ok' | 'attente' | 'conflit' | 'erreur'
+let serverStateMessage = '';
+
 (function sealNetwork() {
   const nativeFetch = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null;
   if (nativeFetch) {
     serverRequest = function (method, path, body) {
-      if (!/^\/api\/droits(\/[A-Za-z0-9._@%-]+)?$/.test(String(path))) {
+      if (!/^\/api\/droits(\/[A-Za-z0-9._@%-]+)?$/.test(String(path)) &&
+          String(path) !== '/api/etat') {
         return Promise.reject(new Error('Sortie réseau interdite (' + path + ').'));
       }
       const options = { method: method, credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers: {} };
@@ -3276,7 +3290,15 @@ let serverDirectory = null; // { loading, error, rows, list, groupDn, membersErr
       }
       return nativeFetch(path, options).then(function (response) {
         return response.json().catch(function () { return {}; }).then(function (data) {
-          if (!response.ok) throw new Error(data && data.error ? data.error : 'Erreur ' + response.status);
+          if (!response.ok) {
+            // Le statut et le corps voyagent avec l'erreur : un refus 409 sur
+            // l'état porte la version courante, dont l'appelant a besoin pour
+            // recharger (voir `pushServerState`).
+            const failure = new Error(data && data.error ? data.error : 'Erreur ' + response.status);
+            failure.status = response.status;
+            failure.data = data || {};
+            throw failure;
+          }
           return data;
         });
       });
@@ -3383,7 +3405,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-04.3';
+const APP_BUILD = '2026-10-04.4';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -4010,6 +4032,18 @@ async function storageGetRaw(key) {
   }
   storageBackendIsIndexedDb = false;
   try { return localStorage.getItem(key); } catch (e) { return null; }
+}
+
+/** Effacement d'une clé — le filet de sécurité disparaît dès l'accusé de réception du serveur. */
+async function storageRemoveRaw(key) {
+  if (idbAvailable()) {
+    try {
+      await idbDelete(key);
+    } catch (e) {
+      // Repli : la clé est peut-être dans localStorage (poste antérieur à IndexedDB).
+    }
+  }
+  try { localStorage.removeItem(key); } catch (e) { /* stockage indisponible */ }
 }
 
 async function storageSetRaw(key, value) {
@@ -7150,7 +7184,20 @@ async function persist() {
     const raw = cryptoKey
       ? JSON.stringify(await encryptState(state, cryptoKey, cryptoSalt))
       : JSON.stringify(state);
+    // Le filet de sécurité d'abord, l'envoi au serveur ensuite : si l'envoi
+    // échoue (réseau coupé), la saisie est déjà à l'abri. Le chiffrement par
+    // code d'accès s'applique comme avant à cette copie locale ; l'état
+    // déposé sur le serveur, lui, est protégé par l'authentification —
+    // chiffré par un code, il serait illisible pour les autres postes.
     await storageSetRaw(STORAGE_KEY, raw);
+    if (serverStateMode) {
+      const sent = await pushServerState();
+      if (serverStateSync === 'conflit') {
+        await reloadFromServerState();
+        return;
+      }
+      if (sent) renderFooter();
+    }
     writeAutoBackup();
     checkStorageQuota();
   } catch (e) {
@@ -8769,6 +8816,124 @@ function adoptServerSession(me, error) {
   };
   serverDirectory = null;
   return serverSession;
+}
+
+/* ==================================================================
+   ÉTAT TENU PAR LE SERVEUR
+
+   Alexis, 04/10/2026 : « je ne veux pas que les informations soient
+   enregistré dans le poste et navigateur mais plus sur le serveur ».
+
+   Avant cette date, chaque navigateur gardait son propre budget : deux
+   personnes sur deux postes ne voyaient jamais les mêmes sociétés, et un
+   périmètre de droits enregistré sur le serveur désignait des identifiants
+   qui n'existaient que dans le navigateur de l'administrateur.
+
+   Désormais, quand la page est servie par le serveur (`serverStateMode`) :
+
+   - le serveur FAIT FOI : l'état est lu sur `/api/etat` au démarrage, et
+     renvoyé à chaque enregistrement ;
+   - le navigateur ne garde qu'un FILET DE SÉCURITÉ, effacé dès que le
+     serveur a accusé réception — de quoi ne rien perdre si le réseau coupe
+     en pleine saisie, rien de plus ;
+   - l'édition simultanée est arbitrée par un numéro de version : le serveur
+     refuse une écriture fondée sur une version dépassée (409), et
+     l'application le dit avant de recharger. Sans ça, le dernier qui
+     enregistre effacerait le travail de l'autre en silence.
+
+   Le fichier ouvert seul (double-clic, sans serveur) continue de
+   fonctionner exactement comme avant : `serverStateMode` reste faux et tout
+   passe par le stockage du navigateur.
+   ================================================================== */
+
+/* Marqueur de synchronisation : la version que le serveur a accusée pour la
+   copie locale. Il distingue les deux situations du démarrage — une copie
+   locale laissée par une saisie NON envoyée (marqueur à la version du
+   serveur : c'est du travail plus récent, à renvoyer) et une copie périmée
+   (marqueur absent ou d'une autre version : le serveur fait foi). */
+const SERVER_STATE_MARK_KEY = STORAGE_KEY + '-serveur';
+/* Copie locale écartée au profit de celle du serveur : jamais supprimée en
+   silence, toujours récupérable (voir `viewSecurite`). */
+const SERVER_STATE_ASIDE_KEY = STORAGE_KEY + '-ecarte';
+
+/**
+ * Démarrage : lit l'état partagé sur le serveur. Rend la réponse du serveur
+ * (`{ version, state }`), ou `null` quand il n'y a pas de serveur en face —
+ * auquel cas l'application reste sur le stockage du navigateur.
+ */
+async function loadServerState() {
+  if (!serverRightsModeAvailable()) return null;
+  try {
+    const data = await serverRequest('GET', '/api/etat');
+    serverStateMode = true;
+    serverStateVersion = Number.isInteger(data && data.version) ? data.version : 0;
+    serverStateSync = 'ok';
+    serverStateMessage = '';
+    return data;
+  } catch (e) {
+    // 403 : personne sans fiche de droits — elle n'a accès qu'à Paramètres,
+    // il n'y a rien à charger. 404 : site ouvert sans authentification.
+    // Autre : serveur injoignable. Dans tous les cas on reste en local
+    // plutôt que d'ouvrir une application vide, et on le dit (pied de page).
+    serverStateMode = false;
+    serverStateSync = (e.status === 403 || e.status === 404) ? 'local' : 'erreur';
+    serverStateMessage = serverStateSync === 'erreur' ? (e.message || String(e)) : '';
+    return null;
+  }
+}
+
+/**
+ * Envoie l'état au serveur. Appelée par `persist()`, qui vient d'écrire le
+ * filet de sécurité local : si cet envoi échoue, rien n'est perdu.
+ */
+async function pushServerState() {
+  try {
+    const saved = await serverRequest('PUT', '/api/etat', {
+      baseVersion: serverStateVersion, state: state,
+    });
+    serverStateVersion = saved.version;
+    serverStateSync = 'ok';
+    serverStateMessage = '';
+    // Accusé de réception : le filet de sécurité n'a plus de raison d'être.
+    // On garde seulement le marqueur, qui dit jusqu'où le serveur a reçu.
+    await storageSetRaw(SERVER_STATE_MARK_KEY, JSON.stringify({ version: saved.version, at: saved.updatedAt }));
+    await storageRemoveRaw(STORAGE_KEY);
+    return true;
+  } catch (e) {
+    if (e.status === 409) {
+      // Quelqu'un a enregistré entre-temps. La copie locale RESTE (c'est le
+      // travail qui vient d'être refusé) et l'écran repart de la version du
+      // serveur : on ne superpose jamais deux saisies à l'aveugle.
+      serverStateSync = 'conflit';
+      serverStateVersion = Number.isInteger(e.data && e.data.version) ? e.data.version : serverStateVersion;
+      serverStateMessage = e.message || '';
+      showAppError('Quelqu’un a enregistré une modification entre-temps.\n\n' +
+        'Vos dernières saisies n’ont PAS été enregistrées sur le serveur. L’écran va repartir de la ' +
+        'version du serveur ; une copie de secours de votre travail reste dans ce navigateur ' +
+        '(onglet Sécurité). Reprenez votre dernière saisie depuis l’écran rechargé.');
+      return false;
+    }
+    // Réseau coupé, serveur arrêté : la copie locale fait son office et
+    // l'envoi sera retenté au prochain enregistrement.
+    serverStateSync = 'attente';
+    serverStateMessage = e.message || String(e);
+    return false;
+  }
+}
+
+/** Libellé de synchronisation affiché en pied de page. */
+function serverStateFooterHtml() {
+  if (serverStateSync === 'local') return 'Enregistré sur ce poste.';
+  if (serverStateSync === 'ok') {
+    return 'Enregistré sur le <strong>serveur</strong> (version ' + serverStateVersion + ').';
+  }
+  if (serverStateSync === 'attente') {
+    return '<strong>Envoi au serveur en attente</strong> — copie de secours gardée sur ce poste.';
+  }
+  if (serverStateSync === 'conflit') {
+    return '<strong>Conflit d’enregistrement</strong> — rechargez pour repartir de la version du serveur.';
+  }
+  return '<strong>Serveur injoignable</strong> — vos modifications restent sur ce poste.';
 }
 
 /** Démarrage : lit mes droits sur le serveur, avant le premier rendu. */
@@ -11418,21 +11583,7 @@ function render() {
     printHeader.textContent = 'Budget Manager — ' + (company ? company.name + ' ' + company.year : '') +
       ' — ' + new Date().toLocaleDateString('fr-FR') + ' — montants en euros, non audités';
   }
-  document.getElementById('footer').innerHTML =
-    'Version <strong>' + escapeHtml(APP_BUILD) + '</strong> — ' +
-    'Plan comptable : ' + escapeHtml(PCG_SOURCE) + ' — ' + ACCOUNTS.length +
-    ' comptes, importé le ' + escapeHtml(PCG_GENERATED_AT) + '. ' +
-    // Le pied de page n'annonce plus l'absence de sortie réseau : Alexis
-    // trouvait la phrase source de confusion (04/10/2026). Elle se lisait
-    // comme un état de connexion alors qu'elle énonçait une propriété de
-    // conception, et elle était devenue inexacte au mot près depuis que la
-    // page dialogue avec le serveur pour les droits d'accès (`serverRequest`,
-    // SAS RÉSEAU). Le sas réseau et la CSP restent entiers, de même que la
-    // formulation nuancée d'« À propos » et de l'écran de connexion : seule
-    // cette phrase-là disparaît.
-    (isProtected()
-      ? 'Stockage chiffré par code d’accès.'
-      : 'Stockage <strong>non chiffré</strong> — voir l’onglet Sécurité.');
+  renderFooter();
 
   // Focus clavier : une fenêtre vient de s'ouvrir (mémoriser le bouton qui
   // l'a déclenchée, pour l'y ramener à la fermeture) ou vient de se fermer
@@ -11718,6 +11869,69 @@ function breadcrumbHtml(tabId) {
   return '<nav class="breadcrumb" aria-label="Fil d’Ariane">' +
     parts.join('<span class="breadcrumb-sep" aria-hidden="true">›</span>') +
     '</nav>';
+}
+
+/**
+ * Pied de page. Fonction à part (et pas une ligne de `render()`) parce qu'il
+ * se rafraîchit seul après chaque enregistrement : re-rendre tout l'écran à
+ * chaque frappe pour mettre à jour un libellé de synchronisation serait un
+ * gâchis — et ferait clignoter la saisie en cours.
+ */
+function footerHtml() {
+  return 'Version <strong>' + escapeHtml(APP_BUILD) + '</strong> — ' +
+    'Plan comptable : ' + escapeHtml(PCG_SOURCE) + ' — ' + ACCOUNTS.length +
+    ' comptes, importé le ' + escapeHtml(PCG_GENERATED_AT) + '. ' +
+    // Où le budget est enregistré, et si le serveur l'a bien reçu : c'est la
+    // question que pose Alexis (« les sociétés remontent bien… »), elle doit
+    // avoir sa réponse à l'écran, pas seulement dans la console.
+    serverStateFooterHtml() + ' ' +
+    // Le pied de page n'annonce plus l'absence de sortie réseau : Alexis
+    // trouvait la phrase source de confusion (04/10/2026). Elle se lisait
+    // comme un état de connexion alors qu'elle énonçait une propriété de
+    // conception. Depuis que le budget lui-même est tenu par le serveur, la
+    // phrase serait franchement fausse : c'est le libellé de synchronisation
+    // ci-dessus qui dit la vérité, à jour.
+    (serverStateMode
+      ? 'Protégé par l’authentification du serveur.'
+      : (isProtected()
+        ? 'Stockage chiffré par code d’accès.'
+        : 'Stockage <strong>non chiffré</strong> — voir l’onglet Sécurité.'));
+}
+
+function renderFooter() {
+  const footer = document.getElementById('footer');
+  if (footer) footer.innerHTML = footerHtml();
+}
+
+/**
+ * Recharge l'état depuis le serveur après un conflit d'enregistrement. La
+ * copie locale refusée est mise de côté (jamais supprimée) : elle reste
+ * récupérable, et ne sera pas reprise pour l'état courant au prochain
+ * démarrage.
+ */
+async function reloadFromServerState() {
+  let data;
+  try {
+    data = await serverRequest('GET', '/api/etat');
+  } catch (e) {
+    serverStateSync = 'erreur';
+    serverStateMessage = e.message || String(e);
+    renderFooter();
+    return;
+  }
+  try {
+    const refused = await storageGetRaw(STORAGE_KEY);
+    if (refused) await storageSetRaw(SERVER_STATE_ASIDE_KEY, refused);
+    await storageRemoveRaw(STORAGE_KEY);
+  } catch (e) {
+    // La mise de côté n'est qu'un filet : ne pas empêcher le rechargement.
+  }
+  serverStateVersion = Number.isInteger(data && data.version) ? data.version : 0;
+  serverStateSync = 'ok';
+  serverStateMessage = '';
+  state = adoptState(data && data.state ? data.state : null);
+  resetUndoHistory();
+  render();
 }
 
 function viewPage(opts) {
@@ -30586,9 +30800,51 @@ async function saveAuthUserFromForm() {
  * (`bootPromise`, exportée) pour l'attendre explicitement avant toute
  * assertion — voir check-budget-app.mjs.
  */
+/**
+ * Arbitrage du démarrage entre l'état du serveur et la copie locale, quand
+ * la page est servie (`serverStateMode`). Rend l'état à adopter.
+ *
+ * Trois situations, dans cet ordre :
+ *
+ * 1. Le serveur n'a encore rien (`version` 0) : c'est la première ouverture
+ *    après la mise en service. La copie locale PART sur le serveur — c'est
+ *    la migration du budget déjà saisi, elle doit se faire toute seule.
+ * 2. Le serveur a un état, et la copie locale porte le marqueur de la
+ *    version courante : cette copie est une saisie non envoyée (réseau coupé
+ *    la fois précédente), donc plus récente. On la reprend et on la renvoie.
+ * 3. Le serveur a un état et la copie locale ne correspond à rien de connu :
+ *    le serveur fait foi. La copie est mise DE CÔTÉ (jamais supprimée) et on
+ *    le signale — elle reste récupérable depuis l'onglet Sécurité.
+ */
+async function chooseBootState(server, localState) {
+  if (!server || !server.state) return localState; // cas 1 : `save()` déposera
+  let mark = null;
+  try {
+    const rawMark = await storageGetRaw(SERVER_STATE_MARK_KEY);
+    mark = rawMark ? JSON.parse(rawMark) : null;
+  } catch (e) {
+    mark = null;
+  }
+  if (localState && mark && mark.version === serverStateVersion) return localState; // cas 2
+  if (localState) { // cas 3
+    try {
+      const raw = await storageGetRaw(STORAGE_KEY);
+      if (raw) await storageSetRaw(SERVER_STATE_ASIDE_KEY, raw);
+      await storageRemoveRaw(STORAGE_KEY);
+    } catch (e) {
+      // Mise de côté impossible : on garde la copie locale où elle est
+      // plutôt que de la perdre, le serveur fait foi quand même.
+    }
+    serverStateMessage = 'Une copie locale plus ancienne a été écartée au profit de celle du serveur.';
+  }
+  return server.state;
+}
+
 async function boot() {
   // Droits d'abord : le premier rendu doit déjà appliquer ceux du serveur.
   await loadServerSession();
+  // Puis l'état partagé : c'est lui qui fait foi quand la page est servie.
+  const server = await loadServerState();
   let parsed = null;
   try {
     await migrateStorageToIndexedDbIfNeeded();
@@ -30604,6 +30860,8 @@ async function boot() {
     showLock('ouvrir');
     return;
   }
+
+  if (serverStateMode) parsed = await chooseBootState(server, parsed);
 
   state = adoptState(parsed);
   if (serverSession) tab = serverLandingTab();

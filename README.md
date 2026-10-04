@@ -17,11 +17,13 @@ npm test                  # tests de l'authentification LDAP
 
 `server.mjs` (Node ≥ 22) ne sert que l'application :
 `/` renvoie `budget-app.html` compressé (brotli/gzip), `/healthz` répond `ok`,
+`/api/droits` et `/api/etat` servent les droits et le budget partagé,
 tout le reste (document de reprise, Excel, scripts) renvoie 404.
 
 Variables (voir `.env.example`) : `HOST`, `PORT`, `PUBLIC_HOST`,
 `BASIC_AUTH_USER` / `BASIC_AUTH_PASSWORD` (compte local),
-`LDAP_*` (annuaire, voir « Authentification LDAP »), `TRUST_PROXY`.
+`LDAP_*` (annuaire, voir « Authentification LDAP »), `TRUST_PROXY`,
+`RIGHTS_FILE`, `ETAT_FILE` (voir « Budget partagé »).
 Une protection est recommandée : l'application embarque le plan comptable et
 les budgets.
 
@@ -96,9 +98,10 @@ centres de coûts — sont tenus par le serveur, les mêmes sur tous les postes.
 - **Stockage** : `RIGHTS_FILE` (Docker : `/data/droits.json`, volume nommé
   `droits`, conservé quand le conteneur est recréé). Chaque changement y est
   journalisé (qui, quand, pour qui) et dans `docker logs`.
-- La page appelle le serveur pour ces droits, et pour eux seulement : la
-  politique de sécurité passe à `connect-src 'self'`, et l'application
-  refuse tout autre chemin que `/api/droits` (voir `serverRequest`).
+- La page appelle le serveur pour ces droits et pour le budget partagé, à
+  l'exclusion de tout le reste : la politique de sécurité passe à
+  `connect-src 'self'`, et l'application refuse tout chemin autre que
+  `/api/droits` et `/api/etat` (voir `serverRequest`).
 
 Mise en place (une fois, `docker-compose.yml` ayant changé) :
 
@@ -113,6 +116,51 @@ DN du groupe, sur un contrôleur de domaine (PowerShell) :
 `Get-ADGroup budgetpbdbcompta | Select-Object DistinguishedName`.
 
 Sauvegarde : `sudo docker exec budgetpbdbcompta cat /data/droits.json > droits-$(date +%F).json`.
+
+## Budget partagé (le serveur fait foi)
+
+Depuis le 04/10/2026, le budget n'est plus enregistré dans le navigateur de
+chaque poste mais **sur le serveur** : toutes les personnes connectées
+travaillent sur le même portefeuille de sociétés, où qu'elles se connectent.
+Leurs droits ne décident plus que de ce qu'elles voient et peuvent remplir.
+
+- **Stockage** : `ETAT_FILE` (Docker : `/data/etat.json`, même volume nommé
+  `droits` que les droits d'accès). Écriture atomique ; la génération
+  précédente est conservée dans `/data/etat.json.precedent`.
+- **Qui peut lire et écrire** : toute personne ayant une fiche de droits. Sans
+  fiche, le serveur refuse (403) — elle n'a de toute façon accès qu'à
+  Paramètres. Chaque enregistrement est journalisé dans `docker logs`
+  (« État enregistré (version N) par « prenom.nom » »).
+- **Édition simultanée** : chaque enregistrement annonce la version sur
+  laquelle il s'appuie. Si quelqu'un a écrit entre-temps, le serveur refuse
+  (409) et l'application le dit avant de repartir de la version du serveur ;
+  la saisie refusée reste sur le poste en copie de secours. Rien n'est écrasé
+  en silence.
+- **Hors ligne / serveur injoignable** : le navigateur garde une copie de
+  secours des modifications pas encore envoyées, effacée dès l'accusé de
+  réception. Le pied de page de l'application dit toujours où on en est
+  (« Enregistré sur le serveur (version 12) », « Envoi au serveur en
+  attente », « Serveur injoignable »).
+- **Première mise en service** : au premier démarrage, le serveur n'a aucun
+  état (`version 0`) ; la première personne qui ouvre la page y dépose le
+  budget de son navigateur. Vérifier ensuite que la version avance.
+- **Chiffrement** : l'état déposé sur le serveur est en clair dans le volume,
+  protégé par l'authentification (comme le fichier des droits). Le code
+  d'accès de l'onglet Sécurité ne chiffre que la copie locale de secours : il
+  ne peut pas chiffrer l'état partagé, qui serait alors illisible pour les
+  autres postes.
+
+Sauvegarde (c'est **le** fichier à sauvegarder, il contient tous les budgets) :
+
+```bash
+sudo docker exec budgetpbdbcompta cat /data/etat.json > etat-$(date +%F).json
+```
+
+Restauration (le conteneur relit le fichier à chaque lecture, sans redémarrage) :
+
+```bash
+cat etat-2026-10-04.json | sudo docker exec -i budgetpbdbcompta sh -c 'cat > /data/etat.json'
+```
 
 ## Architecture de production
 

@@ -3,8 +3,9 @@
  *
  * Sert uniquement `budget-app.html` (l'application tient dans ce fichier) :
  * aucun autre fichier du dépôt n'est exposé — ni le document de reprise,
- * ni le plan comptable Excel, ni les scripts. Seule autre adresse :
- * `/api/droits`, les droits des personnes de l'annuaire (voir rights.mjs).
+ * ni le plan comptable Excel, ni les scripts. Deux autres adresses :
+ * `/api/droits`, les droits des personnes de l'annuaire (voir rights.mjs),
+ * et `/api/etat`, le budget lui-même, partagé par tous les postes (etat.mjs).
  *
  * Node ≥ 22 ; seule dépendance : `ldapts`, pour l'authentification LDAP.
  *
@@ -20,6 +21,7 @@
  *   RIGHTS_FILE          fichier des droits (défaut ./data/droits.json)
  *   RIGHTS_ADMINS        identifiants de l'annuaire toujours administrateurs
  *                        des droits (« prenom.nom, autre.nom »)
+ *   ETAT_FILE            fichier de l'état budgétaire partagé (défaut ./data/etat.json)
  *
  * Sans compte local ni LDAP, l'application est publique.
  */
@@ -34,6 +36,7 @@ import {
   LdapUnavailableError,
 } from './auth-ldap.mjs';
 import { createRightsStore, parseAdminList, normalizeAccount, RightsError } from './rights.mjs';
+import { createEtatStore, EtatError, ETAT_MAX_BYTES } from './etat.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const HOST = process.env.HOST || '127.0.0.1';
@@ -58,6 +61,13 @@ const authEnabled = localAuthEnabled || ldapConfig !== null;
 const RIGHTS_FILE = process.env.RIGHTS_FILE || join(root, 'data', 'droits.json');
 const RIGHTS_ADMINS = parseAdminList(process.env.RIGHTS_ADMINS);
 const rights = createRightsStore(RIGHTS_FILE, RIGHTS_ADMINS);
+
+// État budgétaire partagé : le serveur fait foi depuis le 04/10/2026
+// (Alexis : « je ne veux pas que les informations soient enregistré dans le
+// poste et navigateur mais plus sur le serveur »). Même volume que les
+// droits, pour n'avoir qu'un seul endroit à sauvegarder.
+const ETAT_FILE = process.env.ETAT_FILE || join(root, 'data', 'etat.json');
+const etat = createEtatStore(ETAT_FILE);
 
 const appPath = join(root, 'budget-app.html');
 
@@ -235,6 +245,18 @@ const DENIED = {
 const API_PREFIX = '/api/droits';
 const API_BODY_MAX = 64 * 1024;
 
+/* GET /api/etat    l'état budgétaire partagé et sa version
+   PUT /api/etat    l'enregistre : { baseVersion, state } → 409 si la version
+                    a changé entre-temps (voir etat.mjs)
+
+   Ouvert à toute personne ayant une fiche de droits : un directeur doit
+   pouvoir enregistrer sa saisie. Le serveur ne sait pas ce qu'une fiche
+   autorise dans le détail (onglets, sociétés, centres) — ce filtrage reste
+   dans l'application. Chaque écriture est journalisée avec son auteur. */
+const API_ETAT = '/api/etat';
+// Marge au-dessus de la taille utile : le corps transporte aussi `baseVersion`.
+const ETAT_BODY_MAX = ETAT_MAX_BYTES + 64 * 1024;
+
 /** Droits de la personne connectée, ou `null` (aucun accès). */
 function rightsOf(auth) {
   if (auth.method === 'local') {
@@ -274,13 +296,14 @@ function sameOriginWrite(req) {
   return true;
 }
 
-function readJsonBody(req) {
+function readJsonBody(req, max) {
+  const limit = max || API_BODY_MAX;
   return new Promise(function (resolve, reject) {
     const chunks = [];
     let size = 0;
     req.on('data', function (chunk) {
       size += chunk.length;
-      if (size > API_BODY_MAX) {
+      if (size > limit) {
         reject(new RightsError('Requête trop volumineuse.', 413));
         req.destroy();
         return;
@@ -296,6 +319,50 @@ function readJsonBody(req) {
     });
     req.on('error', reject);
   });
+}
+
+/**
+ * `/api/etat` : lecture et écriture de l'état budgétaire partagé.
+ *
+ * Sans fiche de droits, rien — pas même la lecture : une personne que
+ * l'administrateur n'a pas encore configurée ne doit pas voir les budgets
+ * du groupe (même règle que `serverUserFromRights` côté application).
+ */
+async function handleEtat(req, res, req_url, auth) {
+  if (auth.method === 'none') {
+    return sendJson(res, 404, { error: 'État centralisé inactif : le site est ouvert sans authentification.' });
+  }
+  const own = rightsOf(auth);
+  if (!own) return sendJson(res, 403, { error: 'Aucun droit : demandez un accès à un administrateur.' });
+  if (req_url.pathname !== API_ETAT) return sendJson(res, 404, { error: 'Introuvable.' });
+  const by = auth.account || auth.username || '?';
+  try {
+    if (req.method === 'GET') {
+      const current = etat.read();
+      return sendJson(res, 200, {
+        version: current.version, updatedAt: current.updatedAt, updatedBy: current.updatedBy,
+        state: current.state,
+      });
+    }
+    if (req.method === 'PUT') {
+      if (!sameOriginWrite(req)) return sendJson(res, 403, { error: 'Requête refusée : origine non vérifiée.' });
+      const body = await readJsonBody(req, ETAT_BODY_MAX);
+      if (!body || typeof body !== 'object') return sendJson(res, 400, { error: 'Corps attendu : { baseVersion, state }.' });
+      const saved = etat.write(body.baseVersion, body.state, by);
+      console.log(`État enregistré (version ${saved.version}) par « ${by} »`);
+      return sendJson(res, 200, saved);
+    }
+    return sendJson(res, 405, { error: 'Méthode non prise en charge.' });
+  } catch (err) {
+    if (err instanceof EtatError) {
+      const payload = { error: err.message };
+      if (err.currentVersion !== undefined) payload.version = err.currentVersion;
+      return sendJson(res, err.status, payload);
+    }
+    if (err instanceof RightsError) return sendJson(res, err.status, { error: err.message });
+    console.error('État :', err);
+    return sendJson(res, 500, { error: 'Erreur serveur sur l’état budgétaire.' });
+  }
 }
 
 async function handleApi(req, res, url, auth) {
@@ -370,7 +437,9 @@ async function handle(req, res) {
     return res.end('ok\n');
   }
 
-  const api = url.pathname === API_PREFIX || url.pathname.startsWith(API_PREFIX + '/');
+  const apiRights = url.pathname === API_PREFIX || url.pathname.startsWith(API_PREFIX + '/');
+  const apiEtat = url.pathname === API_ETAT || url.pathname.startsWith(API_ETAT + '/');
+  const api = apiRights || apiEtat;
   if (req.method !== 'GET' && req.method !== 'HEAD' && !(api && (req.method === 'PUT' || req.method === 'DELETE'))) {
     res.writeHead(405, { Allow: api ? 'GET, PUT, DELETE' : 'GET, HEAD' });
     return res.end();
@@ -386,7 +455,8 @@ async function handle(req, res) {
     return res.end(DENIED[denied]);
   }
 
-  if (api) return handleApi(req, res, url, auth);
+  if (apiEtat) return handleEtat(req, res, url, auth);
+  if (apiRights) return handleApi(req, res, url, auth);
 
   if (url.pathname === '/budget-app.html') {
     res.writeHead(301, { Location: '/' });
@@ -450,6 +520,15 @@ server.listen(PORT, HOST, () => {
   console.log('  compte local : ' + (localAuthEnabled ? 'oui' : 'non'));
   console.log('  annuaire LDAP : ' + (ldapConfig ? describeLdapConfig(ldapConfig) : 'non'));
   console.log('Droits : ' + RIGHTS_FILE + ' ; administrateurs désignés : ' + (RIGHTS_ADMINS.join(', ') || 'aucun'));
+  // Version annoncée au démarrage : un fichier illisible doit se voir dans
+  // le journal du conteneur, pas seulement au premier enregistrement.
+  let etatVersion;
+  try {
+    etatVersion = 'version ' + etat.version();
+  } catch (err) {
+    etatVersion = 'ILLISIBLE — ' + err.message;
+  }
+  console.log('État budgétaire partagé : ' + ETAT_FILE + ' (' + etatVersion + ')');
 });
 
 for (const sig of ['SIGINT', 'SIGTERM']) {

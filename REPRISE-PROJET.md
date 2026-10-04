@@ -77,6 +77,120 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Le serveur fait foi : le budget quitte le navigateur (04/10/2026)
+
+Alexis : « pourquoi tu parle de poste ou navigateur, je ne veux pas que les
+informations soient enregistré dans le poste et navigateur mais plus sur le
+serveur ». L'invariant « le serveur ne stocke aucune donnée budgétaire » est
+donc **levé** — il était la cause des trois constats de l'entrée précédente.
+
+Trois décisions prises avec Alexis avant d'écrire :
+
+1. **un seul état pour tous** : un fichier unique, tout le monde travaille sur
+   le même portefeuille de sociétés, les droits ne filtrent que l'affichage et
+   la saisie ;
+2. **conflits refusés, pas arbitrés** : une écriture fondée sur une version
+   dépassée est rejetée et annoncée, jamais fusionnée ni écrasée ;
+3. **le navigateur ne garde qu'un filet de sécurité**, effacé dès l'accusé de
+   réception du serveur.
+
+#### Côté serveur
+
+`etat.mjs` (jumeau de `rights.mjs`) : un fichier `ETAT_FILE` (Docker
+`/data/etat.json`, même volume `droits`), de forme
+`{ version, updatedAt, updatedBy, state }`. `version` s'incrémente à chaque
+écriture ; `write(baseVersion, state, by)` refuse en **409** si `baseVersion`
+ne correspond plus et rend la version courante avec l'erreur. Écriture
+atomique (fichier voisin puis `renameSync`), génération précédente conservée
+(`etat.json.precedent`), taille bornée (`ETAT_MAX_BYTES`, 24 Mo — mesuré :
+34 Ko pour les trois budgets importés). Le serveur **n'interprète rien** du
+contenu : il contrôle la forme (un objet JSON, pas trop gros) et l'écrit.
+
+`server.mjs` : `GET`/`PUT /api/etat`, réservés à qui a une fiche de droits
+(403 sinon — une personne non configurée ne doit pas voir les budgets du
+groupe), écriture soumise à `sameOriginWrite` comme les droits, corps plafonné
+à part (`readJsonBody(req, max)` prend désormais une limite). Chaque écriture
+est journalisée (`État enregistré (version N) par « … »`), et la version est
+annoncée au démarrage du conteneur.
+
+Vérifié bout en bout sur un serveur local (compte Basic, fichier temporaire) :
+401 sans identifiants, `GET` à vide → `version 0`, premier `PUT` → version 1,
+même `PUT` rejoué → 409 avec `version: 1`, `PUT` sur la version 1 → version 2,
+`GET` rend l'état complet, `PUT` sans `Content-Type` JSON → « origine non
+vérifiée », `DELETE` → 405, `/api/etat/x` → 404, et les deux fichiers
+(`etat.json`, `etat.json.precedent`) écrits.
+
+#### Côté application
+
+Nouvelle section « ÉTAT TENU PAR LE SERVEUR » :
+
+- `loadServerState()` au démarrage, avant le premier rendu. Succès →
+  `serverStateMode` vrai, le serveur fait foi. 403/404 (sans fiche, ou site
+  sans authentification) → on reste en local. Erreur réseau → local aussi,
+  mais `serverStateSync = 'erreur'` et le pied de page le dit.
+- `pushServerState()` après chaque écriture locale : `PUT` avec `baseVersion`.
+  Succès → nouvelle version, marqueur `…-serveur` écrit, **filet de sécurité
+  effacé**. 409 → `showAppError` explicite puis `reloadFromServerState()`, la
+  saisie refusée étant mise de côté (`…-ecarte`), jamais supprimée. Panne
+  réseau → `'attente'`, la copie locale reste et l'envoi est retenté au
+  prochain enregistrement.
+- `chooseBootState()` arbitre le démarrage : serveur vide → la copie locale
+  monte (migration automatique du budget déjà saisi) ; copie locale marquée à
+  la version du serveur → c'est une saisie non envoyée, elle gagne ; sinon le
+  serveur fait foi et la copie locale est mise de côté.
+- Le pied de page devient `footerHtml()` + `renderFooter()` : il annonce
+  « Enregistré sur le serveur (version N) », « Envoi au serveur en attente »,
+  « Conflit d'enregistrement » ou « Serveur injoignable ». Rafraîchi seul après
+  un enregistrement — re-rendre tout l'écran à chaque frappe ferait clignoter
+  la saisie.
+- Le **sas réseau** s'ouvre d'un cran : `serverRequest` accepte `/api/etat` en
+  plus de `/api/droits`, et rien d'autre. `fetch`, XHR, WebSocket, EventSource
+  et `sendBeacon` restent neutralisés, la CSP reste `connect-src 'self'`.
+  L'erreur rendue par `serverRequest` porte désormais `status` et `data` (la
+  version courante accompagne un 409).
+- `storageRemoveRaw()` complète la couche de stockage (il n'y avait pas
+  d'effacement de clé).
+- Le chiffrement par code d'accès s'applique toujours à la copie locale ; l'état
+  partagé est protégé par l'authentification du serveur. Chiffré par un code, il
+  serait illisible pour les autres postes — le pied de page le dit en mode
+  serveur (« Protégé par l'authentification du serveur »).
+
+Le fichier ouvert seul par double-clic ne change pas d'un iota :
+`serverStateMode` reste faux, tout passe par le navigateur comme avant.
+
+#### Contrôles
+
+`test/etat.test.mjs` (7 tests, ajoutés à `npm test`) : version 0 sans fichier,
+première écriture relue à l'identique, incrémentation, refus 409 avec la version
+courante et état d'origine intact, génération précédente récupérable, formes
+refusées (non-objet, tableau, version non entière, trop volumineux → 413),
+fichier abîmé à la main traité comme vide puis erreur franche si le JSON est
+illisible.
+
+`check-budget-app.mjs` (521 contrôles) : enregistrement réussi (version reprise,
+`baseVersion` envoyé, marqueur écrit, filet effacé), conflit (sync `'conflit'`,
+version du refus reprise, copie locale gardée), serveur injoignable (`'attente'`,
+rien d'effacé), les trois cas d'arbitrage de `chooseBootState`, les libellés du
+pied de page, et le sas réseau qui accepte `/api/etat` tout en refusant
+`/api/etats`, `/api/etat/x`, `api/etat` et les origines absolues.
+
+#### Production
+
+`etat.mjs` ajouté au `Dockerfile` et à la liste blanche `.dockerignore`,
+`ETAT_FILE=/data/etat.json` dans l'image, volume documenté dans
+`docker-compose.yml`, `.env.example` et le README (nouvelle section « Budget
+partagé », avec sauvegarde et restauration). `CLAUDE.md` : l'invariant est
+réécrit.
+
+**Reste ouvert.** Les identifiants de sociétés et d'environnements restent
+tirés de `uid()` : tant que tous les postes lisent le même état serveur, ils
+sont cohérents, et le problème de l'entrée précédente disparaît de lui-même.
+Il resurgirait si un état était importé d'un autre navigateur (Import JSON) :
+le périmètre de droits enregistré ne désignerait plus les mêmes sociétés. À
+surveiller.
+
+`APP_BUILD` : `2026-10-04.4`.
+
 ### Périmètre de sociétés vide : plus jamais une société hors droits (04/10/2026)
 
 Alexis : « peux tu me garantir que la gestion des sociétés en mode
@@ -10859,8 +10973,18 @@ const app = await importApp(
     'export { viewSecurite, securiteBody, affichageBody, autorisationsBody,\n' +
     '  viewParametres, serverAuthInfo, parametresLdapBody, SERVER_AUTH_COOKIE,\n' +
     '  serverRequest, adoptServerSession, buildServerDirectory, serverRightsPayload, serverUserFromRights,\n' +
+    '  loadServerState, pushServerState, chooseBootState, serverStateFooterHtml, reloadFromServerState,\n' +
+    '  storageRemoveRaw, STORAGE_KEY, SERVER_STATE_MARK_KEY, SERVER_STATE_ASIDE_KEY,\n' +
     '  serverLandingTab, sessionUsername, isServerUserId, applyPagePermissions };\n' +
     'export function __clearServerSession() { serverSession = null; serverDirectory = null; }\n' +
+    'export function __setServerRequest(fn) { serverRequest = fn; }\n' +
+    'export function __getServerRequest() { return serverRequest; }\n' +
+    'export function __getServerStateSync() {\n' +
+    '  return { mode: serverStateMode, version: serverStateVersion, sync: serverStateSync, message: serverStateMessage };\n' +
+    '}\n' +
+    'export function __setServerStateSync(mode, version, sync) {\n' +
+    '  serverStateMode = mode; serverStateVersion = version; serverStateSync = sync || \'local\'; serverStateMessage = \'\';\n' +
+    '}\n' +
     'export function __setServerDirectory(v) { serverDirectory = v; }\n' +
     'export function __setAuthPermissionsIdForTest(v) { authPermissionsId = v; }\n' +
     'export function __setAuthEditingId(v) { authEditingId = v; }\n' +
@@ -17685,12 +17809,19 @@ check('la politique de sécurité interdit les connexions sortantes', () => {
   }
 });
 
-await checkAsync('la seule sortie réseau restante ne vise que /api/droits', async () => {
-  assert.equal(typeof app.serverRequest, 'function', 'serverRequest doit exister là où fetch existe');
+await checkAsync('les seules sorties réseau restantes visent /api/droits et /api/etat', async () => {
+  const request = app.__getServerRequest();
+  assert.equal(typeof request, 'function', 'serverRequest doit exister là où fetch existe');
   for (const path of ['https://example.invalid/api/droits', '//example.invalid/api/droits', '/api/budgets',
-    '/api/droits/../budgets', '/api/droits/a/b', '/']) {
-    await assert.rejects(app.serverRequest('GET', path), /interdite/, 'chemin refusé attendu : ' + path);
+    '/api/droits/../budgets', '/api/droits/a/b', '/', '/api/etat/x', '/api/etats', 'api/etat',
+    'https://example.invalid/api/etat']) {
+    await assert.rejects(request('GET', path), /interdite/, 'chemin refusé attendu : ' + path);
   }
+  // `/api/etat` est ouvert depuis le 04/10/2026 (l'état budgétaire partagé) :
+  // il doit sortir du filtre, donc échouer plus loin — sur le réseau, pas sur
+  // l'interdiction.
+  await assert.rejects(request('GET', '/api/etat'), (err) => !/interdite/.test(err.message),
+    '/api/etat doit passer le filtre du sas');
 });
 
 check('les fonctions réseau du navigateur sont neutralisées', () => {
@@ -28846,16 +28977,19 @@ check('Pied de page : plus de mention « Hors ligne »', () => {
   // et elle était devenue inexacte au mot près depuis que la page interroge
   // le serveur pour les droits d'accès (`serverRequest`). Le pied de page ne
   // garde que la version, le plan comptable et l'état du chiffrement.
-  // Le contrôle porte sur la seule affectation du pied de page : la même
-  // idée, formulée avec sa réserve (« tant qu'elle n'est pas connectée à un
-  // serveur »), reste légitime dans « À propos » et sur l'écran de connexion.
-  const footerStart = appSource.indexOf("getElementById('footer').innerHTML =");
-  assert.ok(footerStart !== -1, 'l’affectation du pied de page doit exister');
-  const footerBlock = appSource.slice(footerStart, appSource.indexOf(';', footerStart));
+  // Le contrôle porte sur le seul texte du pied de page (`footerHtml`, posé
+  // par `renderFooter`) : la même idée, formulée avec sa réserve (« tant
+  // qu'elle n'est pas connectée à un serveur »), reste légitime dans
+  // « À propos » et sur l'écran de connexion.
+  const footerStart = appSource.indexOf('function footerHtml()');
+  assert.ok(footerStart !== -1, 'le pied de page doit être produit par footerHtml()');
+  const footerBlock = appSource.slice(footerStart, appSource.indexOf('\nfunction renderFooter', footerStart));
   assert.ok(!/Hors ligne|quitte ce poste/.test(footerBlock),
     'le pied de page ne doit plus annoncer que les données ne quittent pas le poste');
-  assert.match(footerBlock, /importé le '[\s\S]*?\(isProtected\(\)/,
-    'le pied de page enchaîne directement le plan comptable et l’état du chiffrement');
+  assert.match(footerBlock, /importé le '[\s\S]*?serverStateFooterHtml\(\)[\s\S]*?serverStateMode/,
+    'le pied de page enchaîne le plan comptable, l’état de synchronisation et la protection');
+  assert.ok(appSource.includes('function renderFooter()') && appSource.includes('renderFooter();'),
+    'renderFooter() doit exister et être appelé');
   // Le sas réseau lui-même reste entier : c'est une phrase d'affichage qui
   // disparaît, pas une protection.
   for (const name of ['fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource']) {
@@ -28925,6 +29059,160 @@ check('Sociétés : sans borne de droits, le périmètre n’est jamais déclar�
   assert.ok(!app.authEnabled(), 'ce contrôle suppose un état sans compte actif');
   assert.equal(app.companyScopeEmpty(), false, 'sans compte, aucun périmètre à opposer');
   assert.ok(app.activeCompany(), 'et une société reste active');
+});
+
+/* --- État tenu par le serveur (04/10/2026) ---------------------------- */
+
+/** Faux serveur d'état : retient ce qui a été envoyé, et sait refuser. */
+function etatServerStub(options) {
+  const o = options || {};
+  const calls = [];
+  const stub = async function (method, path, body) {
+    calls.push({ method: method, path: path, body: body });
+    if (path !== '/api/etat') throw new Error('Sortie réseau interdite (' + path + ').');
+    if (method === 'GET') return o.get || { version: 0, state: null };
+    if (method === 'PUT') {
+      if (o.conflict) {
+        const err = new Error('Quelqu’un a enregistré entre-temps (version ' + o.conflict + ').');
+        err.status = 409;
+        err.data = { version: o.conflict };
+        throw err;
+      }
+      if (o.down) throw new Error('Failed to fetch');
+      return { version: (body.baseVersion || 0) + 1, updatedAt: '2026-10-04T10:00:00.000Z', updatedBy: 'alexis' };
+    }
+    throw new Error('méthode inattendue');
+  };
+  stub.calls = calls;
+  return stub;
+}
+
+await checkAsync('État serveur : un enregistrement réussi monte la version et efface le filet local', async () => {
+  // Alexis : « je ne veux pas que les informations soient enregistré dans le
+  // poste et navigateur mais plus sur le serveur ». Le navigateur ne garde
+  // qu'une copie de secours, effacée dès l'accusé de réception.
+  const savedRequest = app.__getServerRequest();
+  const savedSync = app.__getServerStateSync();
+  const stub = etatServerStub();
+  try {
+    app.__setServerRequest(stub);
+    app.__setServerStateSync(true, 4, 'ok');
+    await app.storageSetRaw(app.STORAGE_KEY, '{"filet":"de secours"}');
+
+    assert.equal(await app.pushServerState(), true, 'l’envoi doit réussir');
+    const after = app.__getServerStateSync();
+    assert.equal(after.version, 5, 'la version du serveur remplace celle qu’on avait lue');
+    assert.equal(after.sync, 'ok');
+    const put = stub.calls.find((c) => c.method === 'PUT');
+    assert.equal(put.body.baseVersion, 4, 'la version lue accompagne l’écriture (arbitrage des conflits)');
+    assert.ok(put.body.state && typeof put.body.state === 'object', 'l’état part en entier');
+    assert.equal(await app.storageGetRaw(app.STORAGE_KEY), null,
+      'le filet de sécurité est effacé dès l’accusé de réception');
+    const mark = JSON.parse(await app.storageGetRaw(app.SERVER_STATE_MARK_KEY));
+    assert.equal(mark.version, 5, 'le marqueur retient jusqu’où le serveur a reçu');
+  } finally {
+    await app.storageRemoveRaw(app.SERVER_STATE_MARK_KEY);
+    await app.storageRemoveRaw(app.STORAGE_KEY);
+    app.__setServerRequest(savedRequest);
+    app.__setServerStateSync(savedSync.mode, savedSync.version, savedSync.sync);
+  }
+});
+
+await checkAsync('État serveur : version dépassée → conflit annoncé, copie locale gardée', async () => {
+  // Le cas qui justifie tout l'arbitrage : deux personnes qui saisissent en
+  // même temps. La seconde écriture est refusée, et rien ne disparaît en
+  // silence — ni chez elle, ni chez l'autre.
+  const savedRequest = app.__getServerRequest();
+  const savedSync = app.__getServerStateSync();
+  try {
+    app.__setServerRequest(etatServerStub({ conflict: 9 }));
+    app.__setServerStateSync(true, 4, 'ok');
+    await app.storageSetRaw(app.STORAGE_KEY, '{"ma":"saisie"}');
+
+    assert.equal(await app.pushServerState(), false, 'l’envoi doit échouer');
+    const after = app.__getServerStateSync();
+    assert.equal(after.sync, 'conflit');
+    assert.equal(after.version, 9, 'la version courante du serveur est reprise du refus');
+    assert.equal(await app.storageGetRaw(app.STORAGE_KEY), '{"ma":"saisie"}',
+      'la saisie refusée reste sur le poste : elle n’a été enregistrée nulle part ailleurs');
+    assert.match(app.serverStateFooterHtml(), /Conflit/, 'le pied de page doit le dire');
+  } finally {
+    await app.storageRemoveRaw(app.STORAGE_KEY);
+    app.__setServerRequest(savedRequest);
+    app.__setServerStateSync(savedSync.mode, savedSync.version, savedSync.sync);
+  }
+});
+
+await checkAsync('État serveur : serveur injoignable → envoi en attente, rien de perdu', async () => {
+  const savedRequest = app.__getServerRequest();
+  const savedSync = app.__getServerStateSync();
+  try {
+    app.__setServerRequest(etatServerStub({ down: true }));
+    app.__setServerStateSync(true, 2, 'ok');
+    await app.storageSetRaw(app.STORAGE_KEY, '{"saisie":"en cours"}');
+
+    assert.equal(await app.pushServerState(), false);
+    const after = app.__getServerStateSync();
+    assert.equal(after.sync, 'attente');
+    assert.equal(after.version, 2, 'la version ne bouge pas tant que rien n’est accepté');
+    assert.equal(await app.storageGetRaw(app.STORAGE_KEY), '{"saisie":"en cours"}',
+      'le filet de sécurité n’est effacé que sur accusé de réception');
+    assert.match(app.serverStateFooterHtml(), /attente/, 'et le pied de page prévient');
+  } finally {
+    await app.storageRemoveRaw(app.STORAGE_KEY);
+    app.__setServerRequest(savedRequest);
+    app.__setServerStateSync(savedSync.mode, savedSync.version, savedSync.sync);
+  }
+});
+
+await checkAsync('État serveur : au démarrage, qui fait foi entre le serveur et la copie locale', async () => {
+  const savedSync = app.__getServerStateSync();
+  const local = { companies: [{ id: 'soc_local', name: 'Local' }], lines: [] };
+  const distant = { companies: [{ id: 'soc_serveur', name: 'Serveur' }], lines: [] };
+  try {
+    // 1. Serveur vide (première ouverture après mise en service) : la copie
+    //    locale est reprise, et `save()` la déposera.
+    app.__setServerStateSync(true, 0, 'ok');
+    assert.deepEqual(await app.chooseBootState({ version: 0, state: null }, local), local,
+      'serveur vide : le budget déjà saisi doit monter, pas disparaître');
+
+    // 2. Copie locale marquée à la version du serveur : saisie non envoyée,
+    //    donc plus récente — elle gagne.
+    app.__setServerStateSync(true, 7, 'ok');
+    await app.storageSetRaw(app.SERVER_STATE_MARK_KEY, JSON.stringify({ version: 7, at: 'x' }));
+    assert.deepEqual(await app.chooseBootState({ version: 7, state: distant }, local), local,
+      'une saisie non envoyée ne doit pas être écrasée par le serveur');
+
+    // 3. Marqueur absent ou d'une autre version : le serveur fait foi, et la
+    //    copie locale est mise de côté — jamais supprimée.
+    await app.storageSetRaw(app.SERVER_STATE_MARK_KEY, JSON.stringify({ version: 3, at: 'x' }));
+    await app.storageSetRaw(app.STORAGE_KEY, JSON.stringify(local));
+    assert.deepEqual(await app.chooseBootState({ version: 7, state: distant }, local), distant,
+      'copie locale périmée : le serveur fait foi');
+    assert.equal(await app.storageGetRaw(app.STORAGE_KEY), null, 'la copie périmée quitte la place courante');
+    assert.deepEqual(JSON.parse(await app.storageGetRaw(app.SERVER_STATE_ASIDE_KEY)), local,
+      'et reste récupérable : rien n’est supprimé en silence');
+  } finally {
+    await app.storageRemoveRaw(app.SERVER_STATE_MARK_KEY);
+    await app.storageRemoveRaw(app.SERVER_STATE_ASIDE_KEY);
+    await app.storageRemoveRaw(app.STORAGE_KEY);
+    app.__setServerStateSync(savedSync.mode, savedSync.version, savedSync.sync);
+  }
+});
+
+check('État serveur : le pied de page dit où le budget est enregistré', () => {
+  const savedSync = app.__getServerStateSync();
+  try {
+    app.__setServerStateSync(false, 0, 'local');
+    assert.match(app.serverStateFooterHtml(), /sur ce poste/, 'fichier ouvert seul : stockage local annoncé');
+    app.__setServerStateSync(true, 12, 'ok');
+    assert.match(app.serverStateFooterHtml(), /serveur<\/strong> \(version 12\)/,
+      'mode serveur : la version enregistrée est affichée');
+    app.__setServerStateSync(true, 12, 'erreur');
+    assert.match(app.serverStateFooterHtml(), /injoignable/);
+  } finally {
+    app.__setServerStateSync(savedSync.mode, savedSync.version, savedSync.sync);
+  }
 });
 
 /* --- 5. Verdict ------------------------------------------------------- */

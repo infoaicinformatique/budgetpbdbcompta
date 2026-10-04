@@ -15,8 +15,9 @@ documentation. Les identifiants JS restent en anglais, en camelCase.
 | Chemin | Rôle |
 | --- | --- |
 | `budget-app.html` | **L'application entière** (~30 000 lignes, 1,7 Mo), zéro dépendance, zéro réseau |
-| `server.mjs` | Serveur Node ≥ 22 : sert seulement `/` (brotli/gzip), `/healthz`, auth Basic (compte local et/ou LDAP) ; tout le reste → 404. Dépose le cookie `bm-auth` (identité + config LDAP publique) lu par Paramètres › LDAP. `/api/droits` : droits par personne de l'annuaire |
+| `server.mjs` | Serveur Node ≥ 22 : sert seulement `/` (brotli/gzip), `/healthz`, auth Basic (compte local et/ou LDAP) ; tout le reste → 404. Dépose le cookie `bm-auth` (identité + config LDAP publique) lu par Paramètres › LDAP. `/api/droits` : droits par personne de l'annuaire ; `/api/etat` : le budget partagé |
 | `rights.mjs` | Fichier des droits (`RIGHTS_FILE`, volume Docker `droits`), contrôle de forme, dernier administrateur protégé, `RIGHTS_ADMINS` |
+| `etat.mjs` | Fichier de l'**état budgétaire partagé** (`ETAT_FILE`, même volume) : version incrémentale, écriture atomique, génération précédente conservée (`.precedent`) |
 | `auth-ldap.mjs`, `test/` | Vérification LDAP (seule dépendance : `ldapts`) et ses tests (`npm test`) |
 | `excel-grid/` | Prototype tableur React/Vite **et** outillage : moteur de référence `src/engine/chart.ts`, imports, validation |
 | `scripts-doc/rebuild-doc.mjs` | Régénère la section 7 de `REPRISE-PROJET.md` |
@@ -52,17 +53,26 @@ Le fichier est trop gros pour être lu d'un bloc : repérer les zones par grep.
 Invariants techniques :
 - **SAS réseau** : `fetch`, XHR, WebSocket… sont neutralisés au démarrage.
   Aucune fonctionnalité ne doit appeler le réseau ni charger de ressource externe.
-  Seule exception : `serverRequest` (CSP `connect-src 'self'`), limité aux
-  chemins `/api/droits`, pour les droits tenus par le serveur — jamais de données.
+  Seule exception : `serverRequest` (CSP `connect-src 'self'`), limité à deux
+  chemins — `/api/droits` (droits tenus par le serveur) et `/api/etat` (budget
+  partagé). Aucune autre adresse, jamais une origine tierce.
 - **Droits tenus par le serveur** : page servie avec une identité (cookie
   `bm-auth`, voie ldap/local) → `serverSession` ; `currentUser()` rend un compte
   bâti sur la fiche du serveur (`serverUserFromRights`) et `usersOf()` la liste
   des personnes de l'annuaire. Autorisations est fermé, les droits se règlent
   dans Paramètres › Droits d'accès. Sans fiche : Paramètres seulement.
 - Aucune librairie : lecture et écriture .xlsx faites main (ZIP stocké, CRC32).
-- Stockage dans le navigateur uniquement : IndexedDB `budget-manager-db`
-  (store `kv`, clé `budget-hemasphere-v2`) avec repli localStorage ; le serveur
-  ne stocke aucune donnée budgétaire (seulement les droits). Toute évolution du format d'état exige une migration.
+- **Le serveur fait foi pour le budget** (04/10/2026, demande d'Alexis). Page
+  servie → `serverStateMode` : l'état est lu sur `/api/etat` au démarrage et
+  renvoyé à chaque enregistrement ; le navigateur ne garde qu'un **filet de
+  sécurité** (IndexedDB `budget-manager-db`, store `kv`, clé
+  `budget-hemasphere-v2`, repli localStorage), effacé dès l'accusé de réception,
+  plus le marqueur `…-serveur` et, le cas échéant, la copie écartée `…-ecarte`.
+  Fichier ouvert seul (double-clic) : tout reste local, comme avant.
+- **Édition simultanée** : chaque écriture porte la version lue (`baseVersion`) ;
+  le serveur refuse une version dépassée (409) et l'application recharge en le
+  disant (`pushServerState`, `reloadFromServerState`). Jamais de dernier-qui-écrit-gagne.
+- Toute évolution du format d'état exige une migration.
 - Style JS : `function () {}`, `const`/`let`, pas de modules ni de build.
 
 ## Règles métier (dictées par Alexis — ne pas les changer sans demande)
