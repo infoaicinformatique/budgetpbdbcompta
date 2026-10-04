@@ -31,16 +31,17 @@ documentation. Les identifiants JS restent en anglais, en camelCase.
 | `pcg.json` | Plan comptable en JSON, généré par `import-pcg.mjs` |
 | `Dockerfile`, `docker-compose.yml`, `deploy/`, `.github/workflows/` | Production |
 
-Fichiers jetables suivis par git (ne pas s'en servir comme référence) :
-`tmp-diag-v2.mjs`, `excel-grid/probe*.mjs`, `excel-grid/gen_test_xlsx*.mjs`,
-`excel-grid/scripts/tmp-diag*.mjs`.
-`build-recap.js` est cassé en l'état (CommonJS + `docx` absent).
+**Plus aucun fichier jetable dans le dépôt** : les treize diagnostics et
+sondes qui y traînaient (`diag.mjs`, `diag-bonus*.mjs`, `tmp-diag*.mjs`,
+`probe*.mjs`, `gen_test_xlsx*.mjs`) et `build-recap.js`, cassé depuis
+toujours, ont été supprimés le 04/10/2026. Trois ne se chargeaient même plus :
+ces scripts recopient des listes d'exports du harnais, qui changent sans eux.
 
-Ces fichiers pourrissent : ils recopient des listes d'exports du harnais qui
-changent sans eux. `diag.mjs` et `diag-bonus*.mjs` ont ainsi été supprimés le
-04/10/2026, cassés depuis des retraits de fonctions antérieurs. Pour inspecter
-un classeur produit ou une fonction de l'application, repartir de
-`check-budget-app.mjs`, qui est tenu à jour.
+Ne pas en recréer dans le dépôt. Un diagnostic ponctuel se garde hors de git
+(`/tmp`), et pour inspecter un classeur produit ou une fonction de
+l'application il faut repartir de `check-budget-app.mjs`, qui est tenu à jour
+et sait charger l'application dans un faux DOM. Ce qui mérite de rester
+devient un contrôle dans `check-budget-app.mjs`, pas un script de plus.
 
 ## Structure de `budget-app.html`
 
