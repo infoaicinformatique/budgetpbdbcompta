@@ -4,9 +4,15 @@ Application de construction budgétaire pour Alexis (contrôleur de gestion),
 échéance 1/1/2027. Tout est en français : interface, commentaires, commits,
 documentation. Les identifiants JS restent en anglais, en camelCase.
 
-- Production : https://budgetpbdbcompta.aic-informatique.net (auth Basic ;
-  identifiants de test dans `CLAUDE.local.md`, jamais dans un fichier suivi).
-- Historique, décisions, règles métier : `REPRISE-PROJET.md` (1,8 Mo — ne pas
+- Production : https://budgetpbdbcompta.aic-informatique.net — accès par
+  l'**annuaire LDAP uniquement** depuis le 04/10/2026 : le compte local de
+  secours (`BASIC_AUTH_*`) a été retiré à la demande d'Alexis, il n'existe
+  donc **aucun identifiant de test** et aucun passe-partout (README, « Désigner
+  les administrateurs »). Une session n'a pas de quoi ouvrir la page : les
+  vérifications se font sur `/healthz` et sur le code 401.
+- Administrateurs : `a.porrati` (Alexis Porrati) et `n.hovnanian` (Nicolas
+  Hovnanian), les deux seuls, par fiche **et** par `RIGHTS_ADMINS`.
+- Historique, décisions, règles métier : `REPRISE-PROJET.md` (1,9 Mo — ne pas
   le lire en entier, chercher par `grep -n '^##'` ou par date `### `).
 - Déploiement et dépannage : `README.md`.
 
@@ -14,7 +20,7 @@ documentation. Les identifiants JS restent en anglais, en camelCase.
 
 | Chemin | Rôle |
 | --- | --- |
-| `budget-app.html` | **L'application entière** (~30 000 lignes, 1,7 Mo), zéro dépendance, zéro réseau |
+| `budget-app.html` | **L'application entière** (~31 000 lignes, 1,7 Mo), zéro dépendance, zéro réseau |
 | `server.mjs` | Serveur Node ≥ 22 : sert seulement `/` (brotli/gzip), `/healthz`, auth Basic (compte local et/ou LDAP) ; tout le reste → 404. Dépose le cookie `bm-auth` (identité + config LDAP publique) lu par Paramètres › LDAP. `/api/droits` : droits par personne de l'annuaire |
 | `rights.mjs` | Fichier des droits (`RIGHTS_FILE`, volume Docker `droits`), contrôle de forme, dernier administrateur protégé, `RIGHTS_ADMINS` |
 | `data.mjs` | Données budgétaires tenues par le serveur (`DATA_FILE`, même volume, `historique/`) : périmètre par droits (`scopeOf`), lecture filtrée, fusion des seules sociétés déclarées modifiées, conflits par société (409). `/api/donnees` dans `server.mjs` |
@@ -30,19 +36,18 @@ Fichiers jetables suivis par git (ne pas s'en servir comme référence) :
 `excel-grid/scripts/tmp-diag*.mjs`.
 `build-recap.js` est cassé en l'état (CommonJS + `docx` absent).
 
-Trois diagnostics morts ont été supprimés le 04/10/2026, tous cassés depuis
-des retraits de fonctions antérieurs : `excel-grid/scripts/diag.mjs` (607
-lignes recopiant le harnais, 27 symboles disparus) et `diag-bonus*.mjs` (qui
-importaient `check-budget-app.mjs` — lequel exécute ses 526 contrôles puis
-`process.exit`, donc ils n'avaient jamais rien pu afficher). Pour inspecter un
-classeur produit ou une fonction de l'application, repartir de
+Ces fichiers pourrissent : ils recopient des listes d'exports du harnais qui
+changent sans eux. `diag.mjs` et `diag-bonus*.mjs` ont ainsi été supprimés le
+04/10/2026, cassés depuis des retraits de fonctions antérieurs. Pour inspecter
+un classeur produit ou une fonction de l'application, repartir de
 `check-budget-app.mjs`, qui est tenu à jour.
 
 ## Structure de `budget-app.html`
 
 Le fichier est trop gros pour être lu d'un bloc : repérer les zones par grep.
 
-- `<head>` avec CSP stricte (`connect-src 'none'`), puis un seul `<style>`,
+- `<head>` avec CSP stricte (`default-src 'none'`, `connect-src 'self'` pour
+  les deux adresses d'API), puis un seul `<style>`,
   le balisage (`<nav id="tabs">`, boutons `data-tab`), puis deux `<script>`.
 - 1er script : **données embarquées générées**, entre marqueurs
   `/* PCG-DATA-START */`, `/* BUDGET-DATA-START */`, `/* EMASPHERE-DATA-START */`
@@ -105,7 +110,7 @@ Invariants techniques :
 ## Commandes
 
 ```bash
-npm ci && npm test                     # serveur : dépendances et tests LDAP
+npm ci && npm test                     # serveur : LDAP, droits, données (36 tests)
 npm start                              # http://127.0.0.1:3000 (server.mjs)
 npm --prefix excel-grid install        # une fois (node_modules absent par défaut)
 npm run verify                         # check + test + check:app + check:markup + typecheck
@@ -137,10 +142,14 @@ fichiers de `excel-grid/` ont bougé. Les sections 1 à 6 s'éditent à la main.
   le certificat) → conteneur `budgetpbdbcompta` :3000, dans
   `/opt/docker/budgetpbdbcompta`, en lecture seule. Pas d'Access List NPM
   (l'auth est dans l'application).
-- Authentification serveur (README, « Authentification LDAP ») : compte local
-  `BASIC_AUTH_*` (secours) puis annuaire `LDAP_*`. Tout changement de
-  `auth-ldap.mjs` passe par `npm test`. Piège : ldapts passe en TLS dès qu'il
-  reçoit des `tlsOptions`, même sur `ldap://` — ne les donner qu'en `ldaps://`.
+- Authentification serveur (README, « Authentification LDAP ») : le code
+  accepte un compte local `BASIC_AUTH_*` puis l'annuaire `LDAP_*`, mais **en
+  production le compte local est retiré** (04/10/2026) : l'annuaire est la
+  seule porte, et la rétablir demande de renseigner les deux clés dans `.env`
+  puis `docker compose up -d` (README, « Désigner les administrateurs »). Tout
+  changement de `auth-ldap.mjs` passe par `npm test`. Piège : ldapts passe en
+  TLS dès qu'il reçoit des `tlsOptions`, même sur `ldap://` — ne les donner
+  qu'en `ldaps://`.
   Un nouveau fichier servi doit aussi être ajouté au `Dockerfile` et au
   `.dockerignore` (liste blanche).
 - **Où tourne cette session ?** Vérifier avant de proposer des commandes à
@@ -154,6 +163,17 @@ fichiers de `excel-grid/` ont bougé. Les sections 1 à 6 s'éditent à la main.
 - Fichiers de production **hors git**, à ne jamais committer : `.env` (mots de
   passe LDAP, voir `.gitignore`) et le volume `/data` (droits et budgets).
 - Vérifier la production : `curl https://budgetpbdbcompta.aic-informatique.net/healthz`
-  → `ok` ; `/` → 401 sans identifiants, 200 avec. La page servie doit être
-  identique à `main` aux fins de ligne près (copie Windows en CRLF via
-  `core.autocrlf=true`, serveur en LF).
+  → `ok` ; `/` → **401** sans identifiants (c'est tout ce qu'une session peut
+  constater, faute de compte local). Sur AIServer, le reste se lit dans le
+  conteneur : `docker logs --tail 20 budgetpbdbcompta` (version, annuaire,
+  administrateurs désignés) et `docker exec budgetpbdbcompta cat /data/droits.json`.
+  La page servie doit être identique à `main` aux fins de ligne près (copie
+  Windows en CRLF via `core.autocrlf=true`, serveur en LF).
+- **Données de production** : droits et budgets vivent dans le volume `droits`
+  (`/data/droits.json`, `/data/budget.json`, `/data/historique/`). Toute
+  opération dessus commence par une sauvegarde **hors du dépôt**
+  (`/root/sauvegardes-budgetpbdbcompta/`) : elles sont irréversibles et le
+  dépôt n'en garde aucune trace. L'API `/api/donnees` et `/api/droits` exige une
+  identité LDAP, donc une session ne peut pas écrire par là : passer par
+  `docker exec` sur le fichier, en écriture atomique (fichier voisin puis
+  `mv`), et vérifier en relisant.
