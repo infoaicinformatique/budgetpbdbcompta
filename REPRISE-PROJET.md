@@ -77,6 +77,43 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Panne du serveur : ne pas l'imputer aux droits (04/10/2026)
+
+Trouvé en relisant le code à la demande d'Alexis (« peux tu vérifier l'ensemble
+du code qu'il n'y ait pas d'erreur ? »), dans le correctif ajouté le même jour.
+
+Quand la lecture du serveur échoue, `loadServerData()` laisse volontairement un
+état **sans aucune société** (`emptyServerState(null)`, voir l'entrée du
+02/10/2026). Pour une personne au périmètre restreint, c'est indiscernable d'un
+périmètre vide : `companyScopeEmpty()` rendait `true` et l'écran affichait
+« Aucune société ne vous est attribuée », **accusant les droits** alors que le
+serveur était simplement injoignable. Le vrai message n'apparaissait que dans
+Paramètres › Données (`parametresDonneesPanel`), où personne n'irait sans y être
+renvoyé.
+
+`companyScopeEmptyPageHtml()` regarde donc d'abord `serverData.error` /
+`serverData.saveError` : s'il y en a un, elle affiche « Données du serveur
+indisponibles — ce n'est pas un problème de droits », reprend le message du
+serveur (échappé) et renvoie vers Paramètres › Données. Sinon, le message sur le
+périmètre de droits, inchangé.
+
+Contrôle ajouté (« Sociétés : une panne du serveur n'est pas présentée comme un
+défaut de droits ») : hors panne l'écran parle bien du périmètre ; avec une
+erreur posée sur `serverData`, il nomme la vraie cause, reprend le message, ne
+mentionne plus les droits et renvoie vers Paramètres › Données. Vérifié en
+neutralisant la condition : le contrôle échoue.
+
+Le reste de la relecture n'a rien donné d'autre : les 27 déréférencements
+directs d'`activeCompany()` et les 21 affectations sans garde vivent tous dans
+des constructeurs de vue ou des gestionnaires délégués de `#view`, donc derrière
+la porte de `renderTabView()` ; `state` est toujours posé avant le premier
+rendu ; `serverData.revision`, interpolé dans le pied de page, est toujours un
+nombre (`applyServerDataMeta`). Seul `excel-grid/scripts/diag.mjs` ne tourne pas
+(`Export 'addDriver' is not defined`) — il cassait déjà avant, n'est câblé dans
+aucun script npm, et reste un fichier jetable.
+
+`APP_BUILD` : `2026-10-04.2`.
+
 ### Trois nettoyages d'interface (04/10/2026)
 
 Trois demandes d'Alexis dans la même session, indépendantes du passage des
@@ -10924,6 +10961,7 @@ const app = await importApp(
     'export function __getServerData() { return serverData; }\n' +
     'export function __clearSaveTimer() { if (saveTimer !== null) { clearTimeout(saveTimer); saveTimer = null; } }\n' +
     'export function __clearServerSession() { serverSession = null; serverDirectory = null; }\n' +
+    'export function __setServerDataForTest(v) { serverData = v; }\n' +
     'export function __setServerDirectory(v) { serverDirectory = v; }\n' +
     'export function __setAuthPermissionsIdForTest(v) { authPermissionsId = v; }\n' +
     'export function __setAuthEditingId(v) { authEditingId = v; }\n' +
@@ -29147,6 +29185,30 @@ check('Sociétés : un périmètre vide n’affiche JAMAIS une société hors dr
     app.state.activeCompany = savedActive;
     if (savedTab !== undefined) { app.__setTab(savedTab); app.render(); }
   }
+});
+
+check('Sociétés : une panne du serveur n’est pas présentée comme un défaut de droits', () => {
+  // Revue du 04/10/2026 : `loadServerData()` laisse un état SANS société
+  // quand la lecture du serveur échoue (`emptyServerState`). Pour une
+  // personne au périmètre restreint, cela ressemblait exactement à un
+  // périmètre vide, et l'écran accusait les droits — alors que le détail de
+  // l'erreur ne s'affiche que dans Paramètres › Données.
+  const page = app.companyScopeEmptyPageHtml.bind(null);
+  assert.ok(app.companyScopeEmptyPageHtml().includes('Aucune société ne vous est attribuée'),
+    'hors panne, l’écran parle bien du périmètre de droits');
+  app.__setServerDataForTest({ error: 'Erreur 503', saveError: null, revision: 0 });
+  try {
+    const html = app.companyScopeEmptyPageHtml();
+    assert.ok(html.includes('Données du serveur indisponibles'),
+      'en panne de lecture, l’écran doit nommer la vraie cause');
+    assert.ok(html.includes('Erreur 503'), 'et reprendre le message du serveur');
+    assert.ok(!html.includes('Aucune société ne vous est attribuée'),
+      'sans accuser le périmètre de droits');
+    assert.ok(html.includes('Paramètres › Données'), 'en renvoyant là où se lit la synchronisation');
+  } finally {
+    app.__setServerDataForTest(null);
+  }
+  assert.equal(typeof page, 'function');
 });
 
 check('Sociétés : sans borne de droits, le périmètre n’est jamais déclaré vide', () => {
