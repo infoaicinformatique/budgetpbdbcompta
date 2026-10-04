@@ -26,13 +26,17 @@ documentation. Les identifiants JS restent en anglais, en camelCase.
 | `Dockerfile`, `docker-compose.yml`, `deploy/`, `.github/workflows/` | Production |
 
 Fichiers jetables suivis par git (ne pas s'en servir comme référence) :
-`tmp-diag-v2.mjs`, `diag-bonus*.mjs`, `excel-grid/probe*.mjs`,
-`excel-grid/gen_test_xlsx*.mjs`, `excel-grid/scripts/tmp-diag*.mjs`.
+`tmp-diag-v2.mjs`, `excel-grid/probe*.mjs`, `excel-grid/gen_test_xlsx*.mjs`,
+`excel-grid/scripts/tmp-diag*.mjs`.
 `build-recap.js` est cassé en l'état (CommonJS + `docx` absent).
-`excel-grid/scripts/diag.mjs` a été supprimé le 04/10/2026 : il recopiait
-607 lignes du harnais pour un seul diagnostic ponctuel et ne se chargeait
-plus (27 symboles disparus). Pour inspecter un classeur produit, repartir
-de `check-budget-app.mjs`, qui est tenu à jour.
+
+Trois diagnostics morts ont été supprimés le 04/10/2026, tous cassés depuis
+des retraits de fonctions antérieurs : `excel-grid/scripts/diag.mjs` (607
+lignes recopiant le harnais, 27 symboles disparus) et `diag-bonus*.mjs` (qui
+importaient `check-budget-app.mjs` — lequel exécute ses 526 contrôles puis
+`process.exit`, donc ils n'avaient jamais rien pu afficher). Pour inspecter un
+classeur produit ou une fonction de l'application, repartir de
+`check-budget-app.mjs`, qui est tenu à jour.
 
 ## Structure de `budget-app.html`
 
