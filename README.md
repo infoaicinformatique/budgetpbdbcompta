@@ -20,8 +20,10 @@ npm test                  # tests de l'authentification LDAP
 tout le reste (document de reprise, Excel, scripts) renvoie 404.
 
 Variables (voir `.env.example`) : `HOST`, `PORT`, `PUBLIC_HOST`,
-`BASIC_AUTH_USER` / `BASIC_AUTH_PASSWORD` (compte local),
-`LDAP_*` (annuaire, voir « Authentification LDAP »), `TRUST_PROXY`.
+`BASIC_AUTH_USER` / `BASIC_AUTH_PASSWORD` (compte local de secours,
+**retiré en production**), `LDAP_*` (annuaire, voir « Authentification LDAP »),
+`TRUST_PROXY`, `RIGHTS_ADMINS`, et les deux fichiers du volume :
+`RIGHTS_FILE` (droits) et `DATA_FILE` (sociétés et budgets).
 Une protection est recommandée : l'application embarque le plan comptable et
 les budgets.
 
@@ -44,7 +46,9 @@ Configuration dans `.env` (modèles commentés dans `.env.example`) :
 Comportement :
 
 - le compte local `BASIC_AUTH_*`, s'il est renseigné, reste accepté : c'est
-  l'accès de secours quand l'annuaire est en panne (le garder long et secret) ;
+  l'accès de secours quand l'annuaire est en panne (le garder long et secret).
+  **Il est retiré en production depuis le 04/10/2026** : plus aucun
+  passe-partout, voir « Désigner les administrateurs » ;
 - une connexion réussie est mémorisée `LDAP_CACHE_SECONDS` (300 s par défaut) :
   un compte désactivé dans l'annuaire perd l'accès au plus tard après ce délai ;
 - 5 échecs en 15 minutes depuis une même adresse → 429 pendant le reste de la
@@ -231,8 +235,13 @@ sudo docker compose pull && sudo docker compose up -d
 (`sudo docker compose up -d --build` construit l'image sur place, sans passer
 par GHCR.)
 
-Les lignes `BASIC_AUTH_USER` et `BASIC_AUTH_PASSWORD` de `.env` ne doivent pas
-commencer par `#` : sinon l'application est publique, sans mot de passe.
+`BASIC_AUTH_USER` et `BASIC_AUTH_PASSWORD` ne sont indispensables que **tant
+qu'aucun annuaire n'est configuré** : l'application est publique uniquement si
+les DEUX voies manquent (`authEnabled = compte local OU annuaire`, voir
+`server.mjs`). Avec `LDAP_*` renseigné, les commenter ferme simplement l'accès
+de secours — c'est le choix fait en production le 04/10/2026. Vérifier dans les
+deux cas : `curl -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/` doit
+rendre **401**, jamais 200.
 
 Vérification — **attendre quelques secondes** après le démarrage : le serveur
 compresse `budget-app.html` avant d'accepter les connexions (un `curl` lancé
