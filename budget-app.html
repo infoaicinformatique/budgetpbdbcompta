@@ -3393,7 +3393,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-04.2';
+const APP_BUILD = '2026-10-04.3';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -24186,8 +24186,16 @@ function computedLineReason(line) {
 /** Tous les comptes de produits et de charges du plan de la société (comptes de bilan exclus), un `accountRowInfo` chacun. */
 function importMatrixAccounts(companyId) {
   const company = companyById(companyId);
+  // Périmètre de centres de coûts : la matrice téléchargée ne propose que
+  // ce que la personne a le droit de remplir (04/10/2026). Sans ce filtre,
+  // un directeur borné au Food & Beverage repartait avec un classeur de
+  // tous les centres, le remplissait, et l'import en ignorait la moitié
+  // sans qu'il comprenne pourquoi. Les comptes de produits n'ont pas de
+  // centre et restent toujours proposés, comme dans la Saisie.
+  const importUser = authEnabled() ? currentUser() : null;
   const accounts = accountsForPlan(company ? company.planId : null)
-    .filter(function (a) { return a.kind === 'produit' || a.kind === 'charge'; });
+    .filter(function (a) { return a.kind === 'produit' || a.kind === 'charge'; })
+    .filter(function (a) { return isCenterAllowed(importUser, a.center); });
   const linesByAccount = new Map();
   for (const line of linesOf(companyId)) {
     let bucket = linesByAccount.get(line.account);
@@ -24379,6 +24387,9 @@ function importIssuesSummaryText(issues) {
 /** Comptes du fichier qui écraseraient une valeur déjà saisie à la main (lignes calculées ignorées). */
 function detectImportConflicts(companyId, rows) {
   return rows.filter(function (row) {
+    // Un compte que l'import n'a pas le droit de toucher ne pose aucun
+    // conflit : il sera ignoré de toute façon.
+    if (!importAllowsAccount(companyId, row.account)) return false;
     // Brut : sans quoi un compte d'un centre hors périmètre semblerait
     // toujours vide, et l'import créerait une ligne en double au lieu de
     // mettre à jour celle qui existe déjà (voir `applyImportedAccountAmounts`).
@@ -24390,13 +24401,40 @@ function detectImportConflicts(companyId, rows) {
 }
 
 /**
+ * L'import a-t-il le droit de toucher ce compte ?
+ *
+ * 04/10/2026 — l'onglet Import s'accorde personne par personne dans
+ * Paramètres › Droits d'accès, mais il écrivait sans regarder le périmètre
+ * de centres de coûts : il suffisait de l'obtenir pour contourner ce que
+ * `isCenterAllowed` interdit dans la Saisie (lignes grisées) et dans la
+ * recherche de comptes. Un droit qui ouvre plus que ce qu'il annonce n'est
+ * pas un droit.
+ *
+ * Un compte introuvable au plan passe : `parseImportMatrixRows` l'a déjà
+ * écarté, et ce n'est pas ici qu'on en décide.
+ */
+function importAllowsAccount(companyId, account) {
+  const user = authEnabled() ? currentUser() : null;
+  const company = companyById(companyId);
+  const info = findAccount(account, accountIndexForPlan(company ? company.planId : null));
+  return !info || isCenterAllowed(user, info.center);
+}
+
+/**
  * Applique les montants importés d'UN compte : met à jour sa première ligne
  * saisissable à la main (additionne ou remplace selon `mode`), ou en crée
  * une nouvelle si le compte n'a encore aucune ligne. Un compte qui n'a que
  * des lignes calculées (Payroll, CA, taux, indicateur) est ignoré : ces
  * montants ne se modifient pas depuis Excel.
+ *
+ * Deux refus tiennent aux droits de la personne : un compte hors de son
+ * périmètre de centres de coûts, et la création d'une ligne quand la
+ * structure du budget ne lui appartient pas (`canEditLineStructure`, même
+ * règle que « + ajouter une ligne » dans la Saisie). Chacun est compté et
+ * annoncé dans le compte-rendu — aucune ligne n'est écartée en silence.
  */
 function applyImportedAccountAmounts(companyId, account, amounts, mode) {
+  if (!importAllowsAccount(companyId, account)) return { status: 'skipped-center' };
   const lines = rawLinesOf(companyId).filter(function (l) { return l.account === account; });
   const editable = lines.find(function (l) { return !isComputedLine(l); });
   if (editable) {
@@ -24409,6 +24447,7 @@ function applyImportedAccountAmounts(companyId, account, amounts, mode) {
   }
   if (lines.length) return { status: 'skipped-computed' };
   if (!amounts.some(function (v) { return Number(v) !== 0; })) return { status: 'skipped-empty' };
+  if (!canEditLineStructure()) return { status: 'skipped-structure' };
   state.lines.push({
     id: uid('lig'),
     companyId: companyId,
@@ -24422,13 +24461,15 @@ function applyImportedAccountAmounts(companyId, account, amounts, mode) {
 /** Applique tout un lot de lignes importées, dans un seul point d'annulation (Ctrl+Z). */
 function applyImportRows(companyId, rows, mode) {
   captureUndoStep();
-  const summary = { created: 0, updated: 0, skippedComputed: 0 };
+  const summary = { created: 0, updated: 0, skippedComputed: 0, skippedCenter: 0, skippedStructure: 0 };
   logLineAmountChanges('import Excel', companyId, function () {
     for (const row of rows) {
       const result = applyImportedAccountAmounts(companyId, row.account, row.amounts, mode);
       if (result.status === 'created') summary.created++;
       else if (result.status === 'updated') summary.updated++;
       else if (result.status === 'skipped-computed') summary.skippedComputed++;
+      else if (result.status === 'skipped-center') summary.skippedCenter++;
+      else if (result.status === 'skipped-structure') summary.skippedStructure++;
     }
   });
   save();
@@ -24441,6 +24482,12 @@ function importSummaryMessage(fileName, summary, unknown, issues) {
   if (summary.updated) parts.push(summary.updated + ' compte(s) mis à jour');
   if (summary.created) parts.push(summary.created + ' nouvelle(s) ligne(s) créée(s)');
   if (summary.skippedComputed) parts.push(summary.skippedComputed + ' compte(s) calculé(s) ignoré(s) (Payroll/CA/taux/indicateur)');
+  if (summary.skippedCenter) {
+    parts.push(summary.skippedCenter + ' compte(s) hors de votre périmètre de centres de coûts ignoré(s)');
+  }
+  if (summary.skippedStructure) {
+    parts.push(summary.skippedStructure + ' compte(s) sans ligne existante ignoré(s) : créer une ligne est réservé au contrôle de gestion');
+  }
   let message = 'Import de « ' + fileName + ' » — ' + (parts.length ? parts.join(', ') : 'rien à importer') + '.';
   // Compte-rendu ligne par ligne (voir `importIssuesSummaryText`) : remplace
   // l'ancien décompte global des comptes non reconnus, qui ne disait jamais

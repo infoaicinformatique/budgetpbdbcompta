@@ -77,6 +77,78 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Import et export sous droits : déjà là, mais l'import ne les respectait pas (04/10/2026)
+
+Alexis : « donne la possibilité (via des droits) (et vérifie que ce n'est pas
+déjà implementer) la possibilité d'importer et d'exporter des données dans les
+sociétés ».
+
+#### Vérification : c'était déjà en place
+
+- **Export** : l'onglet est dans la matrice des droits ET dans le périmètre de
+  départ d'un directeur (`DIRECTEUR_DEFAULT_TABS`) — accordé sans rien faire.
+  Il part de `visibleCompanies()`, donc **borné au périmètre de sociétés** par
+  deux couches (`ensureExportSelection` puis `exportedCompanies`) : demander
+  l'export d'une société hors droits ne la sort pas.
+- **Import** : l'onglet `import` (rubrique `import-matrice`) est dans
+  `APP_PAGES`, donc accordable personne par personne dans
+  **Paramètres › Droits d'accès** ; il n'est pas dans les défauts d'un
+  directeur, et ni lui ni Export ne figurent dans `SENSITIVE_TABS` (aucun
+  verrou en dur par rôle). Il travaille sur la société active, elle-même
+  garantie dans le périmètre depuis le correctif du jour.
+
+Rien à ajouter donc côté « possibilité via des droits ». Mais la vérification a
+montré que le droit **ne voulait pas dire ce qu'il annonçait**.
+
+#### Le défaut : l'import était une porte dérobée
+
+`applyImportedAccountAmounts()` écrivait sans regarder ni le périmètre de
+centres de coûts (`isCenterAllowed`, qui grise les lignes dans la Saisie et
+filtre la recherche de comptes) ni la règle « un directeur ne crée pas de
+ligne » (`canEditLineStructure`, qui ferme « + ajouter une ligne »). Accorder
+l'onglet Import à un directeur borné au Food & Beverage lui ouvrait donc, par ce
+seul détour, **les neuf centres et la structure du budget**. Et
+`importMatrixAccounts()` lui faisait télécharger une matrice de tous les
+centres, qu'il remplissait pour rien.
+
+#### Le correctif
+
+- `importMatrixAccounts()` filtre sur `isCenterAllowed` : la matrice téléchargée
+  ne propose que ce que la personne peut remplir (les comptes de produits, sans
+  centre, restent toujours proposés — comme dans la Saisie) ;
+- nouveau `importAllowsAccount(companyId, account)` : garde unique, qui résout
+  le compte dans le plan de la société puis applique `isCenterAllowed` ;
+- `applyImportedAccountAmounts()` refuse un compte hors périmètre
+  (`skipped-center`) et refuse de **créer** une ligne quand la structure n'est
+  pas à la personne (`skipped-structure`) ;
+- `detectImportConflicts()` ignore les comptes refusés : ils ne posent aucun
+  conflit à arbitrer puisqu'ils seront écartés ;
+- `importSummaryMessage()` annonce les deux refus avec leur décompte — « n
+  compte(s) hors de votre périmètre de centres de coûts ignoré(s) », « n
+  compte(s) sans ligne existante ignoré(s) : créer une ligne est réservé au
+  contrôle de gestion ». Règle de traçabilité : aucune ligne n'est écartée en
+  silence.
+
+Un contrôleur de gestion sans restriction n'est touché par rien de tout ceci
+(`allowedCostCenterIds` rend `null`, `canEditLineStructure` rend `true`).
+
+#### Contrôles (525)
+
+- « Import : le droit accordé ne contourne ni le périmètre de centres ni la
+  règle des lignes » — par un vrai directeur borné au F&B : matrice limitée à
+  son périmètre, garde vraie/fausse selon le compte, montant hors périmètre
+  refusé et **ligne existante intacte**, mise à jour acceptée dans son centre,
+  création refusée, compte-rendu qui nomme les deux refus ; puis un contrôleur,
+  qui n'est bridé par rien. Vérifié en retirant la garde : le contrôle échoue
+  (`'updated' !== 'skipped-center'`) ;
+- « Export : accordé par les droits, borné par le périmètre de sociétés » —
+  Export reste dans les défauts directeur, Import reste dans la matrice, aucun
+  des deux n'est dans `SENSITIVE_TABS`, et un directeur qui demande l'export de
+  deux sociétés n'en obtient que la sienne. Vérifié en sabotant les **deux**
+  couches : le contrôle échoue.
+
+`APP_BUILD` : `2026-10-04.3`.
+
 ### Panne du serveur : ne pas l'imputer aux droits (04/10/2026)
 
 Trouvé en relisant le code à la demande d'Alexis (« peux tu vérifier l'ensemble
@@ -10976,6 +11048,7 @@ const app = await importApp(
     'export { setPriorActual, priorActualOf, pastePriorActualsFromCell };\n' +
     'export { importMatrixAccounts, importMatrixSheets, importMatrixSheet, downloadImportMatrix, viewImport, computedLineReason,\n' +
     '  parseImportMatrixRows, detectImportConflicts, applyImportedAccountAmounts, applyImportRows,\n' +
+    '  importAllowsAccount,\n' +
     '  importAccountMatrixFile, confirmPendingImport, cancelPendingImport };\n' +
     'export function __getPendingImport() { return pendingImport; }\n' +
     'export function __getSetupWizard() { return setupWizard; }\n' +
@@ -29218,6 +29291,133 @@ check('Sociétés : sans borne de droits, le périmètre n’est jamais déclar�
   assert.ok(!app.authEnabled(), 'ce contrôle suppose un état sans compte actif');
   assert.equal(app.companyScopeEmpty(), false, 'sans compte, aucun périmètre à opposer');
   assert.ok(app.activeCompany(), 'et une société reste active');
+});
+
+await checkAsync('Import : le droit accordé ne contourne ni le périmètre de centres ni la règle des lignes', async () => {
+  // 04/10/2026 — Alexis : « donne la possibilité (via des droits) […]
+  // d'importer et d'exporter des données dans les sociétés ». L'onglet
+  // Import s'accordait déjà personne par personne dans Paramètres › Droits
+  // d'accès… mais il ÉCRIVAIT sans regarder le périmètre : l'obtenir
+  // suffisait pour remplir des centres de coûts interdits et créer des
+  // lignes, deux choses que la Saisie refuse au même compte.
+  const company = { id: 'imp_droits', name: 'Import Droits', currency: 'EUR', year: 2026 };
+  const savedCompanies = app.state.companies.slice();
+  const savedLines = app.state.lines.slice();
+  const savedActive = app.state.activeCompany;
+  authFixture();
+  try {
+    app.state.companies = [company];
+    // Une ligne existante dans chaque centre : F&B (dans le périmètre) et
+    // AG (hors périmètre), pour distinguer refus de périmètre et refus de
+    // création.
+    app.state.lines = [
+      { id: 'imp_fnb', companyId: company.id, account: '60101100', name: 'Boissons', amounts: months(100) },
+      { id: 'imp_ag', companyId: company.id, account: '60610700', name: 'Électricité', amounts: months(50) },
+    ];
+    app.resetStateIndexes();
+    const centerOf = (acc) => ts.findAccount(acc).center;
+    assert.equal(centerOf('60101100'), 'F&B', 'compte témoin dans le périmètre');
+    assert.notEqual(centerOf('60610700'), 'F&B', 'compte témoin hors périmètre');
+
+    const directeur = await app.createUser({ username: 'dir_import', role: 'directeur', password: 'MotDePasse1!xyz' });
+    app.setUserScope(directeur.id, null, ['F&B']);
+    await app.signIn('dir_import', 'MotDePasse1!xyz');
+    app.state.activeCompany = company.id;
+
+    // 1. La matrice téléchargée ne propose que son périmètre.
+    const rows = app.importMatrixAccounts(company.id);
+    assert.ok(rows.length > 0, 'la matrice doit rester utilisable');
+    const centers = new Set(rows.map((r) => ts.findAccount(r.account)).filter(Boolean).map((a) => a.center));
+    for (const c of centers) {
+      assert.ok(!c || c === 'F&B', `la matrice ne doit proposer que F&B et les produits, pas « ${c} »`);
+    }
+
+    // 2. La garde elle-même.
+    assert.equal(app.importAllowsAccount(company.id, '60101100'), true, 'son centre est permis');
+    assert.equal(app.importAllowsAccount(company.id, '60610700'), false, 'un autre centre est refusé');
+
+    // 3. Un montant importé hors périmètre n'écrit rien.
+    const before = app.rawLinesOf(company.id).find((l) => l.id === 'imp_ag').amounts.slice();
+    const refused = app.applyImportedAccountAmounts(company.id, '60610700', months(999), 'overwrite');
+    assert.equal(refused.status, 'skipped-center', 'le compte hors périmètre doit être refusé');
+    assert.deepEqual(app.rawLinesOf(company.id).find((l) => l.id === 'imp_ag').amounts, before,
+      'et son montant doit rester intact');
+
+    // 4. Dans son périmètre, il met bien à jour une ligne existante…
+    const updated = app.applyImportedAccountAmounts(company.id, '60101100', months(300), 'overwrite');
+    assert.equal(updated.status, 'updated', 'son propre centre reste importable');
+    assert.equal(app.rawLinesOf(company.id).find((l) => l.id === 'imp_fnb').amounts[0], 300);
+
+    // 5. …mais ne CRÉE pas de ligne : la structure du budget n'est pas à lui.
+    const created = app.applyImportedAccountAmounts(company.id, '60103100', months(10), 'overwrite');
+    assert.equal(created.status, 'skipped-structure',
+      'créer une ligne reste réservé au contrôle de gestion, comme dans la Saisie');
+    assert.equal(app.rawLinesOf(company.id).filter((l) => l.account === '60103100').length, 0,
+      'aucune ligne ne doit avoir été créée');
+
+    // 6. Le compte-rendu nomme les deux refus : rien n'est écarté en silence.
+    const summary = { created: 0, updated: 0, skippedComputed: 0, skippedCenter: 2, skippedStructure: 3 };
+    const message = app.importSummaryMessage('budget.xlsx', summary, [], []);
+    assert.match(message, /hors de votre périmètre/, 'le refus de périmètre doit être annoncé');
+    assert.match(message, /réservé au contrôle de gestion/, 'le refus de création aussi');
+
+    // 7. Un contrôleur, lui, n'est bridé par rien.
+    app.signOut();
+    await app.createUser({ username: 'cdg_import', role: 'controleur', password: 'MotDePasse1!xyz' });
+    await app.signIn('cdg_import', 'MotDePasse1!xyz');
+    assert.equal(app.importAllowsAccount(company.id, '60610700'), true,
+      'un contrôleur importe sur tous les centres');
+    const ok = app.applyImportedAccountAmounts(company.id, '60103100', months(10), 'overwrite');
+    assert.equal(ok.status, 'created', 'et peut créer la ligne manquante');
+  } finally {
+    authFixture();
+    app.state.companies = savedCompanies;
+    app.state.lines = savedLines;
+    app.state.activeCompany = savedActive;
+    app.resetStateIndexes();
+  }
+});
+
+await checkAsync('Export : accordé par les droits, borné par le périmètre de sociétés', async () => {
+  // Deuxième moitié de la demande du 04/10/2026. L'onglet Export est déjà
+  // dans le périmètre de départ d'un directeur (`DIRECTEUR_DEFAULT_TABS`) :
+  // la possibilité existe sans rien ajouter. Ce contrôle fige ce qui compte
+  // — l'export ne peut pas sortir une société hors des droits de la
+  // personne, puisqu'il part de `visibleCompanies()`.
+  const mine = { id: 'exp_mienne', name: 'Export Mienne', currency: 'EUR', year: 2026 };
+  const other = { id: 'exp_autre', name: 'Export Autre', currency: 'EUR', year: 2026 };
+  const savedCompanies = app.state.companies.slice();
+  const savedLines = app.state.lines.slice();
+  authFixture();
+  try {
+    assert.ok(app.DIRECTEUR_DEFAULT_TABS.indexOf('export') !== -1,
+      'Export doit rester dans le périmètre de départ d’un directeur');
+    assert.ok(app.APP_PAGES.some((t) => t.tab === 'import'),
+      'Import doit rester un onglet de la matrice des droits, accordable personne par personne');
+    assert.ok(app.SENSITIVE_TABS.indexOf('import') === -1 && app.SENSITIVE_TABS.indexOf('export') === -1,
+      'ni l’un ni l’autre ne doit être verrouillé en dur par le rôle');
+
+    app.state.companies = [mine, other];
+    app.state.lines = [
+      { id: 'exp_l1', companyId: mine.id, account: '60101100', name: 'Boissons', amounts: months(100) },
+      { id: 'exp_l2', companyId: other.id, account: '60101100', name: 'Boissons', amounts: months(100) },
+    ];
+    app.resetStateIndexes();
+
+    const directeur = await app.createUser({ username: 'dir_export', role: 'directeur', password: 'MotDePasse1!xyz' });
+    app.setUserScope(directeur.id, [mine.id], ['F&B']);
+    await app.signIn('dir_export', 'MotDePasse1!xyz');
+
+    app.setExportSelection([mine.id, other.id]);
+    assert.deepEqual(app.exportedCompanies().map((c) => c.id), [mine.id],
+      'même en demandant les deux, l’export ne rend que la société de son périmètre');
+  } finally {
+    authFixture();
+    app.state.companies = savedCompanies;
+    app.state.lines = savedLines;
+    app.setExportSelection(savedCompanies.map((c) => c.id));
+    app.resetStateIndexes();
+  }
 });
 
 /* --- 5. Verdict ------------------------------------------------------- */
