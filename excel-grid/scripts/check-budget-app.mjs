@@ -15528,6 +15528,77 @@ await checkAsync('Onglet Import : un nom saisi en colonne C du fichier télécha
   }
 });
 
+check('Compatibilité : un classeur téléchargé AVANT le 05/10/2026 se réimporte sans rien renommer', () => {
+  // Les fichiers déjà entre les mains d'Alexis portent l'ancien en-tête
+  // « Ligne(s) nommée(s) » en colonne C, et le repérage de l'en-tête se fait
+  // sur la colonne A (« Compte 2026 ») : ils restent lisibles. Surtout, la
+  // colonne C y contient l'étiquette écrite par l'export — exactement la même
+  // que celle écrite aujourd'hui (`importMatrixNamesLabel`) — donc un tel
+  // fichier ne doit renommer AUCUNE dépense, y compris sur un compte qui en
+  // porte deux (« Boissons, Cave » n'est le nom de personne) ou sur une ligne
+  // restée sans nom (« (sans nom) » n'est pas un nom).
+  const companyId = 'imp_compat';
+  const savedCompanies = app.state.companies.slice();
+  const savedLines = app.state.lines.slice();
+  app.state.companies = app.state.companies.concat([
+    { id: companyId, name: 'Import Compat', currency: 'EUR', year: 2026, groupId: null },
+  ]);
+  app.state.lines = [
+    { id: 'compat_l1', companyId: companyId, account: '60101100', name: 'Boissons', amounts: months(100) },
+    { id: 'compat_l2', companyId: companyId, account: '60101100', name: 'Cave', amounts: months(50) },
+    { id: 'compat_l3', companyId: companyId, account: '60630100', name: '', amounts: months(40) },
+    { id: 'compat_l4', companyId: companyId, account: '64110100', name: 'Salaires', amounts: months(200),
+      payrollCenterLink: { center: 'F&B' } },
+  ];
+  try {
+    app.resetStateIndexes();
+    const sheets = new Map([
+      ['Food & Beverage', [
+        ['Palm Beach Cannes · Matrice import montants — Import Compat 2026'],
+        ['Généré le 01/10/2026'],
+        [],
+        ['Compte 2026', 'Libellé du compte', 'Ligne(s) nommée(s)'].concat(new Array(13).fill('')),
+        ['60101100', 'Achats', 'Boissons, Cave'].concat(months(150)),
+        ['60630100', 'China expense', '(sans nom)'].concat(months(40)),
+        ['64110100', 'Rémunérations', 'Salaires (calculée depuis Payroll)'].concat(months(200)),
+      ]],
+    ]);
+    const parsed = app.parseImportMatrixRows(sheets, companyId);
+    assert.equal(parsed.issues.length, 0, 'l’ancien en-tête doit rester lisible, sans anomalie');
+    assert.deepEqual(parsed.rows.map((r) => r.name), ['', '', ''],
+      'un fichier de l’ancien format n’apporte aucun nom nouveau : ses cellules sont celles de l’export');
+
+    const summary = app.applyImportRows(companyId, parsed.rows, 'overwrite');
+    assert.equal(summary.renamed, 0, 'un aller-retour sans modification ne doit renommer aucune dépense');
+    assert.equal(summary.created, 0, 'ni créer de ligne');
+    assert.equal(summary.skippedComputed, 1, 'la ligne calculée (Payroll) doit rester ignorée, comme avant');
+    assert.deepEqual(app.state.lines.filter((l) => l.companyId === companyId).map((l) => l.name),
+      ['Boissons', 'Cave', '', 'Salaires'], 'aucun nom ne doit changer');
+    // Les montants du fichier ne sont pas écrits sur la ligne calculée : elle
+    // reste pilotée par Payroll (ici recalculée à 0, cette société de test
+    // n'ayant aucun collaborateur — c'est bien la preuve que l'import n'y a
+    // pas touché).
+    assert.notDeepEqual(app.state.lines.find((l) => l.id === 'compat_l4').amounts, months(200),
+      'le montant du fichier ne doit jamais être écrit sur une ligne calculée');
+    assert.deepEqual(app.state.lines.find((l) => l.id === 'compat_l3').amounts, months(40),
+      'la ligne sans nom doit retrouver son propre montant, sans être nommée de force');
+    // Comportement inchangé (antérieur au 05/10/2026) : sur un compte porté
+    // par deux dépenses, le fichier ne transporte qu'un total, qui atterrit en
+    // mode « écraser » sur la première ligne. C'est la raison d'être de la
+    // fenêtre additionner/écraser — et de la possibilité, désormais, d'écrire
+    // une ligne par nom dans le fichier.
+    assert.deepEqual(app.state.lines.find((l) => l.id === 'compat_l1').amounts, months(150),
+      'le total du compte atterrit sur la première dépense, comme avant');
+    assert.deepEqual(app.state.lines.find((l) => l.id === 'compat_l2').amounts, months(50),
+      'la seconde dépense du compte n’est pas touchée');
+  } finally {
+    app.state.companies = savedCompanies;
+    app.state.lines = savedLines;
+    app.resetStateIndexes();
+    app.render();
+  }
+});
+
 check('detectImportConflicts / applyImportedAccountAmounts : additionner ou écraser une valeur déjà saisie', () => {
   const companyId = 'imp_conflict';
   const savedLines = app.state.lines.slice();
@@ -15655,7 +15726,7 @@ check('applyImportedAccountAmounts : la colonne C devient le nom de la dépense 
   ]);
   app.state.lines = [
     { id: 'nom_l1', companyId: companyId, account: '60101100', name: 'Boissons', amounts: months(100) },
-    { id: 'nom_l2', companyId: companyId, account: '60104100', name: '', amounts: months(40) },
+    { id: 'nom_l2', companyId: companyId, account: '60630100', name: '', amounts: months(40) },
   ];
   try {
     app.resetStateIndexes();
@@ -15670,7 +15741,7 @@ check('applyImportedAccountAmounts : la colonne C devient le nom de la dépense 
     assert.equal(rejected.length, 0, 'une ligne importée nommée doit entrer dans le budget, pas être rejetée');
 
     // 2. Une ligne existante restée sans nom se fait nommer depuis Excel.
-    const named = app.applyImportedAccountAmounts(companyId, '60104100', months(60), 'overwrite', 'Nappage', true);
+    const named = app.applyImportedAccountAmounts(companyId, '60630100', months(60), 'overwrite', 'Nappage', true);
     assert.equal(named.status, 'updated');
     assert.equal(named.renamed, true, 'le changement de nom doit être signalé pour le compte-rendu');
     assert.equal(app.state.lines.find((l) => l.id === 'nom_l2').name, 'Nappage',
@@ -15700,11 +15771,11 @@ check('applyImportedAccountAmounts : la colonne C devient le nom de la dépense 
 
     // 6. Une ligne nommée mais sans montant est créée quand même : le nom est
     //    une intention explicite (la saisie manquante est signalée ailleurs).
-    const zero = app.applyImportedAccountAmounts(companyId, '60105100', months(0), 'overwrite', 'Prévu, non chiffré', true);
+    const zero = app.applyImportedAccountAmounts(companyId, '60631100', months(0), 'overwrite', 'Prévu non chiffré', true);
     assert.equal(zero.status, 'created');
     // Sans nom, en revanche, rien n’est créé : la matrice propose TOUS les
     // comptes du plan, la plupart à zéro et sans nom.
-    const empty = app.applyImportedAccountAmounts(companyId, '60106100', months(0), 'overwrite', '', true);
+    const empty = app.applyImportedAccountAmounts(companyId, '60632100', months(0), 'overwrite', '', true);
     assert.equal(empty.status, 'skipped-empty', 'un compte ni nommé ni chiffré ne doit rien créer');
   } finally {
     app.state.companies = savedCompanies;
