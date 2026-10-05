@@ -77,6 +77,73 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### La colonne C de la matrice d'import devient le nom de la dépense (05/10/2026)
+
+Alexis : « la colonne C […] est indispensable dans l'import des charges, sans
+elle la charge n'est pas prise en compte. Le problème […] c'est que quand je
+rentre quelque chose dans cette colonne, le nom de la dépense dans saisie ne
+suit pas. Le but c'est que la colonne C retourne une fois l'import fait dans
+le nom de la dépense dans saisie. »
+
+Les deux constats étaient exacts, et liés :
+
+- `summarize` **rejette toute ligne sans nom** (« chaque euro passe par une
+  ligne nommée ») : une charge importée sans nom n'entrait ni dans le GOP, ni
+  dans l'EBITDA, ni dans aucun centre — elle n'apparaissait que dans la liste
+  des lignes refusées du P&L ;
+- or `applyImportedAccountAmounts` créait ses lignes avec `name: ''` et
+  `parseImportMatrixRows` ne lisait que la colonne A (le compte) et les douze
+  colonnes de mois. La colonne C n'était **jamais lue** : purement
+  informative à l'export, ignorée au retour.
+
+Ce qui change :
+
+- la colonne C s'intitule désormais **« Nom de la dépense »** (et non plus
+  « Ligne(s) nommée(s) ») : ce n'est plus une description de l'existant mais
+  le nom qui sera écrit dans la Saisie. Le sous-titre du classeur et l'onglet
+  Import le disent, et l'étiquette est écrite par une seule fonction
+  (`importMatrixNamesLabel`), relue à l'import ;
+- `parseImportMatrixRows` lit la colonne C. Une ligne du fichier est
+  identifiée par **compte + nom** : deux noms différents sur un même compte
+  restent deux dépenses (au lieu d'être cumulées), deux lignes au même nom
+  (à la casse et aux espaces près) se cumulent ;
+- `importTargetLine` — une seule règle, utilisée pour annoncer les conflits
+  comme pour écrire : même nom qu'une ligne existante → c'est elle, sans
+  renommage ; nom inédit sur la ligne **unique** du compte dans le fichier
+  (la forme même de la matrice téléchargée) → la dépense est **renommée**
+  (jamais dédoublée : les montants compteraient deux fois) ; nom inédit sur
+  un compte éclaté en plusieurs lignes du fichier → nouvelle dépense, créée
+  à côté des autres ;
+- un **aller-retour reste neutre** : `importMatrixRowName` rend « rien de
+  neuf » quand la cellule est vide ou recopiée telle quelle de l'export.
+  Sans cela, un compte portant deux dépenses (colonne C
+  « Boissons, Cave ») aurait vu sa première ligne rebaptisée
+  « Boissons, Cave » au moindre réimport. Les mentions que seul l'export
+  ajoute — « (calculée …) », « (sans nom) » — ne sont pas des noms ;
+- une ligne existante restée **sans nom** (créée par un import précédent) se
+  fait donc nommer depuis Excel : c'est la sortie de secours pour les charges
+  déjà importées qui ne comptaient pas ;
+- une ligne **nommée mais sans aucun montant** est créée quand même (le nom
+  est une intention explicite ; les contrôles de cohérence signalent ensuite
+  la saisie manquante). Sans nom **et** sans montant, rien n'est créé : la
+  matrice propose tous les comptes du plan, la plupart vides ;
+- un renommage n'est jamais silencieux : le compte-rendu de l'import annonce
+  « N ligne(s) renommée(s) d'après la colonne « Nom de la dépense » ».
+
+Les lignes calculées (Payroll, CA, taux, indicateur) restent intouchables
+depuis Excel, nom compris, et le périmètre de centres de coûts
+(`importAllowsAccount`) s'applique comme avant.
+
+Contrôles ajoutés dans `check-budget-app.mjs` (532 au total) : la colonne C
+ne renomme que si elle apporte un nom (aller-retour neutre, casse, mentions
+de l'export) ; deux noms sur un même compte donnent deux dépenses ; le nom
+créé/renommé arrive bien dans la Saisie **et** la charge n'est plus rejetée
+par `summarize` ; sur le **vrai classeur téléchargé**, un nom écrit en
+colonne C devient le nom de la dépense après import (c'est lui qui fixe la
+position de la colonne) ; et l'import d'une société à l'autre transporte
+désormais les noms, mention « (calculée …) » retirée. En neutralisant la
+lecture de la colonne C, quatre contrôles échouent.
+
 ### Adresses de courrier récupérées dans l'annuaire LDAP (04/10/2026)
 
 Alexis : « peux-tu récupérer/synchroniser les adresses mails des utilisateurs
@@ -11150,7 +11217,7 @@ const app = await importApp(
     'export { setPriorActual, priorActualOf, pastePriorActualsFromCell };\n' +
     'export { importMatrixAccounts, importMatrixSheets, importMatrixSheet, downloadImportMatrix, viewImport, computedLineReason,\n' +
     '  parseImportMatrixRows, detectImportConflicts, applyImportedAccountAmounts, applyImportRows,\n' +
-    '  importAllowsAccount,\n' +
+    '  importAllowsAccount, importMatrixNamesLabel, importMatrixRowName, importTargetLine, sameLineName,\n' +
     '  importAccountMatrixFile, confirmPendingImport, cancelPendingImport };\n' +
     'export function __getPendingImport() { return pendingImport; }\n' +
     'export function __getSetupWizard() { return setupWizard; }\n' +
@@ -25866,7 +25933,7 @@ check('computedLineReason : identifie la nature d’une ligne calculée, vide si
     'un `driverLink` résiduel ne doit plus faire passer une ligne pour calculée');
 });
 
-check('importMatrixSheet : Compte, Libellé, Ligne(s) nommée(s), puis les 12 mois, puis Total ; comptes calculés signalés, comptes non budgétés inclus à 0', () => {
+check('importMatrixSheet : Compte, Libellé, Nom de la dépense, puis les 12 mois, puis Total ; comptes calculés signalés, comptes non budgétés inclus à 0', () => {
   const company = { id: 'sh_c', name: 'Sheet Test', currency: 'EUR', year: 2026 };
   const savedCompanies = app.state.companies.slice();
   const savedLines = app.state.lines.slice();
@@ -25887,10 +25954,10 @@ check('importMatrixSheet : Compte, Libellé, Ligne(s) nommée(s), puis les 12 mo
     const flat = sheet.rows.map((row) => row.map((cell) => (cell && typeof cell === 'object' ? cell.v : cell)));
 
     const headerRow = flat[3];
-    assert.deepEqual(headerRow.slice(0, 3), ['Compte 2026', 'Libellé du compte', 'Ligne(s) nommée(s)'],
-      'les trois colonnes d’identification doivent ouvrir le tableau');
+    assert.deepEqual(headerRow.slice(0, 3), ['Compte 2026', 'Libellé du compte', 'Nom de la dépense'],
+      'les trois colonnes d’identification doivent ouvrir le tableau, la colonne C portant le nom repris dans la Saisie');
     assert.equal(headerRow[headerRow.length - 1], 'Total', 'le total doit fermer le tableau, après les 12 mois');
-    assert.equal(headerRow.length, 3 + 12 + 1, 'compte, libellé, ligne(s) nommée(s), 12 mois, total = 16 colonnes');
+    assert.equal(headerRow.length, 3 + 12 + 1, 'compte, libellé, nom de la dépense, 12 mois, total = 16 colonnes');
 
     // Deux lignes nommées (Boissons + Cave) partagent le même compte : leurs
     // montants doivent se cumuler sur une seule ligne de la matrice.
@@ -25900,7 +25967,7 @@ check('importMatrixSheet : Compte, Libellé, Ligne(s) nommée(s), puis les 12 mo
       'les montants des deux lignes nommées doivent se cumuler mois par mois');
     assert.equal(boissonsRow[15], 6050, 'le total (dernière colonne) doit être la somme des 12 mois cumulés');
     assert.ok(boissonsRow[2].includes('Boissons') && boissonsRow[2].includes('Cave'),
-      'les deux noms de ligne doivent apparaître dans « Ligne(s) nommée(s) »');
+      'les deux noms de ligne doivent apparaître dans « Nom de la dépense »');
 
     // Une plage janvier→décembre doit pouvoir se copier d’un bloc, sans le
     // compte ni le total : les mois ne doivent pas être séparés par le total.
@@ -26008,7 +26075,7 @@ await checkAsync('Onglet Import : le plan comptable téléchargé se relit, onze
 
     const produitsSheet = workbook.get('Produits');
     const produitsFlat = produitsSheet.map((row) => row.join('|')).join('\n');
-    assert.ok(produitsFlat.includes('Compte 2026|Libellé du compte|Ligne(s) nommée(s)'),
+    assert.ok(produitsFlat.includes('Compte 2026|Libellé du compte|Nom de la dépense'),
       'en-tête d’identification absent ou dans le désordre');
     assert.ok(produitsFlat.includes('CA Food'), 'la ligne "CA Food" doit figurer dans la feuille Produits');
     assert.ok(produitsFlat.includes('1000') || produitsFlat.includes('1 000'),
@@ -26071,6 +26138,68 @@ await checkAsync('Onglet Import : le fichier téléchargé se réimporte fidèle
     assert.ok(salaires, 'le compte 64110100 (calculé chez la source) doit être importé comme ligne normale chez la cible');
     assert.deepEqual(salaires.amounts, months(200),
       'les montants réimportés doivent être identiques à ceux du fichier téléchargé');
+
+    // Le nom voyage avec les montants (05/10/2026) : des lignes créées sans
+    // nom seraient rejetées du budget par `summarize`, donc invisibles dans
+    // le P&L de la société cible. La provenance « (calculée depuis Payroll) »
+    // que l'export ajoute entre parenthèses n'est pas un nom : elle tombe.
+    assert.equal(boissons.name, 'Boissons', 'le nom de la colonne C doit suivre le montant importé');
+    assert.equal(salaires.name, 'Salaires',
+      'la mention de provenance ajoutée par l’export ne doit pas faire partie du nom');
+    assert.equal(app.__summarize(created).rejected.length, 0,
+      'aucune ligne réimportée ne doit être rejetée du budget faute de nom');
+  } finally {
+    app.state.companies = savedCompanies;
+    app.state.activeCompany = savedActive;
+    app.state.lines = savedLines;
+    app.resetStateIndexes();
+    app.render();
+  }
+});
+
+await checkAsync('Onglet Import : un nom saisi en colonne C du fichier téléchargé devient le nom de la dépense', async () => {
+  // Contrôle de bout en bout sur le VRAI classeur produit par
+  // `downloadImportMatrix` : c'est lui qui fixe la position de la colonne C,
+  // et tout le défaut du 05/10/2026 tenait à ce qu'elle ne soit pas lue.
+  const company = { id: 'imp_colc', name: 'Import Colonne C', currency: 'EUR', year: 2026 };
+  const savedCompanies = app.state.companies.slice();
+  const savedActive = app.state.activeCompany;
+  const savedLines = app.state.lines.slice();
+  app.state.companies = [company];
+  app.state.activeCompany = company.id;
+  app.state.lines = [];
+  app.resetStateIndexes();
+  dom.blobs.length = 0;
+  try {
+    app.downloadImportMatrix();
+    const buffer = Buffer.from(await dom.blobs[0].arrayBuffer());
+    const temp = join(tmpdir(), 'budget-import-colonne-c-check.xlsx');
+    writeFileSync(temp, buffer);
+    const workbook = readWorkbook(temp);
+    rmSync(temp, { force: true });
+
+    // On remplit le classeur comme Alexis le fait dans Excel : un nom en
+    // colonne C et douze montants, sur un compte encore vide.
+    const fb = workbook.get('Food & Beverage');
+    const line = fb.find((row) => row[0] === '60101100');
+    assert.ok(line, 'le compte 60101100 doit figurer dans la feuille Food & Beverage');
+    line[2] = 'Boissons fraîches';
+    for (let m = 0; m < 12; m++) line[3 + m] = 250;
+
+    const parsed = app.parseImportMatrixRows(workbook, company.id);
+    const imported = parsed.rows.find((r) => r.account === '60101100');
+    assert.ok(imported, 'la ligne remplie doit être reconnue');
+    assert.equal(imported.name, 'Boissons fraîches',
+      'le nom doit être lu en colonne C du fichier réellement produit, pas ailleurs');
+
+    app.applyImportRows(company.id, parsed.rows, 'overwrite');
+    const created = app.state.lines.filter((l) => l.companyId === company.id && l.account === '60101100');
+    assert.equal(created.length, 1, 'une seule dépense doit être créée pour ce compte');
+    assert.equal(created[0].name, 'Boissons fraîches',
+      'c’est ce nom que la Saisie doit afficher après import');
+    assert.deepEqual(created[0].amounts, months(250));
+    assert.equal(app.__summarize(app.state.lines.filter((l) => l.companyId === company.id)).rejected.length, 0,
+      'la charge importée doit entrer dans le budget, pas être rejetée « ligne sans nom »');
   } finally {
     app.state.companies = savedCompanies;
     app.state.activeCompany = savedActive;
@@ -26124,6 +26253,186 @@ check('detectImportConflicts / applyImportedAccountAmounts : additionner ou écr
     assert.equal(emptyResult.status, 'skipped-empty', 'un compte sans ligne et sans montant importé ne doit rien créer');
   } finally {
     app.state.lines = savedLines;
+    app.resetStateIndexes();
+    app.render();
+  }
+});
+
+check('importMatrixRowName : la colonne C ne renomme que si elle apporte un nom — les mentions de l’export sont ignorées', () => {
+  // La colonne C est écrite par l’export ET relue à l’import : une cellule
+  // recopiée telle quelle ne doit JAMAIS renommer une dépense, sinon un
+  // simple aller-retour (télécharger / réimporter) rebaptiserait une ligne
+  // « Boissons » en « Boissons, Cave » — l’étiquette d’un compte qui porte
+  // deux dépenses, pas le nom de l’une d’elles.
+  assert.equal(app.importMatrixRowName('', 'Boissons'), '', 'une cellule vide n’apporte aucun nom');
+  assert.equal(app.importMatrixRowName(null, ''), '', 'une cellule absente non plus');
+  assert.equal(app.importMatrixRowName('Boissons', 'Boissons'), '',
+    'le nom déjà écrit par l’export ne renomme rien');
+  assert.equal(app.importMatrixRowName('BOISSONS ', 'Boissons'), '',
+    'la casse et les espaces ne font pas un nom différent');
+  assert.equal(app.importMatrixRowName('Boissons, Cave', 'Boissons, Cave'), '',
+    'l’étiquette d’un compte à plusieurs dépenses ne doit jamais devenir le nom de l’une d’elles');
+  assert.equal(app.importMatrixRowName('(sans nom)', '(sans nom)'), '',
+    'le marqueur d’une ligne pas encore nommée n’est pas un nom');
+  assert.equal(app.importMatrixRowName('  Boissons   fraîches ', 'Boissons'), 'Boissons fraîches',
+    'un nom saisi dans Excel est retenu, espaces normalisés');
+  assert.equal(app.importMatrixRowName('Électricité (calculée, liée à un taux)', ''), 'Électricité',
+    'la provenance ajoutée par l’export ne fait pas partie du nom');
+  assert.equal(app.importMatrixRowName('Eau', ''), 'Eau',
+    'sans étiquette de référence (fichier d’une autre origine), le nom saisi est pris tel quel');
+});
+
+check('parseImportMatrixRows : la colonne C donne le nom de la dépense, et deux noms sur un même compte restent deux dépenses', () => {
+  const companyId = 'imp_noms_co';
+  const savedCompanies = app.state.companies.slice();
+  const savedLines = app.state.lines.slice();
+  app.state.companies = app.state.companies.concat([
+    { id: companyId, name: 'Import Noms', currency: 'EUR', year: 2026, groupId: null },
+  ]);
+  app.state.lines = [];
+  try {
+    app.resetStateIndexes();
+    const sheets = new Map([
+      ['Food & Beverage', [
+        ['Compte 2026', 'Libellé du compte', 'Nom de la dépense'].concat(new Array(13).fill('')),
+        ['60101100', 'Achats', 'Boissons fraîches'].concat(months(10)),
+        ['60101100', 'Achats', 'Cave'].concat(months(5)),
+        ['60101100', 'Achats', 'CAVE'].concat(months(1)),   // même dépense : se cumule à la précédente
+        ['60103100', 'Achats', ''].concat(months(7)),       // sans nom : comportement d’avant
+      ]],
+    ]);
+    const parsed = app.parseImportMatrixRows(sheets, companyId);
+
+    assert.equal(parsed.rows.length, 3,
+      'deux dépenses pour 60101100 (la troisième ligne portant le même nom se cumule) + le compte sans nom');
+    const fraiches = parsed.rows.find((r) => r.name === 'Boissons fraîches');
+    const cave = parsed.rows.find((r) => r.name === 'Cave');
+    assert.ok(fraiches && cave, 'chaque nom de la colonne C doit donner sa propre ligne à importer');
+    assert.deepEqual(cave.amounts, months(6),
+      'deux lignes du fichier au même nom (à la casse près) doivent cumuler leurs montants');
+    assert.equal(fraiches.soleRow, false,
+      'un compte éclaté en plusieurs lignes du fichier ne doit pas être traité comme sa ligne unique');
+    const sansNom = parsed.rows.find((r) => r.account === '60103100');
+    assert.equal(sansNom.name, '', 'une colonne C vide reste sans nom, comme avant');
+    assert.equal(sansNom.soleRow, true, 'ce compte n’a qu’une ligne dans le fichier');
+  } finally {
+    app.state.companies = savedCompanies;
+    app.state.lines = savedLines;
+    app.resetStateIndexes();
+    app.render();
+  }
+});
+
+check('applyImportedAccountAmounts : la colonne C devient le nom de la dépense dans la Saisie — sans elle la charge est rejetée du budget', () => {
+  // LE défaut corrigé le 05/10/2026 : l’import créait ses lignes avec
+  // `name: ''`, et `summarize` rejette toute ligne sans nom (« chaque euro
+  // passe par une ligne nommée »). La charge importée n’apparaissait donc
+  // NULLE PART dans le budget, alors que la colonne C était remplie.
+  const companyId = 'imp_nom_apply';
+  const savedCompanies = app.state.companies.slice();
+  const savedLines = app.state.lines.slice();
+  app.state.companies = app.state.companies.concat([
+    { id: companyId, name: 'Import Nom Apply', currency: 'EUR', year: 2026, groupId: null },
+  ]);
+  app.state.lines = [
+    { id: 'nom_l1', companyId: companyId, account: '60101100', name: 'Boissons', amounts: months(100) },
+    { id: 'nom_l2', companyId: companyId, account: '60104100', name: '', amounts: months(40) },
+  ];
+  try {
+    app.resetStateIndexes();
+
+    // 1. Création : le nom du fichier est écrit sur la ligne créée.
+    const created = app.applyImportedAccountAmounts(companyId, '60103100', months(30), 'overwrite', 'Fleurs', true);
+    assert.equal(created.status, 'created');
+    const fleurs = app.state.lines.find((l) => l.companyId === companyId && l.account === '60103100');
+    assert.equal(fleurs.name, 'Fleurs', 'la ligne créée doit porter le nom de la colonne C');
+    const rejected = app.__summarize(app.state.lines.filter((l) => l.companyId === companyId))
+      .rejected.filter((r) => r.line.id === fleurs.id);
+    assert.equal(rejected.length, 0, 'une ligne importée nommée doit entrer dans le budget, pas être rejetée');
+
+    // 2. Une ligne existante restée sans nom se fait nommer depuis Excel.
+    const named = app.applyImportedAccountAmounts(companyId, '60104100', months(60), 'overwrite', 'Nappage', true);
+    assert.equal(named.status, 'updated');
+    assert.equal(named.renamed, true, 'le changement de nom doit être signalé pour le compte-rendu');
+    assert.equal(app.state.lines.find((l) => l.id === 'nom_l2').name, 'Nappage',
+      'la colonne C doit nommer une ligne créée sans nom par un import précédent');
+
+    // 3. Le même nom ne compte pas comme un renommage (aller-retour neutre).
+    const same = app.applyImportedAccountAmounts(companyId, '60101100', months(100), 'overwrite', 'Boissons', true);
+    assert.equal(same.renamed, false, 'réimporter le nom déjà en place ne doit pas être annoncé comme un renommage');
+
+    // 4. Nom inédit sur la ligne unique du compte : la dépense est renommée,
+    //    jamais dédoublée — sinon les montants compteraient deux fois.
+    const renamed = app.applyImportedAccountAmounts(companyId, '60101100', months(120), 'overwrite', 'Boissons fraîches', true);
+    assert.equal(renamed.status, 'updated');
+    assert.equal(renamed.renamed, true);
+    assert.equal(app.state.lines.find((l) => l.id === 'nom_l1').name, 'Boissons fraîches');
+    assert.equal(app.state.lines.filter((l) => l.companyId === companyId && l.account === '60101100').length, 1,
+      'la dépense doit être renommée, pas dédoublée');
+
+    // 5. Nom inédit sur un compte éclaté en plusieurs lignes du fichier :
+    //    c’est une dépense de plus, à côté de celle qui existe.
+    const second = app.applyImportedAccountAmounts(companyId, '60101100', months(15), 'overwrite', 'Cave', false);
+    assert.equal(second.status, 'created', 'un nom nouveau sur un compte à plusieurs lignes doit créer la dépense');
+    const sameAccount = app.state.lines.filter((l) => l.companyId === companyId && l.account === '60101100');
+    assert.equal(sameAccount.length, 2, 'les deux dépenses du compte doivent coexister');
+    assert.deepEqual(sameAccount.find((l) => l.name === 'Boissons fraîches').amounts, months(120),
+      'la dépense déjà en place ne doit pas être touchée par celle qu’on ajoute');
+
+    // 6. Une ligne nommée mais sans montant est créée quand même : le nom est
+    //    une intention explicite (la saisie manquante est signalée ailleurs).
+    const zero = app.applyImportedAccountAmounts(companyId, '60105100', months(0), 'overwrite', 'Prévu, non chiffré', true);
+    assert.equal(zero.status, 'created');
+    // Sans nom, en revanche, rien n’est créé : la matrice propose TOUS les
+    // comptes du plan, la plupart à zéro et sans nom.
+    const empty = app.applyImportedAccountAmounts(companyId, '60106100', months(0), 'overwrite', '', true);
+    assert.equal(empty.status, 'skipped-empty', 'un compte ni nommé ni chiffré ne doit rien créer');
+  } finally {
+    app.state.companies = savedCompanies;
+    app.state.lines = savedLines;
+    app.resetStateIndexes();
+    app.render();
+  }
+});
+
+check('Import de bout en bout : le nom saisi en colonne C se retrouve dans la Saisie, et le renommage est annoncé', () => {
+  const companyId = 'imp_bout_en_bout';
+  const savedCompanies = app.state.companies.slice();
+  const savedLines = app.state.lines.slice();
+  const savedActive = app.state.activeCompany;
+  app.state.companies = app.state.companies.concat([
+    { id: companyId, name: 'Import Bout', currency: 'EUR', year: 2026, groupId: null },
+  ]);
+  app.state.lines = [
+    { id: 'bout_l1', companyId: companyId, account: '60101100', name: 'Boissons', amounts: months(100) },
+  ];
+  app.state.activeCompany = companyId;
+  try {
+    app.resetStateIndexes();
+    const sheets = new Map([
+      ['Food & Beverage', [
+        ['Compte 2026', 'Libellé du compte', 'Nom de la dépense'].concat(new Array(13).fill('')),
+        ['60101100', 'Achats', 'Boissons fraîches'].concat(months(100)),
+        ['60103100', 'Achats', 'Fleurs'].concat(months(20)),
+      ]],
+    ]);
+    const parsed = app.parseImportMatrixRows(sheets, companyId);
+    const summary = app.applyImportRows(companyId, parsed.rows, 'overwrite');
+
+    assert.equal(summary.created, 1, 'la dépense « Fleurs » doit être créée');
+    assert.equal(summary.renamed, 1, 'le renommage de « Boissons » doit être compté');
+    const lines = app.state.lines.filter((l) => l.companyId === companyId);
+    assert.deepEqual(lines.map((l) => l.name).sort(), ['Boissons fraîches', 'Fleurs'],
+      'les noms de la colonne C doivent être ceux de la Saisie après import');
+    assert.equal(app.__summarize(lines).rejected.length, 0,
+      'aucune ligne importée ne doit être rejetée faute de nom');
+
+    const message = app.importSummaryMessage('matrice.xlsx', summary, [], []);
+    assert.ok(message.includes('renommée(s)'), 'le compte-rendu doit annoncer le renommage, jamais silencieux');
+  } finally {
+    app.state.companies = savedCompanies;
+    app.state.lines = savedLines;
+    app.state.activeCompany = savedActive;
     app.resetStateIndexes();
     app.render();
   }
@@ -28211,7 +28520,7 @@ check('parseImportMatrixRows : les lignes de titre et l’en-tête du fichier t�
         ['Matrice import montants — Import Header 2026'],
         ['Produits'],
         [],
-        ['Compte 2026', 'Libellé du compte', 'Ligne(s) nommée(s)'].concat(new Array(13).fill('')),
+        ['Compte 2026', 'Libellé du compte', 'Nom de la dépense'].concat(new Array(13).fill('')),
         ['60101100', 'Boissons', ''].concat(amounts12),
         ['ABC12345', 'Ligne foireuse', ''].concat(amounts12),
       ]],

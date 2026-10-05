@@ -3393,7 +3393,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-04.5';
+const APP_BUILD = '2026-10-05.1';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -6074,7 +6074,7 @@ const HELP_SECTIONS = [
   {
     title: 'Onglet Import',
     items: [
-      ['Télécharger la matrice import montants (Excel)', 'Une feuille par centre de coûts de la société active (Produits inclus), une ligne par compte du plan — budgété ou non — et douze colonnes de mois, prêtes à remplir hors ligne.'],
+      ['Télécharger la matrice import montants (Excel)', 'Une feuille par centre de coûts de la société active (Produits inclus), une ligne par compte du plan — budgété ou non — et douze colonnes de mois, prêtes à remplir hors ligne. La colonne C « Nom de la dépense » devient le nom de la ligne dans la Saisie : sans elle, la charge n’entre pas dans le budget.'],
       ['Coller le résultat dans la Saisie', 'Sélectionner la plage janvier à décembre d’une ligne dans Excel, la copier, puis coller (Ctrl + V) dans la case de janvier du compte correspondant en Saisie.'],
       ['Importer un fichier rempli (.xlsx)', 'Réimporte directement le classeur rempli : chaque compte met à jour sa ligne (ou en crée une nouvelle) dans la société active, sans repasser par un copier-coller.'],
       ['Additionner / Écraser', 'Si des montants existent déjà pour certains comptes, une fenêtre demande s’il faut les additionner aux valeurs importées ou les remplacer.'],
@@ -24259,6 +24259,77 @@ function importMatrixAccounts(companyId) {
 }
 
 /**
+ * Colonne C de la matrice : le nom de la dépense, celui-là même que la
+ * Saisie affiche. Plusieurs lignes nommées peuvent porter le même compte —
+ * leurs noms sont alors listés dans la même cellule — et un compte porté
+ * par une ligne calculée ajoute la raison entre parenthèses.
+ *
+ * Écrite ici ET relue à l'import (`importMatrixRowName`) : c'est la même
+ * étiquette des deux côtés, ce qui permet de reconnaître une cellule
+ * laissée telle quelle (elle ne renomme alors rien) d'un nom saisi dans
+ * Excel (il devient le nom de la dépense dans la Saisie).
+ */
+function importMatrixNamesLabel(row) {
+  return row.reason
+    ? (row.names.length ? row.names.join(', ') + ' (' + row.reason + ')' : '(' + row.reason + ')')
+    : row.names.join(', ');
+}
+
+/** Nom de dépense ramené à sa forme comparable : espaces normalisés, casse ignorée. */
+function normalizedLineName(value) {
+  return String(value == null ? '' : value).replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+/** Deux noms désignent-ils la même dépense ? Un espace ou une majuscule ne font pas une autre ligne. */
+function sameLineName(a, b) {
+  return normalizedLineName(a) === normalizedLineName(b);
+}
+
+/**
+ * Étiquette que l'export écrirait aujourd'hui en colonne C, compte par
+ * compte. Sert de point de comparaison à l'import : une cellule identique à
+ * ce que la matrice avait écrit n'apporte aucun nom nouveau.
+ */
+function importMatrixNamesByAccount(companyId) {
+  const linesByAccount = new Map();
+  for (const line of linesOf(companyId)) {
+    let bucket = linesByAccount.get(line.account);
+    if (!bucket) { bucket = []; linesByAccount.set(line.account, bucket); }
+    bucket.push(line);
+  }
+  const labels = new Map();
+  for (const [account, lines] of linesByAccount.entries()) {
+    labels.set(account, importMatrixNamesLabel({
+      names: lines.map(function (l) { return l.name || '(sans nom)'; }),
+      reason: Array.from(new Set(lines.map(computedLineReason).filter(Boolean))).join(' / ')
+    }));
+  }
+  return labels;
+}
+
+/**
+ * Nom de la dépense lu en colonne C d'une ligne du fichier importé.
+ *
+ * Rend '' — « rien de neuf » — dans les deux seuls cas où la cellule ne
+ * porte pas une intention de l'utilisateur : vide, ou recopiée telle quelle
+ * de l'export (`exportedLabel`, qui peut lister plusieurs noms séparés par
+ * des virgules, sans qu'aucune dépense ne s'appelle ainsi). Sinon le texte
+ * saisi est retenu, débarrassé des mentions que seul l'export ajoute : le
+ * « (calculée …) » final et le marqueur « (sans nom) » d'une ligne pas
+ * encore nommée.
+ */
+function importMatrixRowName(raw, exportedLabel) {
+  let text = String(raw == null ? '' : raw).replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  if (exportedLabel && sameLineName(text, exportedLabel)) return '';
+  text = text.replace(/\(calcul[ée]e[^)]*\)\s*$/i, '').trim();
+  return text.split(/\s*,\s*/)
+    .filter(function (part) { return part && normalizedLineName(part) !== '(sans nom)'; })
+    .join(', ')
+    .trim();
+}
+
+/**
  * Feuille « plan comptable » pour une section (Produits, un centre de
  * coûts, ou les charges sans centre) : une ligne par compte, douze
  * colonnes de mois juste après l'identification (avant le total, pour que
@@ -24267,9 +24338,16 @@ function importMatrixAccounts(companyId) {
  * indicateur, Payroll, CA jour par jour) est signalé entre parenthèses : le
  * modifier dans Excel n'aurait aucun effet, le montant est recalculé par
  * l'application.
+ *
+ * La colonne C est en-têtée « Nom de la dépense » depuis le 05/10/2026 :
+ * elle ne décrit plus seulement l'existant, elle est reprise à l'import
+ * comme nom de la ligne dans la Saisie (Alexis : « le but c'est que la
+ * colonne C retourne une fois l'import fait dans le nom de la dépense dans
+ * saisie »). Sans nom, une charge est rejetée du budget (`summarize`), donc
+ * la remplir est indispensable pour qu'elle compte.
  */
 function importMatrixSheet(rows, title, subtitle) {
-  const headers = ['Compte 2026', 'Libellé du compte', 'Ligne(s) nommée(s)'].concat(MONTH_LABELS).concat(['Total']);
+  const headers = ['Compte 2026', 'Libellé du compte', 'Nom de la dépense'].concat(MONTH_LABELS).concat(['Total']);
   const lastCol = columnName(headers.length - 1);
   const headerRowIndex = 3;
 
@@ -24278,9 +24356,7 @@ function importMatrixSheet(rows, title, subtitle) {
   sheetRows.push(headers.map(function (label) { return xc(label, XLSX_STYLE.header); }));
 
   for (const row of rows) {
-    const namesLabel = row.reason
-      ? (row.names.length ? row.names.join(', ') + ' (' + row.reason + ')' : '(' + row.reason + ')')
-      : row.names.join(', ');
+    const namesLabel = importMatrixNamesLabel(row);
     sheetRows.push([
       row.account.account,
       row.account.label,
@@ -24297,7 +24373,7 @@ function importMatrixSheet(rows, title, subtitle) {
   return {
     rows: sheetRows,
     cols: [12, 30, 30].concat(new Array(MONTH_LABELS.length).fill(10)).concat([12]),
-    // Compte / Libellé / Ligne(s) nommée(s) restent visibles ; mois et Total défilent.
+    // Compte / Libellé / Nom de la dépense restent visibles ; mois et Total défilent.
     freeze: { row: headerRowIndex + 1, col: 3 },
     merges: ['A1:' + lastCol + '1', 'A2:' + lastCol + '2']
   };
@@ -24317,7 +24393,9 @@ function importMatrixSheets(companyId) {
   const rows = importMatrixAccounts(companyId);
   const generatedOn = 'Généré le ' + new Date().toLocaleDateString('fr-FR') +
     ' — les comptes déjà portés par une ligne calculée (Payroll, CA, taux, indicateur) sont indiqués ' +
-    'entre parenthèses : inutile de les remplir, ils sont recalculés automatiquement.';
+    'entre parenthèses : inutile de les remplir, ils sont recalculés automatiquement. ' +
+    'La colonne « Nom de la dépense » devient le nom de la ligne dans la Saisie : ' +
+    'une charge sans nom n’est pas prise en compte dans le budget.';
   const sections = [{ id: 'PRODUITS', label: 'Produits' }]
     .concat(COST_CENTERS.map(function (c) { return { id: c.id, label: c.label }; }))
     .concat([{ id: 'SANS_CENTRE', label: 'Charges sans centre' }]);
@@ -24376,11 +24454,17 @@ let pendingImport = null;
  * de compte mal formée. Les montants sont pris dans les 12 colonnes qui
  * suivent l'identification (mêmes positions que `importMatrixSheet`), quelle
  * que soit la feuille : chaque section partage la même trame.
+ *
+ * La colonne C (« Nom de la dépense ») est lue depuis le 05/10/2026 : une
+ * ligne du fichier est donc identifiée par son compte ET par son nom, de
+ * sorte que deux noms différents sur un même compte restent deux dépenses
+ * distinctes au lieu d'être cumulées.
  */
 function parseImportMatrixRows(sheets, companyId) {
   const company = companyById(companyId);
   const index = accountIndexForPlan(company ? company.planId : null);
-  const byAccount = new Map();
+  const exportedNames = importMatrixNamesByAccount(companyId);
+  const byKey = new Map();
   const unknown = new Set();
   // Lignes qui posent un problème (compte illisible ou absent du plan
   // comptable) : Alexis, « pointer la ligne en erreur » — un fichier de
@@ -24412,13 +24496,25 @@ function parseImportMatrixRows(sheets, companyId) {
       }
       const amounts = [];
       for (let m = 0; m < MONTHS; m++) amounts.push(Number(row[3 + m]) || 0);
-      const existing = byAccount.get(raw);
-      if (existing) addInto(existing, amounts); else byAccount.set(raw, amounts);
+      // Colonne C : le nom de la dépense. Deux lignes du fichier qui portent
+      // le même compte sous deux noms différents restent DEUX dépenses — les
+      // cumuler sous un seul nom perdrait la traçabilité exigée (chaque euro
+      // sur une ligne nommée).
+      const name = importMatrixRowName(row[2], exportedNames.get(raw));
+      const key = raw + '\n' + normalizedLineName(name);
+      const existing = byKey.get(key);
+      if (existing) addInto(existing.amounts, amounts);
+      else byKey.set(key, { account: raw, name: name, amounts: amounts });
     }
   }
-  const rows = Array.from(byAccount.entries()).map(function (entry) {
-    return { account: entry[0], amounts: entry[1] };
-  });
+  const rows = Array.from(byKey.values());
+  // `soleRow` : ce compte n'a qu'UNE ligne dans tout le fichier — la forme
+  // même de la matrice téléchargée. Un nom inédit y renomme la dépense
+  // existante ; sur un compte éclaté en plusieurs lignes, il en désigne au
+  // contraire une nouvelle (voir `importTargetLine`).
+  const perAccount = new Map();
+  for (const row of rows) perAccount.set(row.account, (perAccount.get(row.account) || 0) + 1);
+  for (const row of rows) row.soleRow = perAccount.get(row.account) === 1;
   return { rows: rows, unknown: Array.from(unknown), issues: issues };
 }
 
@@ -24439,19 +24535,47 @@ function importIssuesSummaryText(issues) {
   return text;
 }
 
+/**
+ * Ligne de la Saisie qu'une ligne du fichier va mettre à jour — `null` si
+ * l'import devra en créer une. Une seule règle, utilisée pour annoncer les
+ * conflits comme pour écrire : le compte annoncé « déjà saisi » est bien
+ * celui qu'on écrase.
+ *
+ * Brut (`rawLinesOf`) : sans quoi un compte d'un centre hors périmètre
+ * semblerait toujours vide, et l'import créerait une ligne en double au lieu
+ * de mettre à jour celle qui existe déjà.
+ *
+ * Le nom (colonne C) choisit la dépense parmi celles du compte :
+ *  - même nom qu'une ligne existante : c'est elle, elle n'est pas renommée ;
+ *  - nom inédit sur la ligne unique du compte dans le fichier (`soleRow`,
+ *    la forme de la matrice téléchargée) : la dépense existante est reprise
+ *    et RENOMMÉE — c'est ce qui permet de nommer depuis Excel une ligne
+ *    créée sans nom par un import précédent ;
+ *  - nom inédit sur un compte éclaté en plusieurs lignes du fichier : une
+ *    nouvelle dépense, à créer à côté des autres.
+ */
+function importTargetLine(companyId, row) {
+  const editable = rawLinesOf(companyId).filter(function (l) {
+    return l.account === row.account && !isComputedLine(l);
+  });
+  if (!editable.length) return null;
+  const name = row && row.name ? String(row.name).trim() : '';
+  if (name) {
+    const named = editable.find(function (l) { return sameLineName(l.name, name); });
+    if (named) return named;
+    if (row.soleRow === false) return null;
+  }
+  return editable[0];
+}
+
 /** Comptes du fichier qui écraseraient une valeur déjà saisie à la main (lignes calculées ignorées). */
 function detectImportConflicts(companyId, rows) {
   return rows.filter(function (row) {
     // Un compte que l'import n'a pas le droit de toucher ne pose aucun
     // conflit : il sera ignoré de toute façon.
     if (!importAllowsAccount(companyId, row.account)) return false;
-    // Brut : sans quoi un compte d'un centre hors périmètre semblerait
-    // toujours vide, et l'import créerait une ligne en double au lieu de
-    // mettre à jour celle qui existe déjà (voir `applyImportedAccountAmounts`).
-    const editable = rawLinesOf(companyId).filter(function (l) {
-      return l.account === row.account && !isComputedLine(l);
-    });
-    return editable.length > 0 && editable.some(function (l) { return total(l.amounts) !== 0; });
+    const target = importTargetLine(companyId, row);
+    return !!target && total(target.amounts) !== 0;
   });
 }
 
@@ -24476,11 +24600,22 @@ function importAllowsAccount(companyId, account) {
 }
 
 /**
- * Applique les montants importés d'UN compte : met à jour sa première ligne
- * saisissable à la main (additionne ou remplace selon `mode`), ou en crée
- * une nouvelle si le compte n'a encore aucune ligne. Un compte qui n'a que
- * des lignes calculées (Payroll, CA, taux, indicateur) est ignoré : ces
- * montants ne se modifient pas depuis Excel.
+ * Applique les montants importés d'UNE ligne du fichier : met à jour la
+ * dépense qu'elle désigne (`importTargetLine` : additionne ou remplace selon
+ * `mode`), ou en crée une nouvelle. Un compte qui n'a que des lignes
+ * calculées (Payroll, CA, taux, indicateur) est ignoré : ces montants ne se
+ * modifient pas depuis Excel.
+ *
+ * `name` est la colonne C — le nom de la dépense dans la Saisie. Il est
+ * écrit sur la ligne créée comme sur la ligne mise à jour : sans nom, une
+ * charge est rejetée du budget par `summarize` (« ligne sans nom »), donc un
+ * import qui n'en reprenait pas créait des charges qui ne comptaient nulle
+ * part (corrigé le 05/10/2026). Une ligne nommée mais sans aucun montant est
+ * créée quand même : le nom est une intention explicite, et les contrôles de
+ * cohérence signalent ensuite la saisie qui manque.
+ *
+ * `soleRow` dit si le fichier n'a qu'une ligne pour ce compte (voir
+ * `importTargetLine`) ; absent, le compte est traité comme tel.
  *
  * Deux refus tiennent aux droits de la personne : un compte hors de son
  * périmètre de centres de coûts, et la création d'une ligne quand la
@@ -24488,40 +24623,43 @@ function importAllowsAccount(companyId, account) {
  * règle que « + ajouter une ligne » dans la Saisie). Chacun est compté et
  * annoncé dans le compte-rendu — aucune ligne n'est écartée en silence.
  */
-function applyImportedAccountAmounts(companyId, account, amounts, mode) {
+function applyImportedAccountAmounts(companyId, account, amounts, mode, name, soleRow) {
   if (!importAllowsAccount(companyId, account)) return { status: 'skipped-center' };
+  const wanted = String(name == null ? '' : name).replace(/\s+/g, ' ').trim();
   const lines = rawLinesOf(companyId).filter(function (l) { return l.account === account; });
-  const editable = lines.find(function (l) { return !isComputedLine(l); });
-  if (editable) {
+  const target = importTargetLine(companyId, { account: account, name: wanted, soleRow: soleRow });
+  if (target) {
+    const renamed = !!wanted && !sameLineName(target.name, wanted);
+    if (renamed) target.name = wanted;
     for (let m = 0; m < MONTHS; m++) {
-      editable.amounts[m] = Math.round(mode === 'add'
-        ? (Number(editable.amounts[m]) || 0) + (Number(amounts[m]) || 0)
+      target.amounts[m] = Math.round(mode === 'add'
+        ? (Number(target.amounts[m]) || 0) + (Number(amounts[m]) || 0)
         : (Number(amounts[m]) || 0));
     }
-    return { status: 'updated' };
+    return { status: 'updated', renamed: renamed };
   }
-  if (lines.length) return { status: 'skipped-computed' };
-  if (!amounts.some(function (v) { return Number(v) !== 0; })) return { status: 'skipped-empty' };
+  if (lines.length && lines.every(isComputedLine)) return { status: 'skipped-computed' };
+  if (!wanted && !amounts.some(function (v) { return Number(v) !== 0; })) return { status: 'skipped-empty' };
   if (!canEditLineStructure()) return { status: 'skipped-structure' };
   state.lines.push({
     id: uid('lig'),
     companyId: companyId,
     account: account,
-    name: '',
+    name: wanted,
     amounts: amounts.map(function (v) { return Math.round(Number(v) || 0); })
   });
-  return { status: 'created' };
+  return { status: 'created', named: !!wanted };
 }
 
 /** Applique tout un lot de lignes importées, dans un seul point d'annulation (Ctrl+Z). */
 function applyImportRows(companyId, rows, mode) {
   captureUndoStep();
-  const summary = { created: 0, updated: 0, skippedComputed: 0, skippedCenter: 0, skippedStructure: 0 };
+  const summary = { created: 0, updated: 0, renamed: 0, skippedComputed: 0, skippedCenter: 0, skippedStructure: 0 };
   logLineAmountChanges('import Excel', companyId, function () {
     for (const row of rows) {
-      const result = applyImportedAccountAmounts(companyId, row.account, row.amounts, mode);
+      const result = applyImportedAccountAmounts(companyId, row.account, row.amounts, mode, row.name, row.soleRow);
       if (result.status === 'created') summary.created++;
-      else if (result.status === 'updated') summary.updated++;
+      else if (result.status === 'updated') { summary.updated++; if (result.renamed) summary.renamed++; }
       else if (result.status === 'skipped-computed') summary.skippedComputed++;
       else if (result.status === 'skipped-center') summary.skippedCenter++;
       else if (result.status === 'skipped-structure') summary.skippedStructure++;
@@ -24536,6 +24674,9 @@ function importSummaryMessage(fileName, summary, unknown, issues) {
   const parts = [];
   if (summary.updated) parts.push(summary.updated + ' compte(s) mis à jour');
   if (summary.created) parts.push(summary.created + ' nouvelle(s) ligne(s) créée(s)');
+  // Un renommage change ce qu'on lit dans la Saisie : il est annoncé, jamais
+  // silencieux (la colonne « Nom de la dépense » fait foi).
+  if (summary.renamed) parts.push(summary.renamed + ' ligne(s) renommée(s) d’après la colonne « Nom de la dépense »');
   if (summary.skippedComputed) parts.push(summary.skippedComputed + ' compte(s) calculé(s) ignoré(s) (Payroll/CA/taux/indicateur)');
   if (summary.skippedCenter) {
     parts.push(summary.skippedCenter + ' compte(s) hors de votre périmètre de centres de coûts ignoré(s)');
@@ -24650,6 +24791,10 @@ function viewImport() {
     'centre de coûts (Produits inclus), une ligne par compte, budgété ou non. Les comptes déjà portés par ' +
     'une ligne calculée (indicateurs, Payroll, CA jour par jour) restent visibles mais signalés entre ' +
     'parenthèses : inutile de les modifier, ils sont recalculés automatiquement.</p>' +
+    '<p style="margin:0 0 12px">La colonne <strong>C « Nom de la dépense »</strong> est le nom de la ligne ' +
+    'dans la Saisie : ce qui y est écrit est repris à l’import, sur la ligne créée comme sur celle mise à ' +
+    'jour. Elle est indispensable — une charge sans nom n’entre pas dans le budget. Pour éclater un compte ' +
+    'en plusieurs dépenses, ajouter une ligne par nom, avec le même numéro de compte.</p>' +
     '<p class="muted" style="margin:0 0 16px;font-size:13px">Deux façons de l’utiliser : coller une plage ' +
     'janvier à décembre directement dans la Saisie (Ctrl+V, comme pour un collage de douze mois classique), ' +
     'ou remplir le fichier entier puis le réimporter ici avec le bouton ci-dessous.</p>' +
