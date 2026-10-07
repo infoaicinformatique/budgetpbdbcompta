@@ -1653,6 +1653,17 @@
     font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .07em;
     padding-top: var(--space-2); padding-bottom: var(--space-2);
   }
+  /* La ligne de CA d'un service à montant global (Event) est la seule du
+     bloc « Chiffre d'affaires » qui se saisit : son libellé le dit, pour
+     qu'on ne cherche pas ses couverts dans les blocs du dessus. */
+  /* Un `display: flex` sur la cellule figée serait tentant, mais une
+     `td` cesse alors d'être une cellule de tableau : la colonne perd son
+     alignement et son `position: sticky`. Le rappel est donc un bloc à
+     l'intérieur de la cellule, qui reste une cellule. */
+  .matrix-direct-hint {
+    display: block; font-size: var(--text-xs); font-weight: 400;
+    color: var(--muted); text-transform: none;
+  }
   .matrix-table tr.matrix-total td { background: var(--bg); border-top: 2px solid var(--gold-line); }
   .matrix-table td.total { font-variant-numeric: tabular-nums; }
   .matrix-table .month-input { width: 54px; }
@@ -1692,6 +1703,9 @@
   .matrix-day-service-label {
     grid-column: 1 / -1; font-size: var(--text-sm); font-weight: 600; color: var(--muted);
   }
+  /* Un service à montant global (Event) n'a qu'une case : elle prend les
+     deux colonnes plutôt que de laisser un vide à côté d'elle. */
+  .matrix-day-service label.matrix-day-service-wide { grid-column: 1 / -1; }
   .matrix-day-service label { display: flex; flex-direction: column; gap: var(--space-05); }
   .matrix-day-service label span { font-size: var(--text-xs); color: var(--muted); }
   .matrix-day-service input.month-input {
@@ -3393,7 +3407,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-05.1';
+const APP_BUILD = '2026-10-07.2';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -4990,6 +5004,18 @@ function adoptState(parsed) {
         mergeBreakfastIntoLunch(parsed.serviceMatrix[companyId]);
       }
       parsed.migrations.matrixMidiSoir2026 = true;
+    }
+    /* Migration : le CA Event se saisit en montant global par jour
+       (07/10/2026). Les couverts et le prix moyen déjà saisis sur ce
+       service sont convertis en montant — `couverts × prix moyen`, soit le
+       CA exact qu'ils produisaient — puis effacés. Avant la normalisation,
+       qui n'accepte plus ni couvert ni prix moyen sur un service à montant
+       global et ferait disparaître ce CA sans rien reporter. */
+    if (!parsed.migrations.matrixEventAmount2026) {
+      for (const companyId of Object.keys(parsed.serviceMatrix)) {
+        convertDirectServicesToAmount(parsed.serviceMatrix[companyId]);
+      }
+      parsed.migrations.matrixEventAmount2026 = true;
     }
     for (const companyId of Object.keys(parsed.serviceMatrix)) {
       parsed.serviceMatrix[companyId] = normalizeServiceMatrix(parsed.serviceMatrix[companyId]);
@@ -15059,8 +15085,32 @@ function removeObjective(objectiveId) {
 const MATRIX_SERVICES = [
   { id: 'lunch', label: 'Midi' },
   { id: 'dinner', label: 'Soir' },
-  { id: 'event', label: 'Event' },
+  { id: 'event', label: 'Event', direct: true },
 ];
+
+/**
+ * Services dont le CA se saisit en MONTANT GLOBAL par jour (`direct`), au
+ * lieu de couverts × prix moyen — Alexis, 07/10/2026 : « modifier les deux
+ * options (matrices et au sein de l'application) de saisir du CA event en
+ * montant global par jour au lieu de saisir couverts et Prix moyen. Ex :
+ * 80 000 € directement sans mettre 800 € en PM et 100 couverts ».
+ *
+ * Un événement se facture au forfait : le prix moyen et le nombre de
+ * couverts y étaient une reconstitution après coup, deux chiffres inventés
+ * pour retomber sur le montant connu. Le montant vit donc dans un
+ * troisième dictionnaire de la matrice, `amount` (voir
+ * `normalizeServiceMatrix`), et ces services n'ont plus NI couverts NI
+ * prix moyen : ils ne comptent donc pas dans les couverts, et leur CA est
+ * exclu du ticket moyen, qui resterait sinon un CA divisé par des couverts
+ * qui ne l'ont pas produit (voir `matrixCoversRevenue`).
+ */
+function matrixServiceIsDirect(serviceId) {
+  const service = MATRIX_SERVICES.find(function (s) { return s.id === serviceId; });
+  return !!(service && service.direct);
+}
+
+/** Les services qui se saisissent en couverts × prix moyen (tous sauf Event). */
+const MATRIX_COVER_SERVICES = MATRIX_SERVICES.filter(function (s) { return !s.direct; });
 
 /**
  * Fusionne l'ancien service Breakfast dans le Midi, jour par jour, sans
@@ -15101,6 +15151,49 @@ function mergeBreakfastIntoLunch(entry) {
     } else if (t && !tL && tB) {
       // Ticket sans couverts : rien à pondérer, on garde le ticket saisi.
       t.lunch = tB;
+    }
+  }
+  return entry;
+}
+
+/**
+ * Reprend les couverts × prix moyen déjà saisis sur un service devenu
+ * « montant global » (Event) et les pose comme montant du jour, à l'euro
+ * près : `amount = couverts × prix moyen`. Les couverts et le prix moyen de
+ * ce service sont ensuite effacés — ils n'ont plus de case où se saisir, et
+ * `normalizeServiceMatrix` les écarterait de toute façon.
+ *
+ * Travaille sur l'entrée BRUTE d'une société, avant la normalisation (même
+ * schéma que `mergeBreakfastIntoLunch`, qui tourne juste avant) : sans
+ * cela, le CA Event déjà budgété disparaîtrait au premier chargement.
+ * Renvoie l'entrée modifiée.
+ */
+function convertDirectServicesToAmount(entry) {
+  if (!entry || typeof entry !== 'object') return entry;
+  const dict = function (field) {
+    const block = entry[field];
+    return block && typeof block === 'object' && !Array.isArray(block) ? block : null;
+  };
+  const covers = dict('covers');
+  const ticket = dict('ticket');
+  if (!covers && !ticket) return entry;
+  const num = function (v) { const n = Number(v); return isFinite(n) && n > 0 ? n : 0; };
+  const keys = new Set(Object.keys(covers || {}).concat(Object.keys(ticket || {})));
+  for (const service of MATRIX_SERVICES) {
+    if (!service.direct) continue;
+    for (const key of keys) {
+      const c = covers && covers[key] && typeof covers[key] === 'object' ? covers[key] : null;
+      const t = ticket && ticket[key] && typeof ticket[key] === 'object' ? ticket[key] : null;
+      const value = num(c && c[service.id]) * num(t && t[service.id]);
+      if (c) { delete c[service.id]; if (!Object.keys(c).length) delete covers[key]; }
+      if (t) { delete t[service.id]; if (!Object.keys(t).length) delete ticket[key]; }
+      if (!value) continue;
+      const amount = dict('amount') || (entry.amount = {});
+      if (!amount[key] || typeof amount[key] !== 'object') amount[key] = {};
+      // Un montant déjà saisi fait foi : la conversion ne repasse pas
+      // dessus (elle ne tourne qu'une fois, mais un état bricolé à la main
+      // ne doit pas voir son montant remplacé par une reconstitution).
+      if (!num(amount[key][service.id])) amount[key][service.id] = value;
     }
   }
   return entry;
@@ -15168,17 +15261,25 @@ function setMatrixMonth(month) {
  */
 function normalizeServiceMatrix(entry) {
   const source = entry && typeof entry === 'object' ? entry : {};
-  const out = { covers: {}, ticket: {} };
-  for (const field of ['covers', 'ticket']) {
+  const out = { covers: {}, ticket: {}, amount: {} };
+  for (const field of ['covers', 'ticket', 'amount']) {
     const block = source[field] && typeof source[field] === 'object' ? source[field] : {};
     // Un tableau ici = ancienne forme (semaine type) : on l'ignore.
     if (Array.isArray(block)) continue;
+    // `amount` (montant global du jour) n'existe que pour les services
+    // directs, `covers`/`ticket` que pour les autres : la normalisation est
+    // le seul endroit où cette règle s'applique, ce qui garantit qu'aucun
+    // état relu ne porte un couvert d'Event ou un montant global de Midi —
+    // les deux se contrediraient au moment de calculer le CA.
+    const allowed = field === 'amount'
+      ? MATRIX_SERVICES.filter(function (s) { return s.direct; })
+      : MATRIX_COVER_SERVICES;
     for (const key of Object.keys(block)) {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) continue;
       const day = block[key];
       if (!day || typeof day !== 'object' || Array.isArray(day)) continue;
       const kept = {};
-      for (const service of MATRIX_SERVICES) {
+      for (const service of allowed) {
         const value = Number(day[service.id]);
         if (isFinite(value) && value > 0) kept[service.id] = value;
       }
@@ -15214,8 +15315,12 @@ function serviceMatrixValue(matrix, field, serviceId, key) {
  * sociétés, garder des zéros explicites gonflerait le stockage pour rien.
  */
 function setServiceMatrixValue(companyId, field, serviceId, key, value) {
-  if (field !== 'covers' && field !== 'ticket') return;
+  if (field !== 'covers' && field !== 'ticket' && field !== 'amount') return;
   if (!MATRIX_SERVICES.some(function (s) { return s.id === serviceId; })) return;
+  // Un service à montant global n'a que `amount` ; les autres n'ont que
+  // couverts et prix moyen. Écrire à côté serait écrire une valeur qu'aucun
+  // calcul ne lit et qu'aucune case n'affiche — autant la refuser ici.
+  if (matrixServiceIsDirect(serviceId) !== (field === 'amount')) return;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(key))) return;
   const matrix = serviceMatrixOf(companyId);
   const parsed = Number(value);
@@ -15316,29 +15421,55 @@ function matrixDayKeys(year, month) {
   return keys;
 }
 
-/** CA d'un service sur une liste de jours : couverts × ticket moyen. */
-function matrixServiceRevenue(matrix, serviceId, keys) {
-  return keys.map(function (key) {
-    return serviceMatrixValue(matrix, 'covers', serviceId, key) *
-      serviceMatrixValue(matrix, 'ticket', serviceId, key);
-  });
+/**
+ * CA d'un service sur UN jour : le montant global saisi pour un service
+ * direct (Event), couverts × prix moyen pour les autres. Tout le reste de
+ * l'application passe par ici — c'est le seul endroit qui connaît la
+ * différence entre les deux modes de saisie.
+ */
+function matrixDayRevenue(matrix, serviceId, key) {
+  if (matrixServiceIsDirect(serviceId)) return serviceMatrixValue(matrix, 'amount', serviceId, key);
+  return serviceMatrixValue(matrix, 'covers', serviceId, key) *
+    serviceMatrixValue(matrix, 'ticket', serviceId, key);
 }
 
-/** Total couverts par jour, tous services confondus. */
+/** CA d'un service sur une liste de jours. */
+function matrixServiceRevenue(matrix, serviceId, keys) {
+  return keys.map(function (key) { return matrixDayRevenue(matrix, serviceId, key); });
+}
+
+/**
+ * Total couverts par jour. Les services à montant global (Event) n'en ont
+ * pas : un événement facturé 80 000 € au forfait n'apporte aucun couvert à
+ * compter.
+ */
 function matrixTotalCovers(matrix, keys) {
   return keys.map(function (key) {
-    return MATRIX_SERVICES.reduce(function (sum, s) {
+    return MATRIX_COVER_SERVICES.reduce(function (sum, s) {
       return sum + serviceMatrixValue(matrix, 'covers', s.id, key);
     }, 0);
   });
 }
 
-/** CA total par jour, tous services confondus. */
+/** CA total par jour, TOUS services confondus — Event compris. */
 function matrixTotalRevenue(matrix, keys) {
   return keys.map(function (key) {
     return MATRIX_SERVICES.reduce(function (sum, s) {
-      return sum + serviceMatrixValue(matrix, 'covers', s.id, key) *
-        serviceMatrixValue(matrix, 'ticket', s.id, key);
+      return sum + matrixDayRevenue(matrix, s.id, key);
+    }, 0);
+  });
+}
+
+/**
+ * CA des seuls services servis au couvert (Midi, Soir) — le numérateur du
+ * ticket moyen. Sans cette distinction, un événement de 80 000 € sans
+ * aucun couvert ferait bondir le ticket moyen du mois : on diviserait un CA
+ * par des couverts qui ne l'ont pas produit.
+ */
+function matrixCoversRevenue(matrix, keys) {
+  return keys.map(function (key) {
+    return MATRIX_COVER_SERVICES.reduce(function (sum, s) {
+      return sum + matrixDayRevenue(matrix, s.id, key);
     }, 0);
   });
 }
@@ -15349,14 +15480,18 @@ function weekTotal(days) {
 }
 
 /**
- * Ticket moyen d'ensemble sur une période : CA total ÷ couverts totaux.
- * Une moyenne pondérée, pas la moyenne des tickets — un service à 400
- * couverts ne doit pas peser autant qu'un service à 12.
+ * Ticket moyen d'ensemble sur une période : CA servi au couvert ÷ couverts
+ * totaux. Une moyenne pondérée, pas la moyenne des tickets — un service à
+ * 400 couverts ne doit pas peser autant qu'un service à 12.
+ *
+ * Le CA des services à montant global (Event) est exclu du numérateur
+ * depuis le 07/10/2026, puisqu'ils n'apportent aucun couvert au
+ * dénominateur (voir `matrixCoversRevenue`).
  */
 function matrixOverallTicket(matrix, keys) {
   const covers = weekTotal(matrixTotalCovers(matrix, keys));
   if (!covers) return null;
-  return weekTotal(matrixTotalRevenue(matrix, keys)) / covers;
+  return weekTotal(matrixCoversRevenue(matrix, keys)) / covers;
 }
 
 /**
@@ -15386,22 +15521,24 @@ function matrixYearTotals(matrix, year, months) {
  * situer ses dates dans la matrice.
  *
  * Le ticket moyen n'est PAS la moyenne des tickets de chaque société : il
- * est recalculé sur l'ensemble (CA total ÷ couverts totaux), sans quoi une
- * petite société pèserait autant qu'une grande dans la moyenne.
+ * est recalculé sur l'ensemble (CA servi au couvert ÷ couverts totaux),
+ * sans quoi une petite société pèserait autant qu'une grande dans la
+ * moyenne. Le CA des services à montant global (Event) n'y entre pas — il
+ * n'apporte aucun couvert (voir `matrixCoversRevenue`).
  */
 function matrixMonthlySeries(companies) {
   const covers = new Array(MONTHS).fill(0);
-  const revenue = new Array(MONTHS).fill(0);
+  const coversRevenue = new Array(MONTHS).fill(0);
   for (const company of companies || []) {
     if (!company) continue;
     const matrix = serviceMatrixOf(company.id);
     for (let month = 0; month < MONTHS; month++) {
       const keys = matrixDayKeys(company.year, month);
       covers[month] += weekTotal(matrixTotalCovers(matrix, keys));
-      revenue[month] += weekTotal(matrixTotalRevenue(matrix, keys));
+      coversRevenue[month] += weekTotal(matrixCoversRevenue(matrix, keys));
     }
   }
-  const ticket = covers.map(function (c, i) { return c ? revenue[i] / c : 0; });
+  const ticket = covers.map(function (c, i) { return c ? coversRevenue[i] / c : 0; });
   return { covers: covers, ticket: ticket };
 }
 
@@ -15455,9 +15592,11 @@ if (typeof window !== 'undefined' && window.matchMedia) {
  * Le directeur remplit son mois le soir, sur son téléphone, service par
  * service : chaque carte porte donc la date en clair et, pour chaque
  * service, ses couverts et son ticket moyen côte à côte, avec le CA du jour
- * calculé en pied de carte. Les cases gardent la classe `.month-input` (même
- * enregistrement, mêmes raccourcis) et le même `data-matrix-input` que le
- * tableau : aucun câblage supplémentaire, aucune règle de calcul dupliquée.
+ * calculé en pied de carte. Un service à montant global (Event) n'y a
+ * qu'une seule case, son CA du jour. Les cases gardent la classe
+ * `.month-input` (même enregistrement, mêmes raccourcis) et le même
+ * `data-matrix-input` que le tableau : aucun câblage supplémentaire, aucune
+ * règle de calcul dupliquée.
  */
 function matrixPhoneList(matrix, keys) {
   return keys.map(function (key) {
@@ -15465,10 +15604,19 @@ function matrixPhoneList(matrix, keys) {
     const weekend = weekday === 0 || weekday === 6;
     const dayRevenue = matrixTotalRevenue(matrix, [key])[0];
     const services = MATRIX_SERVICES.map(function (service) {
+      const head = '<span class="matrix-day-service-label">' + escapeHtml(service.label) + '</span>';
+      if (service.direct) {
+        const amount = serviceMatrixValue(matrix, 'amount', service.id, key);
+        return '<div class="matrix-day-service">' + head +
+          '<label class="matrix-day-service-wide"><span>CA du jour (€)</span>' +
+          '<input type="number" min="0" step="1" class="month-input" ' +
+          'data-matrix-input="amount|' + service.id + '|' + key + '" ' +
+          'value="' + (amount ? escapeHtml(String(amount)) : '') + '" /></label>' +
+          '</div>';
+      }
       const covers = serviceMatrixValue(matrix, 'covers', service.id, key);
       const ticket = serviceMatrixValue(matrix, 'ticket', service.id, key);
-      return '<div class="matrix-day-service">' +
-        '<span class="matrix-day-service-label">' + escapeHtml(service.label) + '</span>' +
+      return '<div class="matrix-day-service">' + head +
         '<label><span>Couverts</span>' +
         '<input type="number" min="0" step="1" class="month-input" ' +
         'data-matrix-input="covers|' + service.id + '|' + key + '" ' +
@@ -15557,7 +15705,7 @@ function directorMatrixCard(company) {
 
   // Bloc 1 — les couverts par service, puis leur total automatique.
   rows += '<tr class="matrix-section"><td colspan="' + (columns + 2) + '"><strong>Couverts</strong></td></tr>';
-  for (const service of MATRIX_SERVICES) {
+  for (const service of MATRIX_COVER_SERVICES) {
     const days = keys.map(function (key) { return serviceMatrixValue(matrix, 'covers', service.id, key); });
     rows += '<tr><td class="sticky-col">' + escapeHtml(service.label) + '</td>' +
       keys.map(function (key, i) {
@@ -15577,7 +15725,7 @@ function directorMatrixCard(company) {
   // droite porte donc la moyenne du service sur le mois, pondérée par
   // les couverts de chaque jour.
   rows += '<tr class="matrix-section"><td colspan="' + (columns + 2) + '"><strong>Ticket moyen</strong></td></tr>';
-  for (const service of MATRIX_SERVICES) {
+  for (const service of MATRIX_COVER_SERVICES) {
     const days = keys.map(function (key) { return serviceMatrixValue(matrix, 'ticket', service.id, key); });
     const serviceCovers = weekTotal(keys.map(function (key) {
       return serviceMatrixValue(matrix, 'covers', service.id, key);
@@ -15592,14 +15740,24 @@ function directorMatrixCard(company) {
       '<td class="num total">' + (average === null ? '—' : money(average) + ' €') + '</td></tr>';
   }
 
-  // Bloc 3 — le CA, entièrement calculé. Aucune cellule saisissable.
+  // Bloc 3 — le CA. Calculé pour les services servis au couvert
+  // (couverts × ticket) ; SAISISSABLE pour les services à montant global,
+  // où c'est la seule case de la matrice qui les concerne — Alexis,
+  // 07/10/2026 : « 80 000 € directement sans mettre 800 € en PM et 100
+  // couverts ».
   rows += '<tr class="matrix-section"><td colspan="' + (columns + 2) + '"><strong>Chiffre d’affaires</strong></td></tr>';
   for (const service of MATRIX_SERVICES) {
     const days = matrixServiceRevenue(matrix, service.id, keys);
-    rows += '<tr><td class="sticky-col">' + escapeHtml(service.label) + '</td>' +
-      keys.map(function (key, i) {
+    const cells = service.direct
+      ? keys.map(function (key, i) {
+        return matrixInputCell('amount', service.id, key, days[i], '1', !!caEventOn(company.id, key));
+      })
+      : keys.map(function (key, i) {
         return readCell(key, days[i] ? money(days[i]) : '—');
-      }).join('') +
+      });
+    rows += '<tr><td class="sticky-col">' + escapeHtml(service.label) +
+      (service.direct ? '<span class="matrix-direct-hint">montant global</span>' : '') + '</td>' +
+      cells.join('') +
       '<td class="num total">' + money(weekTotal(days)) + ' €</td></tr>';
   }
   const totalRevenue = matrixTotalRevenue(matrix, keys);
@@ -15617,7 +15775,7 @@ function directorMatrixCard(company) {
     dirTile('Couverts du mois', nfMoney.format(weekTotal(totalCovers)),
       'Tous services confondus', '', '') +
     dirTile('Ticket moyen du mois', overallTicket === null ? '—' : money(overallTicket) + ' €',
-      'CA du mois ÷ couverts du mois', '', '') +
+      'CA hors Event ÷ couverts du mois', '', '') +
     dirTile('CA de l’année', money(yearTotals.revenue) + ' €',
       nfMoney.format(yearTotals.covers) + ' couverts sur les douze mois', '', '') +
     '</div>';
@@ -15636,8 +15794,9 @@ function directorMatrixCard(company) {
   // téléphone, promettre « comme dans un tableur » n'y aurait aucun sens.
   if (phoneLayoutActive()) {
     return '<p class="muted" style="margin:0 0 10px;font-size:13px">' +
-      'Un jour par carte. Saisissez vos couverts et votre ticket moyen par service : ' +
-      'le chiffre d’affaires du jour se calcule tout seul (couverts × ticket moyen).</p>' +
+      'Un jour par carte. Saisissez vos couverts et votre ticket moyen pour le midi et le soir : ' +
+      'le chiffre d’affaires du jour se calcule tout seul (couverts × ticket moyen). Event se saisit ' +
+      'en montant global, directement en euros.</p>' +
       '<div class="row" style="gap:5px;flex-wrap:wrap;margin-bottom:12px">' + monthTabs + '</div>' +
       '<div class="matrix-swap' + swapClass + '">' +
       '<div class="matrix-phone">' + matrixPhoneList(matrix, keys) + '</div>' + summary +
@@ -15669,9 +15828,11 @@ function directorMatrixCard(company) {
 
   return '<p class="muted" style="margin:0 0 10px;font-size:13px">' +
     'Chaque colonne est un jour daté, avec son jour de semaine : un samedi de juillet ne se remplit ' +
-    'pas comme un mardi de novembre. Saisissez vos couverts et vos tickets moyens, le chiffre ' +
-    'd’affaires se calcule tout seul (couverts × ticket moyen). Tabulation et flèches pour passer ' +
-    'd’une case à l’autre, comme dans un tableur.</p>' +
+    'pas comme un mardi de novembre. Saisissez vos couverts et vos tickets moyens pour le midi et le ' +
+    'soir, le chiffre d’affaires se calcule tout seul (couverts × ticket moyen). <strong>Event</strong> ' +
+    'se saisit différemment : son montant global du jour, directement sur sa ligne de chiffre ' +
+    'd’affaires — 80 000 € d’un coup, sans prix moyen ni couverts. Le CA Total additionne les trois. ' +
+    'Tabulation et flèches pour passer d’une case à l’autre, comme dans un tableur.</p>' +
     eventBlock +
     // Matrice officielle (23/09/2026) : un aller-retour par fichier Excel,
     // ouvert aux directeurs comme aux contrôleurs — c'est l'onglet où l'on
@@ -15681,7 +15842,7 @@ function directorMatrixCard(company) {
     'title="Les douze mois sur une feuille, au format de la matrice officielle, avec ce qui est déjà saisi">' +
     'Exporter la matrice (Excel)</button>' +
     '<button type="button" class="action ghost" id="ca-matrix-import-button" ' +
-    'title="Reprendre les Prix Moy et Nbr de couv d’une matrice remplie. Un mois laissé vide dans le fichier ne change rien ici.">' +
+    'title="Reprendre les Prix Moy et Nbr de couv du midi et du soir, et le CA Event, d’une matrice remplie. Un mois laissé vide dans le fichier ne change rien ici.">' +
     'Importer la matrice</button>' +
     '<input type="file" id="ca-matrix-import-input" accept=".xlsx" style="display:none" />' +
     '</div>' +
@@ -15706,26 +15867,35 @@ function directorMatrixCard(company) {
 
    - les douze mois empilés sur UNE feuille, un bloc par mois ;
    - dans chaque bloc, les jours en colonnes (numéro puis jour de la
-     semaine), les services en lignes — MIDI, SOIR, EVENT — avec Prix Moy,
-     Nbr de couv et CA (formule) ;
-   - une ligne « TOTAL CA MIDI + SOIR » et une colonne TOTAL par mois.
+     semaine), les services en lignes — MIDI et SOIR avec Prix Moy, Nbr de
+     couv et CA (formule), EVENT avec une SEULE ligne CA, saisie en montant
+     global du jour (Alexis, 07/10/2026 : « 80 000 € directement sans
+     mettre 800 € en PM et 100 couverts ») ;
+   - une ligne « TOTAL CA » qui additionne les TROIS services, et une
+     colonne TOTAL par mois. Jusqu'au 07/10/2026 cette ligne s'appelait
+     « TOTAL CA MIDI + SOIR » et laissait l'Event dehors — Alexis :
+     « dans la matrice de saisie de CA le total ne prend pas le montant du
+     CA Event ».
 
    Pas de ligne BUDGET / Variance : dans l'application, la matrice EST le
-   budget de CA (couverts × ticket moyen) — Alexis ne voyait pas l'utilité
-   d'une ligne qui se comparerait à elle-même.
+   budget de CA — Alexis ne voyait pas l'utilité d'une ligne qui se
+   comparerait à elle-même.
 
-   L'import ne lit que les cases saisissables (Prix Moy, Nbr de couv) : le
-   CA et les totaux sont des formules, recalculés par l'application. Il se
-   repère aux libellés (nom du mois, MIDI/SOIR/EVENT, Prix Moy/Nbr de
-   couv) et aux numéros de jour de l'en-tête, pas à des numéros de ligne
-   figés : un bloc déplacé de quelques lignes reste lisible.
+   L'import ne lit que les cases saisissables (Prix Moy et Nbr de couv du
+   midi et du soir, CA de l'Event) : les autres CA et tous les totaux sont
+   des formules, recalculés par l'application. Il se repère aux libellés
+   (nom du mois, MIDI/SOIR/EVENT, Prix Moy/Nbr de couv/CA) et aux numéros
+   de jour de l'en-tête, pas à des numéros de ligne figés : un bloc déplacé
+   de quelques lignes reste lisible. Une matrice remplie à l'ancien format,
+   où l'EVENT portait encore un prix moyen et des couverts, reste acceptée :
+   leur produit devient le montant du jour (voir `applyCaMatrixImport`).
    ================================================================== */
 
 /** Libellés des services dans le classeur officiel, dans l'ordre des blocs. */
 const CA_MATRIX_SHEET_SERVICES = [
   { id: 'lunch', label: 'MIDI' },
   { id: 'dinner', label: 'SOIR' },
-  { id: 'event', label: 'EVENT' },
+  { id: 'event', label: 'EVENT', direct: true },
 ];
 
 const CA_MATRIX_MAX_DAYS = 31;
@@ -15796,7 +15966,28 @@ function caMatrixWorkbookSheets(company) {
 
     const caRowOf = {};
     let block = head2 + 2;
-    CA_MATRIX_SHEET_SERVICES.forEach(function (service, index) {
+    CA_MATRIX_SHEET_SERVICES.forEach(function (service) {
+      const range = function (row) { return col(firstDayCol) + (row + 1) + ':' + lastDayLetter(days) + (row + 1); };
+      // EVENT : une seule ligne, « CA », et c'est une case à REMPLIR — le
+      // montant global du jour. Pas de Prix Moy ni de Nbr de couv : un
+      // événement se facture au forfait, les reconstituer n'apportait rien.
+      if (service.direct) {
+        const ca = block;
+        put(ca, 0, xc(service.label, S.mxService));
+        put(ca, 1, xc('CA', S.mxSubLabel));
+        for (let d = 1; d <= CA_MATRIX_MAX_DAYS; d++) {
+          const c = firstDayCol + d - 1;
+          if (d > days) { put(ca, c, xc('', S.mxDisabled)); continue; }
+          const amount = serviceMatrixValue(matrix, 'amount', service.id, dateKey(year, m, d));
+          put(ca, c, xc(amount ? Math.round(amount * 100) / 100 : '', S.mxCa));
+        }
+        put(ca, totalCol, { f: 'SUM(' + range(ca) + ')', s: S.mxColCa });
+        caRowOf[service.id] = ca;
+        monthTotals.push({ month: m, service: service.id, ca: totalLetter + (ca + 1) });
+        rowHeights[ca + 1] = 6;
+        block += 2;
+        return;
+      }
       const price = block, covers = block + 1, ca = block + 2;
       put(price, 0, xc(service.label, S.mxService));
       put(covers, 0, xc('', S.mxService));
@@ -15821,7 +16012,6 @@ function caMatrixWorkbookSheets(company) {
         put(covers, c, xc(n || '', S.mxCount));
         put(ca, c, { f: L + (price + 1) + '*' + L + (covers + 1), s: S.mxCa });
       }
-      const range = function (row) { return col(firstDayCol) + (row + 1) + ':' + lastDayLetter(days) + (row + 1); };
       put(covers, totalCol, { f: 'SUM(' + range(covers) + ')', s: S.mxColCount });
       put(ca, totalCol, { f: 'SUM(' + range(ca) + ')', s: S.mxColCa });
       put(price, totalCol, { f: 'IFERROR(' + totalLetter + (ca + 1) + '/' + totalLetter + (covers + 1) + ',"")', s: S.mxColPrice });
@@ -15831,17 +16021,21 @@ function caMatrixWorkbookSheets(company) {
       block += 4;
     });
 
-    // TOTAL CA MIDI + SOIR — Event reste à part, comme dans le P&L où il a
-    // sa propre ligne (Event Revenue).
+    // TOTAL CA — les TROIS services, Event compris (Alexis, 07/10/2026 :
+    // « le total ne prend pas le montant du CA Event »). Event garde par
+    // ailleurs sa propre ligne dans le P&L (Event Revenue) : être compté
+    // dans le CA total de la matrice et être isolé dans le P&L sont deux
+    // choses différentes.
     const total = block;
-    put(total, 0, xc('TOTAL CA MIDI + SOIR', S.mxTotalLabel));
+    put(total, 0, xc('TOTAL CA', S.mxTotalLabel));
     put(total, 1, xc('', S.mxTotalLabel));
     merges.push('A' + (total + 1) + ':B' + (total + 1));
+    const caRows = CA_MATRIX_SHEET_SERVICES.map(function (service) { return caRowOf[service.id]; });
     for (let d = 1; d <= CA_MATRIX_MAX_DAYS; d++) {
       const c = firstDayCol + d - 1;
       const L = col(c);
       put(total, c, d <= days
-        ? { f: L + (caRowOf.lunch + 1) + '+' + L + (caRowOf.dinner + 1), s: S.mxTotal }
+        ? { f: caRows.map(function (row) { return L + (row + 1); }).join('+'), s: S.mxTotal }
         : xc('', S.mxTotalLabel));
     }
     put(total, totalCol, { f: 'SUM(' + col(firstDayCol) + (total + 1) + ':' + lastDayLetter(days) + (total + 1) + ')', s: S.mxTotal });
@@ -15876,7 +16070,17 @@ function caMatrixWorkbookSheets(company) {
   };
   const synCaRows = {};
   CA_MATRIX_SHEET_SERVICES.forEach(function (service) {
-    const base = syn.length;                       // index 0 de la ligne Prix Moy
+    const base = syn.length;
+    // EVENT : une seule ligne ici aussi, puisqu'il n'a ni prix moyen ni
+    // couverts à reporter.
+    if (service.direct) {
+      const ca = [xc(service.label, S.mxService), xc('CA', S.mxSubLabel)];
+      for (let m = 0; m < MONTHS; m++) ca.push({ f: ref + find(m, service.id).ca, s: S.mxCa });
+      ca.push({ f: 'SUM(C' + (base + 1) + ':N' + (base + 1) + ')', s: S.mxColCa });
+      syn.push(ca, []);
+      synCaRows[service.id] = base + 1;
+      return;
+    }
     const price = [xc(service.label, S.mxService), xc('Prix Moy', S.mxSubLabel)];
     const covers = [xc('', S.mxService), xc('Nbr de couv', S.mxSubLabel)];
     const ca = [xc('', S.mxService), xc('CA', S.mxSubLabel)];
@@ -15894,10 +16098,13 @@ function caMatrixWorkbookSheets(company) {
     synMerges.push('A' + (base + 1) + ':A' + (base + 3));
     synCaRows[service.id] = base + 3;
   });
-  const totalRow = [xc('TOTAL CA MIDI + SOIR', S.mxTotalLabel), xc('', S.mxTotalLabel)];
+  const totalRow = [xc('TOTAL CA', S.mxTotalLabel), xc('', S.mxTotalLabel)];
   for (let m = 0; m <= MONTHS; m++) {
     const L = col(2 + m);
-    totalRow.push({ f: L + synCaRows.lunch + '+' + L + synCaRows.dinner, s: S.mxTotal });
+    totalRow.push({
+      f: CA_MATRIX_SHEET_SERVICES.map(function (service) { return L + synCaRows[service.id]; }).join('+'),
+      s: S.mxTotal,
+    });
   }
   syn.push(totalRow);
   synMerges.push('A' + syn.length + ':B' + syn.length);
@@ -15916,10 +16123,10 @@ function caMatrixWorkbookSheets(company) {
   ];
   const helpText = [
     ['Organisation', 'Les douze mois se suivent sur la feuille « ' + matrixName + ' », un bloc par mois. Dans chaque bloc, les jours sont en colonnes (numéro et jour de la semaine), les services en lignes : MIDI, SOIR, EVENT.'],
-    ['Ce que vous remplissez', 'Pour chaque service et chaque jour : « Prix Moy » (ticket moyen, en euros) et « Nbr de couv » (nombre de couverts). Ce sont les seules cases blanches de la grille.'],
+    ['Ce que vous remplissez', 'MIDI et SOIR : pour chaque jour, « Prix Moy » (ticket moyen, en euros) et « Nbr de couv » (nombre de couverts). EVENT : une seule ligne, « CA » — le montant global facturé ce jour-là, par exemple 80 000, sans prix moyen ni couverts à reconstituer.'],
     ['Jours de fermeture', 'Laisser les cases vides. Les colonnes grisées en fin de bloc sont des jours qui n’existent pas (30 février, 31 avril…) : ne rien y saisir.'],
-    ['Ce qui se calcule seul', 'Les lignes « CA » (prix moyen × couverts), « TOTAL CA MIDI + SOIR », la colonne « TOTAL » de chaque mois et la feuille « Synthèse annuelle ». Un tiret « - » signifie zéro.'],
-    ['EVENT', 'Privatisations et événements facturés à part. Leur CA n’entre pas dans « TOTAL CA MIDI + SOIR » : il a sa propre ligne dans le P&L (Event Revenue).'],
+    ['Ce qui se calcule seul', 'Les lignes « CA » du MIDI et du SOIR (prix moyen × couverts), « TOTAL CA », la colonne « TOTAL » de chaque mois et la feuille « Synthèse annuelle ». Un tiret « - » signifie zéro.'],
+    ['EVENT', 'Privatisations et événements facturés à part, saisis en montant global par jour. Leur CA entre dans « TOTAL CA » ; dans le P&L, il garde en plus sa propre ligne (Event Revenue).'],
     ['Retour', 'Renvoyer le fichier au contrôle de gestion, qui l’importe dans Budget Manager (onglet CA, « Importer la matrice »). Ne pas renommer les feuilles ni déplacer les libellés de gauche. Un mois laissé entièrement vide ne modifie rien dans l’application ; un mois rempli remplace celui de l’application.'],
   ];
   const helpHeights = {};
@@ -15996,7 +16203,16 @@ function parseCaMatrixRows(rows, year) {
     if (a) service = serviceIndex.get(a) || null;
     if (!service) continue;
     const b = caMatrixNorm(cells[1]);
-    const field = /^(PRIX|TICKET)/.test(b) ? 'ticket' : (/^(NBR|NB|NOMBRE|COUV)/.test(b) ? 'covers' : null);
+    // Ligne « CA » : saisissable UNIQUEMENT pour un service à montant
+    // global (EVENT). Pour le midi et le soir c'est une formule, dont le
+    // classeur garde une valeur en cache dès qu'Excel l'a ouvert — la lire
+    // reviendrait à réimporter un résultat calculé, et à le prendre pour
+    // une saisie.
+    const field = /^(PRIX|TICKET)/.test(b)
+      ? 'ticket'
+      : (/^(NBR|NB|NOMBRE|COUV)/.test(b)
+        ? 'covers'
+        : (b === 'CA' && matrixServiceIsDirect(service) ? 'amount' : null));
     if (!field) continue;
     const days = daysInMonth(year, month);
     for (const c of Object.keys(dayByCol)) {
@@ -16026,6 +16242,9 @@ function applyCaMatrixImport(companyId, parsed) {
   const year = Number(company.year);
   const touched = [];
   let cells = 0;
+  const read = function (entry, field, serviceId, d) {
+    return entry.values[field + '|' + serviceId + '|' + d] || 0;
+  };
   for (const key of Object.keys(parsed.months)) {
     const m = Number(key);
     const entry = parsed.months[key];
@@ -16034,8 +16253,20 @@ function applyCaMatrixImport(companyId, parsed) {
     for (let d = 1; d <= daysInMonth(year, m); d++) {
       const dayKey = dateKey(year, m, d);
       for (const service of MATRIX_SERVICES) {
+        if (service.direct) {
+          // Le montant global de la ligne « CA ». Une matrice remplie à
+          // l'ancien format (EVENT en Prix Moy × Nbr de couv) reste
+          // acceptée : leur produit tient lieu de montant, à l'euro près —
+          // sans ce repli, un fichier déjà en circulation chez un directeur
+          // reviendrait avec un CA Event à zéro.
+          const value = read(entry, 'amount', service.id, d) ||
+            read(entry, 'ticket', service.id, d) * read(entry, 'covers', service.id, d);
+          if (value) cells++;
+          setServiceMatrixValue(companyId, 'amount', service.id, dayKey, value);
+          continue;
+        }
         for (const field of ['covers', 'ticket']) {
-          const value = entry.values[field + '|' + service.id + '|' + d] || 0;
+          const value = read(entry, field, service.id, d);
           if (value) cells++;
           setServiceMatrixValue(companyId, field, service.id, dayKey, value);
         }
@@ -17180,6 +17411,10 @@ function matrixMonthlyRevenue(company) {
  * ligne dans la matrice (`MATRIX_SERVICES`) : c'est CE CA-là, en totalité,
  * qui alimente la catégorie Event — pas un pourcentage posé par le
  * contrôleur comme pour Food/Beverage (voir `applyCaVentilation`).
+ *
+ * Depuis le 07/10/2026, cette ligne ne se saisit plus en couverts × prix
+ * moyen mais en montant global par jour (`matrixDayRevenue`) : ce qui
+ * arrive ici est donc directement la somme des montants saisis.
  */
 function caEventServiceRevenue(company) {
   const out = emptyMonths();
@@ -21280,27 +21515,32 @@ function sumAmounts(a, b) { return (Number(a) || 0) + (Number(b) || 0); }
 function keepFirstValue(a) { return a; }
 
 /**
- * Matrice couverts × ticket décalée : les couverts d'un 29 février
- * s'ajoutent à ceux du 28, le ticket moyen du 28 est conservé.
- * `ticketFactor` applique un coefficient au ticket moyen (duplication).
+ * Matrice décalée : les couverts d'un 29 février s'ajoutent à ceux du 28,
+ * le ticket moyen du 28 est conservé. Les montants globaux (Event)
+ * s'additionnent comme les couverts — deux journées d'événement qui se
+ * rejoignent font bien la somme des deux factures.
+ * `ticketFactor` applique un coefficient au ticket moyen ET aux montants
+ * globaux (duplication) : ce sont les deux valeurs en euros de la matrice.
  */
 function shiftServiceMatrix(matrix, delta, ticketFactor) {
   const source = normalizeServiceMatrix(matrix);
   const factor = ticketFactor === undefined ? 1 : ticketFactor;
   const clone = function (day) { return Object.assign({}, day); };
-  const mergeCovers = function (a, b) {
+  const scaled = function (day) {
+    const out = {};
+    for (const id of Object.keys(day)) out[id] = Math.round(day[id] * factor * 100) / 100;
+    return out;
+  };
+  const mergeSum = function (a, b) {
     const out = Object.assign({}, a);
     for (const id of Object.keys(b)) out[id] = sumAmounts(out[id], b[id]);
     return out;
   };
   const mergeTicket = function (a, b) { return Object.assign({}, b, a); };
   return {
-    covers: shiftDatedEntries(source.covers, delta, clone, mergeCovers),
-    ticket: shiftDatedEntries(source.ticket, delta, function (day) {
-      const out = {};
-      for (const id of Object.keys(day)) out[id] = Math.round(day[id] * factor * 100) / 100;
-      return out;
-    }, mergeTicket),
+    covers: shiftDatedEntries(source.covers, delta, clone, mergeSum),
+    ticket: shiftDatedEntries(source.ticket, delta, scaled, mergeTicket),
+    amount: shiftDatedEntries(source.amount, delta, scaled, mergeSum),
   };
 }
 
@@ -21311,7 +21551,9 @@ function companyHasDatedData(companyId) {
   const budget = (state.dailyBudgetRevenue || {})[companyId] || {};
   if (Object.keys(budget).some(function (account) { return Object.keys(budget[account] || {}).length; })) return true;
   const matrix = (state.serviceMatrix || {})[companyId];
-  if (matrix && ((matrix.covers && Object.keys(matrix.covers).length) || (matrix.ticket && Object.keys(matrix.ticket).length))) return true;
+  if (matrix && ['covers', 'ticket', 'amount'].some(function (field) {
+    return matrix[field] && Object.keys(matrix[field]).length;
+  })) return true;
   return employeesOf(companyId).some(function (e) { return e.startDate || e.endDate; });
 }
 

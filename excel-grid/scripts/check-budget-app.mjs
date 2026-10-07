@@ -573,7 +573,9 @@ const app = await importApp(
 
     'export { MATRIX_SERVICES, normalizeServiceMatrix, serviceMatrixOf, serviceMatrixValue,\n' +
     '  setServiceMatrixValue, matrixDayKeys, matrixServiceRevenue, matrixTotalCovers,\n' +
-    '  matrixTotalRevenue, weekTotal, matrixOverallTicket, matrixYearTotals, matrixMonthlySeries,\n' +
+    '  matrixTotalRevenue, matrixDayRevenue, matrixCoversRevenue, matrixServiceIsDirect,\n' +
+    '  MATRIX_COVER_SERVICES, convertDirectServicesToAmount,\n' +
+    '  weekTotal, matrixOverallTicket, matrixYearTotals, matrixMonthlySeries,\n' +
     '  setMatrixMonth, mergeBreakfastIntoLunch, caMatrixWorkbookSheets, downloadCaMatrix,\n' +
     '  parseCaMatrixRows, applyCaMatrixImport, importCaMatrixSheets, importCaMatrixFromFile,\n' +
     '  caMatrixNorm, caMatrixCellNumber, xlsxWorkbookFiles, CA_MATRIX_SHEET_SERVICES };\n' +
@@ -5567,10 +5569,10 @@ check('rateLinkRevenueCategoryMonths : Food/Beverage/Event lisent la formule mat
       'CA Beverage = 40 % × 1000 (matrice), en direct, sans avoir cliqué « Appliquer aux comptes »');
 
     // Un deuxième service alimente Event : 100 % lui revient automatiquement, sans pourcentage.
-    app.setServiceMatrixValue(company.id, 'covers', eventServiceId, y + '-01-05', '5');
-    app.setServiceMatrixValue(company.id, 'ticket', eventServiceId, y + '-01-05', '50');
+    // Il se saisit en montant global par jour depuis le 07/10/2026.
+    app.setServiceMatrixValue(company.id, 'amount', eventServiceId, y + '-01-05', '250');
     const eventTotals = app.rateLinkRevenueCategoryMonths(company.id, app.rawLinesOf(company.id), 'event');
-    assert.ok(Math.abs(eventTotals[0] - 250) < 0.01, 'CA Event = 100 % du service Event de la matrice (5 × 50)');
+    assert.ok(Math.abs(eventTotals[0] - 250) < 0.01, 'CA Event = 100 % du montant global saisi sur le service Event');
 
     // Hors exploitation : pas de formule matrice — saisie directe, déjà en
     // direct elle aussi (aucun bouton « Appliquer » sur son chemin).
@@ -6494,10 +6496,9 @@ check('Catégorie Event du CA : 100 % automatique depuis le service Event de la 
     // « Event » est une quatrième catégorie, au même titre que Food/Beverage.
     assert.ok(app.CA_CATEGORIES.some((c) => c.id === 'event'), 'Event doit être une catégorie CA_CATEGORIES');
 
-    // Janvier : le service Event de la matrice (distinct de breakfast/lunch/
-    // dinner) fait 5 couverts à 30 € = 150 €.
-    app.setServiceMatrixValue(company.id, 'covers', 'event', '2026-01-05', '5');
-    app.setServiceMatrixValue(company.id, 'ticket', 'event', '2026-01-05', '30');
+    // Janvier : le service Event de la matrice (distinct du midi et du soir)
+    // fait 150 €, saisis en montant global sur la journée.
+    app.setServiceMatrixValue(company.id, 'amount', 'event', '2026-01-05', '150');
     assert.equal(Math.round(app.caEventServiceRevenue(company)[0]), 150,
       'le CA du service Event de janvier doit être isolé des autres services de la matrice');
 
@@ -6603,8 +6604,7 @@ check('Compte Event unique retiré de la catégorie : le pourcentage précédemm
     app.state.caVentilation = {};
     app.state.dailyBudgetRevenue = {};
 
-    app.setServiceMatrixValue(company.id, 'covers', 'event', '2026-02-10', '4');
-    app.setServiceMatrixValue(company.id, 'ticket', 'event', '2026-02-10', '25');
+    app.setServiceMatrixValue(company.id, 'amount', 'event', '2026-02-10', '100');
 
     const evt = app.addCaLine(company.id, '70103100', 'Anniversaire');
     app.setCaCategory(evt.id, 'event');
@@ -8254,6 +8254,183 @@ check('Matrice officielle : trois services MIDI / SOIR / EVENT, Breakfast retir�
     'libellés du classeur officiel, dans l’ordre des blocs');
 });
 
+check('Matrice CA : l’Event se saisit en montant global par jour, et le CA Total le prend', () => {
+  // Alexis, 07/10/2026 : « dans la matrice de saisie de CA le total ne prend
+  // pas le montant du CA Event. Il faut également modifier les deux options
+  // (matrices et au sein de l'application) de saisir du CA event en montant
+  // global par jour au lieu de saisir couverts et Prix moyen. Ex : 80 000 €
+  // directement sans mettre 800 € en PM et 100 couverts ».
+  const company = { id: 'mxevt_co', name: 'Matrice Event', currency: 'EUR', year: 2026, groupId: null };
+  const saved = {
+    companies: app.state.companies.slice(), active: app.state.activeCompany,
+    matrix: app.state.serviceMatrix, tab: app.__getTab(),
+  };
+  app.state.companies = [company];
+  app.state.activeCompany = company.id;
+  app.state.serviceMatrix = {};
+  try {
+    // Event est le seul service à montant global ; midi et soir restent au couvert.
+    assert.equal(app.matrixServiceIsDirect('event'), true, 'Event doit être un service à montant global');
+    assert.equal(app.matrixServiceIsDirect('lunch'), false, 'le midi reste en couverts × prix moyen');
+    assert.deepEqual(app.MATRIX_COVER_SERVICES.map((x) => x.id), ['lunch', 'dinner'],
+      'seuls le midi et le soir se saisissent au couvert');
+
+    const key = '2026-07-10';
+    const keys = [key];
+    // L'exemple d'Alexis, au centime : 100 couverts à 800 € ne se saisissent
+    // plus, c'est 80 000 € d'un coup.
+    app.setServiceMatrixValue(company.id, 'covers', 'lunch', key, 100);
+    app.setServiceMatrixValue(company.id, 'ticket', 'lunch', key, 50);
+    app.setServiceMatrixValue(company.id, 'amount', 'event', key, 80000);
+    const m = app.serviceMatrixOf(company.id);
+
+    assert.equal(app.matrixDayRevenue(m, 'event', key), 80000,
+      'le CA de l’Event est le montant saisi, pas un produit couverts × prix');
+    assert.equal(app.matrixDayRevenue(m, 'lunch', key), 5000, 'le midi reste couverts × prix moyen');
+    assert.equal(app.matrixTotalRevenue(m, keys)[0], 85000,
+      'le CA Total du jour doit additionner les deux — c’est le bug signalé par Alexis');
+    assert.equal(app.caEventServiceRevenue(company)[6], 80000,
+      'le CA Event du mois (juillet) doit valoir le montant global saisi');
+
+    // L'Event n'apporte aucun couvert, et son CA n'entre donc pas dans le
+    // ticket moyen : sinon 85 000 ÷ 100 = 850 € de « ticket moyen ».
+    assert.equal(app.matrixTotalCovers(m, keys)[0], 100, 'l’Event n’ajoute aucun couvert');
+    assert.equal(app.matrixCoversRevenue(m, keys)[0], 5000, 'le CA au couvert exclut l’Event');
+    assert.equal(app.matrixOverallTicket(m, keys), 50,
+      'le ticket moyen reste 50 € (5 000 ÷ 100), pas 850 € — on ne divise pas un CA Event par des couverts qu’il n’a pas produits');
+    const series = app.matrixMonthlySeries([company]);
+    assert.equal(series.covers[6], 100, 'couverts de juillet');
+    assert.equal(series.ticket[6], 50, 'le ticket moyen du PnL exclut lui aussi le CA Event');
+    // Le total annuel, lui, prend bien l'Event : c'est du chiffre d'affaires.
+    assert.equal(app.matrixYearTotals(m, 2026).revenue, 85000,
+      'le CA de l’année comprend le montant de l’Event');
+
+    // Aucune écriture incohérente possible : l'Event n'a ni couverts ni
+    // prix moyen, les autres services n'ont pas de montant global.
+    app.setServiceMatrixValue(company.id, 'covers', 'event', key, 100);
+    app.setServiceMatrixValue(company.id, 'ticket', 'event', key, 800);
+    assert.equal(app.serviceMatrixValue(m, 'covers', 'event', key), 0,
+      'écrire des couverts sur l’Event doit être refusé, pas stocké dans un coin');
+    assert.equal(app.matrixTotalRevenue(m, keys)[0], 85000,
+      'et le CA Total ne doit pas bouger pour autant');
+    app.setServiceMatrixValue(company.id, 'amount', 'lunch', key, 9999);
+    assert.equal(app.serviceMatrixValue(m, 'amount', 'lunch', key), 0,
+      'un montant global sur le midi doit être refusé : il se saisit au couvert');
+
+    // La matrice affichée : le midi et le soir ont leurs couverts et leur
+    // prix moyen, l'Event une seule case — sur sa ligne de CA.
+    app.__setTab('ca');
+    app.__setMatrixMonth(6); // juillet
+    const card = app.directorMatrixCard(company);
+    assert.ok(card.includes('data-matrix-input="amount|event|' + key + '"'),
+      'la ligne de CA de l’Event doit être saisissable dans le tableau');
+    assert.ok(!card.includes('data-matrix-input="covers|event|'),
+      'l’Event ne doit plus avoir de case de couverts');
+    assert.ok(!card.includes('data-matrix-input="ticket|event|'),
+      'l’Event ne doit plus avoir de case de prix moyen');
+    assert.ok(card.includes('data-matrix-input="covers|lunch|' + key + '"') &&
+      card.includes('data-matrix-input="ticket|lunch|' + key + '"'),
+      'le midi garde ses deux cases');
+    assert.ok(card.includes('CA hors Event ÷ couverts du mois'),
+      'la tuile du ticket moyen doit dire ce qu’elle divise, maintenant que l’Event en est exclu');
+  } finally {
+    app.state.companies = saved.companies; app.state.activeCompany = saved.active;
+    app.state.serviceMatrix = saved.matrix;
+    app.resetStateIndexes();
+    app.__setTab(saved.tab);
+    app.render();
+  }
+});
+
+check('Migration matrixEventAmount2026 : le CA Event déjà saisi en couverts × prix devient un montant global, à l’euro près', () => {
+  // Sans cette conversion, la normalisation (qui n'accepte plus ni couvert
+  // ni prix moyen sur l'Event) ferait disparaître un CA Event déjà budgété.
+  const raw = {
+    companies: [{ id: 'mig_evt', name: 'Mig Event', currency: 'EUR', year: 2026, groupId: null }],
+    activeCompany: 'mig_evt', lines: [],
+    serviceMatrix: { mig_evt: {
+      covers: { '2026-01-05': { lunch: 20, event: 100 }, '2026-01-06': { event: 30 } },
+      ticket: { '2026-01-05': { lunch: 40, event: 800 }, '2026-01-06': { event: 25 } },
+    } },
+  };
+  const adopted = app.adoptState(JSON.parse(JSON.stringify(raw)));
+  assert.ok(adopted.migrations.matrixEventAmount2026, 'le drapeau de migration doit être posé');
+  const m = adopted.serviceMatrix.mig_evt;
+
+  assert.equal(m.amount['2026-01-05'].event, 80000, '100 couverts à 800 € font 80 000 € de montant global');
+  assert.equal(m.amount['2026-01-06'].event, 750, '30 × 25 = 750 €');
+  assert.equal(m.covers['2026-01-05'].event, undefined, 'les couverts de l’Event sont effacés');
+  assert.equal(m.ticket['2026-01-05'].event, undefined, 'son prix moyen aussi');
+  assert.equal(m.covers['2026-01-06'], undefined,
+    'une journée qui n’avait QUE de l’Event ne laisse pas un objet vide derrière elle');
+
+  // Le midi n'est pas touché, et le CA total du 5 janvier est inchangé.
+  assert.equal(m.covers['2026-01-05'].lunch, 20, 'le midi garde ses couverts');
+  assert.equal(m.ticket['2026-01-05'].lunch, 40, 'et son prix moyen');
+  assert.equal(app.matrixTotalRevenue(m, ['2026-01-05'])[0], 20 * 40 + 80000,
+    'le CA du jour est inchangé par la migration : 800 € de midi + 80 000 € d’Event');
+
+  // Rejouée sur un état déjà migré, elle ne refait rien.
+  const again = app.adoptState(JSON.parse(JSON.stringify(adopted)));
+  assert.deepEqual(again.serviceMatrix.mig_evt, m, 'migration jouée une seule fois');
+});
+
+check('Matrice CA importée à l’ancien format : l’Event en Prix Moy × Nbr de couv reste accepté', () => {
+  // Les directeurs ont des fichiers en circulation, exportés avant le
+  // 07/10/2026, où l'EVENT porte encore un prix moyen et des couverts. Les
+  // refuser silencieusement reviendrait à perdre leur CA Event.
+  const company = { id: 'camx_old', name: 'Ancien Format', currency: 'EUR', year: 2027, groupId: null };
+  const saved = { companies: app.state.companies.slice(), matrix: app.state.serviceMatrix };
+  app.state.companies = [company];
+  app.state.serviceMatrix = {};
+  try {
+    const head = ['FÉVRIER', ''].concat(Array.from({ length: 28 }, (_, i) => String(i + 1)));
+    const rows = [
+      ['FÉVRIER 2027'],
+      head,
+      ['', ''].concat(Array(28).fill('LUNDI')),
+      [],
+      ['EVENT', 'Prix Moy', '', '800'],       // 2 février, ancien format
+      ['', 'Nbr de couv', '', '100'],
+      ['', 'CA', '', ''],                      // la formule, sans valeur en cache
+    ];
+    const parsed = app.parseCaMatrixRows(rows, 2027);
+    app.applyCaMatrixImport(company.id, parsed);
+    const m = app.serviceMatrixOf(company.id);
+    assert.equal(app.serviceMatrixValue(m, 'amount', 'event', '2027-02-02'), 80000,
+      '800 × 100 doit devenir un montant global de 80 000 €');
+    assert.equal(app.serviceMatrixValue(m, 'covers', 'event', '2027-02-02'), 0,
+      'et rien ne doit rester en couverts sur l’Event');
+
+    // Nouveau format : la ligne CA de l'EVENT fait foi, et prime sur un
+    // éventuel reste de l'ancien format.
+    const modern = app.parseCaMatrixRows([
+      ['MARS 2027'],
+      ['MARS', ''].concat(Array.from({ length: 31 }, (_, i) => String(i + 1))),
+      ['', ''].concat(Array(31).fill('LUNDI')),
+      ['EVENT', 'CA', '', '', '45 000 €'],   // 3 mars : espace des milliers et symbole
+    ], 2027);
+    app.applyCaMatrixImport(company.id, modern);
+    assert.equal(app.serviceMatrixValue(m, 'amount', 'event', '2027-03-03'), 45000,
+      'la ligne CA de l’EVENT se lit comme une saisie, format français compris');
+
+    // La ligne CA du MIDI, elle, est une FORMULE : sa valeur en cache ne
+    // doit jamais être réimportée comme une saisie.
+    const lunchCa = app.parseCaMatrixRows([
+      ['AVRIL 2027'],
+      ['AVRIL', ''].concat(Array.from({ length: 30 }, (_, i) => String(i + 1))),
+      ['', ''].concat(Array(30).fill('LUNDI')),
+      ['MIDI', 'CA', '7777'],                 // 1er avril : valeur mise en cache par Excel
+    ], 2027);
+    assert.deepEqual(app.applyCaMatrixImport(company.id, lunchCa).months, [],
+      'un bloc où seule la formule CA du midi porte une valeur ne compte pas comme rempli');
+  } finally {
+    app.state.companies = saved.companies;
+    app.state.serviceMatrix = saved.matrix;
+    app.resetStateIndexes();
+  }
+});
+
 check('Migration matrixMidiSoir2026 : Breakfast fusionné dans le Midi, CA inchangé au centime', () => {
   const raw = {
     companies: [{ id: 'mig_bf', name: 'Mig BF', currency: 'EUR', year: 2026, groupId: null }],
@@ -8292,13 +8469,13 @@ await checkAsync('Matrice officielle : export Excel pré-rempli, puis réimport 
   app.state.serviceMatrix = {};
   dom.blobs.length = 0;
   try {
-    // 10/07/2027 (un samedi) : midi 96 × 46, soir 120 × 78, event 30 × 50.
+    // 10/07/2027 (un samedi) : midi 96 × 46, soir 120 × 78, event 80 000 €
+    // en montant global (07/10/2026 : plus de couverts ni de prix moyen).
     app.setServiceMatrixValue(company.id, 'covers', 'lunch', '2027-07-10', 96);
     app.setServiceMatrixValue(company.id, 'ticket', 'lunch', '2027-07-10', 46);
     app.setServiceMatrixValue(company.id, 'covers', 'dinner', '2027-07-10', 120);
     app.setServiceMatrixValue(company.id, 'ticket', 'dinner', '2027-07-10', 78);
-    app.setServiceMatrixValue(company.id, 'covers', 'event', '2027-07-10', 30);
-    app.setServiceMatrixValue(company.id, 'ticket', 'event', '2027-07-10', 50);
+    app.setServiceMatrixValue(company.id, 'amount', 'event', '2027-07-10', 80000);
     // Un autre mois, pour vérifier qu'un import partiel ne l'efface pas.
     app.setServiceMatrixValue(company.id, 'covers', 'lunch', '2027-03-02', 40);
     app.setServiceMatrixValue(company.id, 'ticket', 'lunch', '2027-03-02', 30);
@@ -8322,7 +8499,9 @@ await checkAsync('Matrice officielle : export Excel pré-rempli, puis réimport 
     for (const month of ['JANVIER', 'FEVRIER', 'JUILLET', 'DECEMBRE']) {
       assert.ok(rows.some((r) => app.caMatrixNorm(r[0]) === month), 'bloc ' + month + ' présent sur la même feuille');
     }
-    assert.ok(flat.includes('TOTAL CA MIDI + SOIR'), 'ligne de total du modèle');
+    assert.ok(flat.includes('TOTAL CA'), 'ligne de total du modèle');
+    assert.ok(!flat.includes('TOTAL CA MIDI + SOIR'),
+      'le total ne laisse plus l’Event dehors : il s’appelle « TOTAL CA » (Alexis, 07/10/2026)');
     assert.ok(!/BUDGET|Variance/i.test(flat), 'plus de ligne BUDGET / Variance');
     assert.ok(!/BREAKFAST/i.test(flat), 'plus de service Breakfast');
     const julyHead = rows.findIndex((r) => app.caMatrixNorm(r[0]) === 'JUILLET');
@@ -8333,6 +8512,21 @@ await checkAsync('Matrice officielle : export Excel pré-rempli, puis réimport 
     assert.equal(rows[julyHead + 3][col10], '46', 'prix moyen du midi pré-rempli');
     assert.equal(rows[julyHead + 4][col10], '96', 'couverts du midi pré-remplis');
 
+    // EVENT : une SEULE ligne, « CA », et c'est une valeur saisie — pas de
+    // Prix Moy ni de Nbr de couv (Alexis, 07/10/2026 : « 80 000 €
+    // directement sans mettre 800 € en PM et 100 couverts »).
+    const eventHead = rows.findIndex((r, i) => i > julyHead && app.caMatrixNorm(r[0]) === 'EVENT');
+    assert.ok(eventHead > julyHead, 'le bloc EVENT de juillet doit exister');
+    assert.equal(rows[eventHead][1], 'CA', 'la seule sous-ligne de l’EVENT est « CA »');
+    assert.equal(rows[eventHead][col10], '80000', 'le montant global du jour est pré-rempli');
+    assert.notEqual(rows[eventHead + 1][1], 'Prix Moy', 'l’EVENT n’a plus de ligne Prix Moy');
+    assert.notEqual(rows[eventHead + 1][1], 'Nbr de couv', 'l’EVENT n’a plus de ligne Nbr de couv');
+
+    // Le TOTAL CA du jour additionne bien les TROIS services : le bug
+    // signalé par Alexis était justement un total à deux termes.
+    const totalRow = rows.findIndex((r, i) => i > julyHead && app.caMatrixNorm(r[0]) === 'TOTAL CA');
+    assert.ok(totalRow > eventHead, 'la ligne TOTAL CA doit suivre les trois blocs de service');
+
     // Le CA est une formule (couverts × prix), pas une valeur figée.
     const files = app.xlsxWorkbookFiles(app.caMatrixWorkbookSheets(company));
     const matrixXml = files.find((f) => f.name === 'xl/worksheets/sheet2.xml').content;
@@ -8341,16 +8535,22 @@ await checkAsync('Matrice officielle : export Excel pré-rempli, puis réimport 
       'le classeur se recalcule à l’ouverture');
 
     // Réimport : on vide juillet, on réimporte le fichier → restauré.
-    for (const svc of ['lunch', 'dinner', 'event']) {
+    for (const svc of ['lunch', 'dinner']) {
       app.setServiceMatrixValue(company.id, 'covers', svc, '2027-07-10', 0);
       app.setServiceMatrixValue(company.id, 'ticket', svc, '2027-07-10', 0);
     }
+    app.setServiceMatrixValue(company.id, 'amount', 'event', '2027-07-10', 0);
     await app.importCaMatrixFromFile(new File([buffer], 'Matrice_CA_Anna_Cannes.xlsx'));
     const m = app.serviceMatrixOf(company.id);
     assert.equal(app.serviceMatrixValue(m, 'covers', 'lunch', '2027-07-10'), 96, 'couverts midi restaurés');
     assert.equal(app.serviceMatrixValue(m, 'ticket', 'dinner', '2027-07-10'), 78, 'prix moyen soir restauré');
-    assert.equal(app.serviceMatrixValue(m, 'covers', 'event', '2027-07-10'), 30, 'couverts event restaurés');
+    assert.equal(app.serviceMatrixValue(m, 'amount', 'event', '2027-07-10'), 80000,
+      'montant global de l’event restauré — la ligne CA de l’EVENT est bien relue comme une saisie');
     assert.equal(app.serviceMatrixValue(m, 'covers', 'lunch', '2027-03-02'), 40, 'mars intact');
+
+    // Le CA du jour additionne les trois services : 96 × 46 + 120 × 78 + 80 000.
+    assert.equal(app.matrixTotalRevenue(m, ['2027-07-10'])[0], 96 * 46 + 120 * 78 + 80000,
+      'le CA total du jour doit prendre le montant de l’Event');
   } finally {
     app.state.companies = saved.companies; app.state.activeCompany = saved.active;
     app.state.serviceMatrix = saved.matrix;
@@ -16163,6 +16363,16 @@ check('Vue téléphone : la matrice se saisit par cartes de jour, mêmes cases q
   assert.equal((phone.match(/class="matrix-day-card/g) || []).length, keys.length,
     'une carte par jour du mois');
   for (const service of app.MATRIX_SERVICES) {
+    if (service.direct) {
+      // Event : une seule case, son montant global du jour (07/10/2026).
+      assert.ok(phone.includes('data-matrix-input="amount|' + service.id + '|' + keys[0] + '"'),
+        'le montant global du service ' + service.id + ' doit être saisissable');
+      assert.ok(!phone.includes('data-matrix-input="covers|' + service.id + '|' + keys[0] + '"'),
+        'le service ' + service.id + ' ne doit plus avoir de case de couverts');
+      assert.ok(!phone.includes('data-matrix-input="ticket|' + service.id + '|' + keys[0] + '"'),
+        'le service ' + service.id + ' ne doit plus avoir de case de prix moyen');
+      continue;
+    }
     assert.ok(phone.includes('data-matrix-input="covers|' + service.id + '|' + keys[0] + '"'),
       'les couverts du service ' + service.id + ' doivent être saisissables');
     assert.ok(phone.includes('data-matrix-input="ticket|' + service.id + '|' + keys[0] + '"'),
@@ -18127,16 +18337,15 @@ check('CA : la bande d’événements est rendue au-dessus de la ligne des jours
     // sur le seul en-tête se perd dès qu'on lit une ligne du bas.
     assert.ok(rendered.includes('matrix-event-col'),
       'la colonne d’un jour d’événement doit être teintée sur toute la hauteur du tableau');
-    // Quatre jours couverts × (2 services couverts + 2 services ticket +
-    // 2 services CA + 2 lignes de total) : la teinte doit descendre bien
-    // au-delà de la seule ligne d'en-tête.
-    // 4 jours couverts × 14 cellules de colonne (saisie des couverts et des
-    // tickets par service, CA calculé, lignes de total) = 56. Le seuil est
-    // posé au-dessus de ce que donnerait la seule moitié « cellules
-    // calculées » (24) : retirer la teinte des cases de SAISIE doit faire
-    // échouer ce contrôle, pas passer inaperçu.
+    // 4 jours couverts × 9 cellules de colonne = 36 : par jour, 2 cases de
+    // couverts + 2 de prix moyen (midi, soir) + 3 lignes de CA (midi et
+    // soir calculés, Event saisi en montant global depuis le 07/10/2026) +
+    // les 2 lignes de total. Le seuil est posé au-dessus de ce que
+    // donnerait l'une ou l'autre moitié seule — 16 pour les cellules
+    // calculées, 20 pour les cases de saisie : perdre la teinte d'un des
+    // deux groupes doit faire échouer ce contrôle, pas passer inaperçu.
     const tinted = (rendered.match(/matrix-event-col/g) || []).length;
-    assert.ok(tinted >= 40,
+    assert.ok(tinted >= 30,
       'la teinte doit couvrir les cellules de saisie ET les cellules calculées, pas seulement une partie (trouvé : ' + tinted + ')');
     assert.ok(rendered.includes('matrix-event-dot'),
       'une pastille doit marquer le jour sous son numéro');
