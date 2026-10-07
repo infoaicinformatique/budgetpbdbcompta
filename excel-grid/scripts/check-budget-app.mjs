@@ -428,15 +428,11 @@ const app = await importApp(
     '  saveEmployeeFromForm, deleteEmployee, syncPayrollLines,\n' +
     '  togglePayrollMatrixDetail, payrollLockedRates, payrollRateLocked, payrollLockedRateValue,\n' +
     '  setPayrollLockedRate, payrollLockScopeCompanies, lockPayrollRateFromPanel, unlockPayrollRateFromPanel,\n' +
-<<<<<<< HEAD
     '  employeeRateOf, bonusGrossFromNet, employeeLabel,\n' +
-=======
-    '  employeeRateOf, bonusGrossFromNet,\n' +
     '  payrollExtrasOf, payrollExtraById, newPayrollExtra, payrollExtraLabel,\n' +
     '  payrollExtraEmployerRate, payrollExtraMonthGross, payrollExtraMonths, payrollExtraTotals,\n' +
     '  payrollExtraCenters, addPayrollExtra, deletePayrollExtra, setPayrollExtraMonth,\n' +
     '  setPayrollExtraName, setPayrollExtraCenter, setPayrollExtraEmployerRate, payrollExtrasPanel,\n' +
->>>>>>> claude/payroll-extras
     '  monthlyLeaveCharge, companyLeaveRelease, setCompanyLeaveRelease, leaveReleaseIsManual,\n' +
     '  PAYROLL_LOCKABLE_RATES,\n' +
     '  employeeRateFieldHtml, payrollLockPanel, employeeEditorHtml,\n' +
@@ -611,12 +607,8 @@ const app = await importApp(
     'export { currentModalContainer, focusableIn, trapModalTab };\n' +
     'export { importIssuesSummaryText, importSummaryMessage };\n' +
     'export { changeCompanyYear, shiftDateKey, shiftCompanyDates, purgeCompanyData, COMPANY_KEYED_STATE,\n' +
-<<<<<<< HEAD
-    '  UNDO_IGNORED_KEYS };\n' +
-=======
     '  SERVER_COMPANY_ARRAYS,\n' +
-    '  UNDO_PRESERVED_KEYS };\n' +
->>>>>>> claude/payroll-extras
+    '  UNDO_IGNORED_KEYS };\n' +
     'export { playModalExit, MODAL_EXIT_MS };\n' +
     'export { markWelcomeChoice };\n' +
     'export { styledPnlSheet };\n' +
