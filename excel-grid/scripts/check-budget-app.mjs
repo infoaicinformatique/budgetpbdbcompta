@@ -413,6 +413,8 @@ const app = await importApp(
     '  importForecastRealizedMatrixFile };\n' +
     'export function __setPanelOpen(id, open) { setPanelOpen(id, open); }\n' +
     'export function __undoHistoryBytes() { return undoHistoryBytes(); }\n' +
+    'export function __undoSnapshotBytes() { return undoSnapshot ? undoSnapshot.length : 0; }\n' +
+    'export { undoSerialize, makeUndoDelta, applyUndoDelta };\n' +
     'export function __UNDO_MAX() { return UNDO_MAX; }\n' +
     'export function __UNDO_MAX_BYTES() { return UNDO_MAX_BYTES; }\n' +
     'export { ensureDailyRevenue };\n' +
@@ -601,7 +603,7 @@ const app = await importApp(
     'export { currentModalContainer, focusableIn, trapModalTab };\n' +
     'export { importIssuesSummaryText, importSummaryMessage };\n' +
     'export { changeCompanyYear, shiftDateKey, shiftCompanyDates, purgeCompanyData, COMPANY_KEYED_STATE,\n' +
-    '  UNDO_PRESERVED_KEYS };\n' +
+    '  UNDO_IGNORED_KEYS };\n' +
     'export { playModalExit, MODAL_EXIT_MS };\n' +
     'export { markWelcomeChoice };\n' +
     'export { styledPnlSheet };\n' +
@@ -11817,13 +11819,15 @@ check('Payroll : l’onglet affiche l’équipe, la matrice, les congés et les 
 
 /* --- 4 ter. Économie de mémoire et propreté de l'état ------------------ */
 
-check('l’historique d’annulation reste borné en mémoire, pas seulement en étapes', () => {
+check('l’historique d’annulation garde ses quarante étapes sur un budget volumineux, pour quelques octets', () => {
   const savedLines = app.state.lines.slice();
   const savedCompanies = app.state.companies.slice();
   const savedActive = app.state.activeCompany;
 
-  // Un budget volumineux : chaque instantané pèse lourd, donc le plafond
-  // en octets doit se déclencher avant le plafond en nombre d'étapes.
+  // Un budget volumineux : avant le 07/10/2026 chaque étape était une COPIE
+  // COMPLÈTE de l'état, et le plafond mémoire comptait aussi l'instantané de
+  // référence — sur un gros budget la pile était ramenée à une poignée
+  // d'étapes, voire à UNE SEULE (voir le contrôle suivant).
   const company = { id: 'mem_c', name: 'Mémoire', currency: 'EUR', year: 2026, groupId: null };
   app.state.companies = [company];
   app.state.activeCompany = company.id;
@@ -11844,13 +11848,20 @@ check('l’historique d’annulation reste borné en mémoire, pas seulement en 
       app.__forceUndoStep();
     }
     const bytes = app.__undoHistoryBytes();
+    const snapshot = app.__undoSnapshotBytes();
+    assert.ok(snapshot > 200000,
+      'le jeu d’essai doit bien produire un état volumineux (' + snapshot + ' caractères)');
+    assert.equal(app.__getUndoDepth().undo, app.__UNDO_MAX(),
+      'les quarante étapes promises doivent toutes être là, quelle que soit la taille du budget');
     assert.ok(bytes <= app.__UNDO_MAX_BYTES(),
-      'la pile d’annulation devrait respecter son plafond mémoire (' + bytes + ' > ' + app.__UNDO_MAX_BYTES() + ')');
-    assert.ok(app.__getUndoDepth().undo >= 1,
-      'même sous plafond, il doit toujours rester au moins une étape annulable');
+      'l’historique devrait respecter son plafond mémoire (' + bytes + ' > ' + app.__UNDO_MAX_BYTES() + ')');
+    // Et de très loin : un montant corrigé ne change que quelques
+    // caractères. Quarante étapes doivent coûter moins qu'UNE copie de
+    // l'état — c'est tout l'intérêt des écarts.
+    assert.ok(bytes < snapshot,
+      'quarante écarts (' + bytes + ') doivent peser moins qu’une seule copie de l’état (' + snapshot + ')');
 
-    // Une modification qui ne change rien ne doit pas empiler une copie
-    // complète de l'état pour rien.
+    // Une modification qui ne change rien ne doit pas empiler d'étape.
     const before = app.__getUndoDepth().undo;
     app.save();
     app.__forceUndoStep();
@@ -11865,6 +11876,131 @@ check('l’historique d’annulation reste borné en mémoire, pas seulement en 
     app.resetUndoHistory();
     app.render();
   }
+});
+
+check('Correctif : annuler et refaire restent utilisables autant de fois qu’il y a eu de modifications, même sur un budget de production', () => {
+  // Alexis, 07/10/2026 : « l'option de retour en arrière et de retour en
+  // avant ne sont pas fonctionnel → le retour en arrière est limité à une
+  // seule utilisation ». Le budget de production pèse 2,2 Mo sérialisé ;
+  // chaque étape étant alors une copie complète, le plafond mémoire de 4 Mo
+  // (qui comptait aussi l'instantané de référence) ramenait la pile à UNE
+  // étape et vidait le « rétablir » dans le `trimUndoHistory()` que
+  // `undo()` appelait juste après l'avoir rempli.
+  const savedLines = app.state.lines.slice();
+  const savedCompanies = app.state.companies.slice();
+  const savedActive = app.state.activeCompany;
+
+  const company = { id: 'undo_big_c', name: 'Gros Budget', currency: 'EUR', year: 2026, groupId: null };
+  app.state.companies = [company];
+  app.state.activeCompany = company.id;
+  app.state.lines = [];
+  // Assez de lignes pour dépasser le plafond de 4 Mo dès la deuxième étape
+  // avec l'ancien mécanisme — l'ordre de grandeur du budget réel.
+  for (let i = 0; i < 9000; i++) {
+    app.state.lines.push({
+      id: 'undo_big_l' + i, companyId: company.id, account: '70105100',
+      name: 'Ligne de chiffre d’affaires numéro ' + i, note: 'commentaire de remplissage',
+      amounts: months(1000 + i),
+    });
+  }
+  const target = app.state.lines[0];
+
+  try {
+    app.resetUndoHistory();
+    const snapshot = app.__undoSnapshotBytes();
+    assert.ok(snapshot > app.__UNDO_MAX_BYTES() / 3,
+      'le jeu d’essai doit atteindre l’ordre de grandeur du budget de production (' + snapshot + ' caractères)');
+
+    // Douze modifications bien distinctes : 100, 200, … 1200.
+    const steps = 12;
+    for (let i = 1; i <= steps; i++) {
+      target.amounts[0] = i * 100;
+      app.save();
+      app.__forceUndoStep();
+    }
+    assert.equal(app.__getUndoDepth().undo, steps,
+      'les douze modifications doivent donner douze étapes annulables, pas une seule');
+
+    // On remonte toute la pile, une valeur à la fois.
+    const line = function () { return app.state.lines.find((l) => l.id === 'undo_big_l0'); };
+    for (let i = steps - 1; i >= 1; i--) {
+      assert.equal(app.undo(), true, 'annuler devrait encore être possible à l’étape ' + i);
+      assert.equal(line().amounts[0], i * 100,
+        'annuler devrait ramener à ' + (i * 100) + ', pas s’arrêter en route');
+    }
+    assert.equal(app.undo(), true, 'une dernière annulation ramène à la valeur d’origine');
+    assert.equal(line().amounts[0], 1000, 'la valeur d’origine de la ligne doit être retrouvée');
+    assert.equal(app.undo(), false, 'et là, plus rien à annuler');
+
+    // Puis on redescend : « rétablir » doit être tout aussi utilisable.
+    assert.equal(app.__getUndoDepth().redo, steps,
+      'les douze étapes doivent être rétablissables — c’est ce que l’ancien trim effaçait');
+    for (let i = 1; i <= steps; i++) {
+      assert.equal(app.redo(), true, 'rétablir devrait encore être possible à l’étape ' + i);
+      assert.equal(line().amounts[0], i * 100, 'rétablir devrait avancer à ' + (i * 100));
+    }
+    assert.equal(app.redo(), false, 'et là, plus rien à rétablir');
+
+    // L'historique n'a jamais été tronqué en route : `rebaseUndoHistory`
+    // vide les deux piles si la référence se décale, ce qui se verrait ici.
+    assert.equal(app.__getUndoDepth().undo, steps,
+      'aucune étape ne doit avoir été perdue pendant l’aller-retour (référence restée fidèle)');
+  } finally {
+    app.state.lines = savedLines;
+    app.state.companies = savedCompanies;
+    app.state.activeCompany = savedActive;
+    app.resetUndoHistory();
+    app.render();
+  }
+});
+
+check('Historique d’annulation : l’écart entre deux états est exact, et ignore ce qui ne regarde pas le budget', () => {
+  // Les écarts remplacent les copies complètes depuis le 07/10/2026 : leur
+  // exactitude est ce qui fait tenir tout l'historique.
+  const cases = [
+    ['identique', 'abc', 'abc'],
+    ['un caractère au milieu', 'a{"x":1}z', 'a{"x":9}z'],
+    ['plus long', '{"a":1}', '{"a":1,"b":2}'],
+    ['plus court', '{"a":1,"b":2}', '{"a":1}'],
+    ['changement au tout début', 'xbc', 'abc'],
+    ['changement à la toute fin', 'abx', 'abc'],
+    ['tout change', 'abc', 'xyz'],
+    ['vers une chaîne vide', 'abc', ''],
+    ['depuis une chaîne vide', '', 'abc'],
+    ['répétitions trompeuses', 'aaaaa', 'aaa'],
+  ];
+  for (const [label, from, to] of cases) {
+    const delta = app.makeUndoDelta(from, to);
+    assert.equal(app.applyUndoDelta(from, delta), to, 'écart inexact : ' + label);
+  }
+
+  // Un montant corrigé dans un état volumineux ne doit coûter qu'une
+  // poignée de caractères : c'est la propriété qui rend l'historique viable.
+  const big = JSON.stringify({ lines: Array.from({ length: 2000 }, (_, i) => ({ id: 'l' + i, a: 1000 + i })) });
+  const bigChanged = big.replace('"a":1500', '"a":1501');
+  assert.notEqual(bigChanged, big, 'le jeu d’essai doit bien contenir une modification');
+  assert.ok(app.makeUndoDelta(big, bigChanged).text.length < 20,
+    'un chiffre corrigé dans un gros état ne doit tenir que sur quelques caractères');
+
+  // Ce que l'historique ignore : comptes, journaux, horodatage et choix
+  // d'affichage. Deux états qui n'en diffèrent que par là sont, pour
+  // l'historique, le même état — sinon chaque case saisie (qui allonge
+  // `editLog`) ou chaque sauvegarde (qui réécrit `lastSavedAt`) décalerait
+  // la référence des écarts.
+  for (const key of ['users', 'authLog', 'editLog', 'lastSavedAt', 'activeCompany',
+    'activeEnvironmentId', 'activeScenario']) {
+    assert.ok(app.UNDO_IGNORED_KEYS.includes(key), key + ' doit rester hors de l’historique');
+  }
+  const base = { companies: [], lines: [{ id: 'l1', amounts: [1] }] };
+  const a = app.undoSerialize(Object.assign({}, base, {
+    editLog: [{ at: 'hier' }], lastSavedAt: '2026-10-07T10:00:00Z', activeCompany: 'c1',
+  }));
+  const b = app.undoSerialize(Object.assign({}, base, {
+    editLog: [{ at: 'hier' }, { at: 'aujourd’hui' }], lastSavedAt: '2026-10-07T11:00:00Z', activeCompany: 'c2',
+  }));
+  assert.equal(a, b, 'journal, horodatage et société affichée ne doivent pas entrer dans l’historique');
+  const c = app.undoSerialize(Object.assign({}, base, { lines: [{ id: 'l1', amounts: [2] }] }));
+  assert.notEqual(a, c, 'un montant, lui, doit bien y entrer');
 });
 
 check('supprimer une société emporte son réalisé quotidien', () => {

@@ -77,98 +77,96 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
-### CA Event : montant global par jour, et compté dans le total (07/10/2026)
+### Annuler / Rétablir : l'historique passe aux écarts (07/10/2026)
 
-Alexis : « Dans la matrice de saisie de CA le total ne prend pas le montant du
-CA Event. Il faut également modifier les deux options (matrices et au sein de
-l'application) de saisir du CA event en montant global par jour au lieu de
-saisir couverts et Prix moyen. Ex : 80 000 € directement sans mettre 800 € en
-PM et 100 couverts ».
+Alexis : « L'option de retour en arrière et de retour en avant ne sont pas
+fonctionnel → le retour en arrière est limité à une seule utilisation ».
 
-Deux demandes, et les deux constats étaient exacts :
+**Ce n'était pas un réglage trop serré, mais un mécanisme qui ne tenait pas
+l'échelle.** Chaque étape d'annulation était une **copie complète** de l'état
+sérialisé, et le plafond mémoire `UNDO_MAX_BYTES` (4 Mo) comptait aussi
+l'instantané de référence. Or `/data/budget.json` pèse aujourd'hui **2,2 Mo** :
 
-- le total de la **matrice Excel** s'appelait « TOTAL CA MIDI + SOIR » et
-  additionnait les deux seuls services servis au couvert, Event exclu — à la
-  fois sur la feuille des douze mois et sur la « Synthèse annuelle ». (Dans
-  l'application, la ligne « CA Total » prenait déjà les trois services : c'est
-  bien le fichier qui laissait l'Event dehors.)
-- un événement se facture au forfait : le prix moyen et le nombre de couverts
-  y étaient une reconstitution après coup, deux chiffres inventés pour
-  retomber sur le montant connu.
+- référence (2,2 Mo) + une étape (2,2 Mo) = 4,4 Mo, déjà au-delà du plafond ;
+- `trimUndoHistory()` ramenait donc la pile à **une seule** étape — d'où « le
+  retour en arrière est limité à une seule utilisation » ;
+- et comme `undo()` empilait le « rétablir » **puis** appelait
+  `trimUndoHistory()`, la branche `if (redoStack.length) redoStack.shift()`
+  jetait aussitôt l'étape qu'il venait de créer : le « retour en avant » ne
+  pouvait jamais rien rétablir.
+
+Les deux symptômes avaient donc une seule cause. Le mécanisme marchait sur un
+petit budget (c'est pourquoi les contrôles passaient : le jeu d'essai de 1 500
+lignes pèse 265 Ko, soit 14 étapes) et s'effondrait à mesure que le budget
+réel grossissait.
 
 Ce qui change :
 
-- **`MATRIX_SERVICES`** : Event porte désormais `direct: true`. Les services
-  directs se saisissent en **montant global par jour**, dans un troisième
-  dictionnaire de la matrice, `amount` (à côté de `covers` et `ticket`) ;
-- **`matrixDayRevenue(matrix, serviceId, key)`** est le seul endroit qui
-  connaît la différence entre les deux modes : montant saisi pour un service
-  direct, couverts × prix moyen pour les autres. `matrixServiceRevenue` et
-  `matrixTotalRevenue` passent par lui ;
-- `normalizeServiceMatrix` n'accepte `amount` que pour les services directs,
-  et `covers`/`ticket` que pour les autres ; `setServiceMatrixValue` refuse
-  les paires incohérentes (des couverts sur l'Event, un montant global sur le
-  midi). Aucun état relu ne peut donc porter les deux à la fois, ce qui
-  rendrait le CA du jour ambigu ;
-- **matrice affichée** : les blocs « Couverts » et « Ticket moyen » ne listent
-  plus que Midi et Soir (`MATRIX_COVER_SERVICES`) ; dans le bloc « Chiffre
-  d'affaires », la ligne Event devient **saisissable** — la seule case de la
-  matrice qui la concerne, marquée « montant global » sous son libellé. Sur
-  téléphone, sa carte n'a plus qu'un champ, « CA du jour (€) » ;
-- **matrice Excel** : le bloc EVENT n'a plus qu'une ligne, « CA », et c'est
-  une case à remplir (les lignes CA du midi et du soir restent des formules).
-  Même chose sur la « Synthèse annuelle ». La ligne de total s'appelle
-  désormais **« TOTAL CA »** et additionne les trois services, sur les deux
-  feuilles. Le mode d'emploi du classeur a été réécrit en conséquence ;
-- **import** : la ligne « CA » n'est relue comme une saisie que pour un
-  service direct. Pour le midi et le soir c'est une formule, dont Excel garde
-  une valeur en cache dès qu'il a ouvert le fichier : la lire reviendrait à
-  réimporter un résultat calculé en le prenant pour une saisie.
+- l'historique garde **un seul** état sérialisé de référence (`undoSnapshot`,
+  celui qui est à l'écran) et, de part et d'autre, des **écarts** —
+  `makeUndoDelta(from, to)` ne retient que le morceau de texte qui change
+  entre deux sérialisations : `{ head, tail, text }`, à relire comme « garde
+  les `head` premiers caractères, puis `text`, puis les `tail` derniers ».
+  Comparaison sur les **caractères**, pas sur les objets : aucune hypothèse
+  sur la forme de l'état, et l'écart est exact par construction ;
+- `undoHistoryBytes()` ne mesure plus que les écarts. Compter la référence
+  revenait à faire payer à l'historique une copie qui ne grandit pas avec sa
+  profondeur — c'est précisément ce qui cassait l'annulation ;
+- `trimUndoHistory()` conserve toujours **une étape de chaque côté** (`> 1`
+  des deux côtés), et retire d'abord les plus anciennes : pour « annuler » le
+  passé le plus lointain, pour « rétablir » le futur le plus lointain. Dans
+  les deux cas c'est le bout de chaîne qu'on atteint en dernier, donc le seul
+  qu'on puisse retirer sans décaler ce qui reste ;
+- `undoSerialize()` sort de l'historique ce qui ne regarde pas le budget
+  (`UNDO_IGNORED_KEYS`, qui remplace `UNDO_PRESERVED_KEYS` : une seule liste
+  pour les deux usages, puisque ce que l'historique ignore est exactement ce
+  qu'une annulation ne doit pas toucher). **Deux raisons qui tombent sur la
+  même liste** : la sécurité et la traçabilité (comptes et journaux, audit du
+  24/09/2026 — Ctrl+Z annule du budget, pas des droits), et désormais la
+  stabilité de la référence. Le journal des modifications grossit à chaque
+  case saisie, l'horodatage change à chaque sauvegarde, et `render()` recale
+  la société et l'environnement affichés (`enforceCompanyPermission`) : ces
+  valeurs varient **sans** qu'on ait rien annulé. Les laisser dans la
+  sérialisation aurait décalé la référence des écarts, et créé des étapes
+  d'annulation qui ne changent rien à l'écran ;
+- `rebaseUndoHistory(attendu)` recale la référence sur ce que l'application
+  contient **vraiment** après avoir installé une étape, et vide les deux piles
+  si elle ne correspond pas. Les écarts s'appuyant les uns sur les autres, une
+  référence décalée ferait réapparaître des chiffres faux : un historique
+  tronqué se voit (les boutons se grisent), un historique décalé non.
 
-**Ticket moyen.** Un événement n'apporte plus aucun couvert. Laisser son CA au
-numérateur aurait donné un ticket moyen absurde : 100 couverts à 50 € plus
-80 000 € d'événement auraient affiché 850 € de « ticket moyen » au lieu de 50.
-Le numérateur est donc le **CA servi au couvert** (`matrixCoversRevenue`,
-Event exclu), dans la tuile du mois (`matrixOverallTicket`, légende « CA hors
-Event ÷ couverts du mois ») comme dans la ligne Ticket moyen du P&L
-(`matrixMonthlySeries`). Le **CA**, lui, prend l'Event partout : ligne CA
-Total, tuiles « CA du mois » et « CA de l'année », `matrixYearTotals`.
+**Mémoire.** Elle baisse en même temps que la profondeur remonte : sur le
+budget de production, l'ancien mécanisme retenait 4,4 Mo pour **une** étape ;
+le nouveau retient 2,2 Mo (la référence, inévitable) plus quelques centaines
+d'octets pour les **quarante** étapes promises. Un montant corrigé ne change
+que quelques caractères dans 2,2 Mo de JSON — c'est ce morceau-là qu'il faut
+garder.
 
-Migration `matrixEventAmount2026` (`adoptState`, donc aussi sur l'état reçu du
-serveur) : les couverts et prix moyen déjà saisis sur l'Event deviennent un
-montant, `couverts × prix moyen` — le CA exact qu'ils produisaient — puis sont
-effacés. Elle tourne **avant** `normalizeServiceMatrix`, comme
-`mergeBreakfastIntoLunch` juste avant elle : la normalisation n'accepte plus
-ces deux champs sur un service direct et aurait fait disparaître le CA Event
-déjà budgété sans rien reporter. `shiftServiceMatrix` décale aussi `amount`
-(sommé quand deux dates se rejoignent, multiplié par le coefficient d'une
-duplication) et `companyHasDatedData` le regarde.
+Contrôles ajoutés et repris (`check-budget-app.mjs`, +2, un réécrit) :
 
-Les **matrices déjà en circulation** chez les directeurs, où l'EVENT porte
-encore un prix moyen et des couverts, restent acceptées à l'import : leur
-produit tient lieu de montant du jour (`applyCaMatrixImport`). Sans ce repli,
-un fichier parti avant aujourd'hui serait revenu avec un CA Event à zéro.
+- « annuler et refaire restent utilisables autant de fois qu'il y a eu de
+  modifications, même sur un budget de production » : 9 000 lignes (l'ordre de
+  grandeur du budget réel), douze modifications, douze étapes, puis douze
+  annulations qui reviennent valeur par valeur, puis douze rétablissements qui
+  repartent valeur par valeur, et aucune étape perdue en route. **Rejoué avec
+  l'ancienne économie (une copie complète par étape, la référence comptée dans
+  le plafond, le trim qui vide le « rétablir »), ce contrôle échoue sur
+  `1 !== 12`** — exactement ce que décrivait Alexis ;
+- le contrôle mémoire existant exigeait « au moins une étape » : il passait
+  donc avec le bug. Il exige maintenant les **quarante** étapes sur un budget
+  volumineux, et que les quarante écarts pèsent **moins qu'une seule copie** de
+  l'état (rejoué à l'ancienne : `14 !== 40`) ;
+- « l'écart entre deux états est exact » : dix cas de `makeUndoDelta` /
+  `applyUndoDelta` (identique, un caractère au milieu, plus long, plus court,
+  changement au tout début et à la toute fin, tout change, vers et depuis une
+  chaîne vide, répétitions trompeuses), le coût d'un chiffre corrigé dans un
+  gros état (moins de vingt caractères), et le fait que journal, horodatage et
+  société affichée n'entrent pas dans l'historique alors qu'un montant, lui, y
+  entre.
 
-Contrôles ajoutés (`check-budget-app.mjs`, +3) :
-
-- « l'Event se saisit en montant global par jour, et le CA Total le prend » :
-  l'exemple d'Alexis au centime (100 × 50 au midi + 80 000 € d'Event = 85 000 €
-  de CA Total), l'Event qui n'ajoute aucun couvert, le ticket moyen qui reste
-  à 50 € et non 850 €, le total annuel qui comprend bien l'Event, les écritures
-  incohérentes refusées dans les deux sens, et la matrice affichée (une case
-  `amount` pour l'Event, plus aucune case de couverts ni de prix moyen, les
-  deux cases du midi intactes, la légende de la tuile) ;
-- « migration matrixEventAmount2026 » : 100 couverts à 800 € donnent 80 000 €,
-  les champs d'origine sont effacés sans laisser de journée vide derrière eux,
-  le midi n'est pas touché, le CA du jour est inchangé, et la migration rejouée
-  ne refait rien ;
-- « matrice importée à l'ancien format » : l'EVENT en Prix Moy × Nbr de couv
-  devient un montant, la ligne CA de l'EVENT au nouveau format fait foi
-  (format français compris), et un bloc où seule la formule CA du midi porte
-  une valeur en cache ne compte pas comme rempli.
-
-Les contrôles existants qui saisissaient l'Event en couverts × prix moyen ont
-été repris sur le montant global. `APP_BUILD` passe à `2026-10-07.2`.
+Le contrôle de sécurité du 24/09/2026 (« Ctrl+Z ne rend jamais un droit retiré
+ni n'efface le journal ») passe sans modification : la liste a changé de nom et
+s'est allongée, pas de rôle. `APP_BUILD` passe à `2026-10-07.3`.
 
 ### La colonne C de la matrice d'import devient le nom de la dépense (05/10/2026)
 
@@ -11187,6 +11185,8 @@ const app = await importApp(
     '  importForecastRealizedMatrixFile };\n' +
     'export function __setPanelOpen(id, open) { setPanelOpen(id, open); }\n' +
     'export function __undoHistoryBytes() { return undoHistoryBytes(); }\n' +
+    'export function __undoSnapshotBytes() { return undoSnapshot ? undoSnapshot.length : 0; }\n' +
+    'export { undoSerialize, makeUndoDelta, applyUndoDelta };\n' +
     'export function __UNDO_MAX() { return UNDO_MAX; }\n' +
     'export function __UNDO_MAX_BYTES() { return UNDO_MAX_BYTES; }\n' +
     'export { ensureDailyRevenue };\n' +
@@ -11375,7 +11375,7 @@ const app = await importApp(
     'export { currentModalContainer, focusableIn, trapModalTab };\n' +
     'export { importIssuesSummaryText, importSummaryMessage };\n' +
     'export { changeCompanyYear, shiftDateKey, shiftCompanyDates, purgeCompanyData, COMPANY_KEYED_STATE,\n' +
-    '  UNDO_PRESERVED_KEYS };\n' +
+    '  UNDO_IGNORED_KEYS };\n' +
     'export { playModalExit, MODAL_EXIT_MS };\n' +
     'export { markWelcomeChoice };\n' +
     'export { styledPnlSheet };\n' +
@@ -22591,13 +22591,15 @@ check('Payroll : l’onglet affiche l’équipe, la matrice, les congés et les 
 
 /* --- 4 ter. Économie de mémoire et propreté de l'état ------------------ */
 
-check('l’historique d’annulation reste borné en mémoire, pas seulement en étapes', () => {
+check('l’historique d’annulation garde ses quarante étapes sur un budget volumineux, pour quelques octets', () => {
   const savedLines = app.state.lines.slice();
   const savedCompanies = app.state.companies.slice();
   const savedActive = app.state.activeCompany;
 
-  // Un budget volumineux : chaque instantané pèse lourd, donc le plafond
-  // en octets doit se déclencher avant le plafond en nombre d'étapes.
+  // Un budget volumineux : avant le 07/10/2026 chaque étape était une COPIE
+  // COMPLÈTE de l'état, et le plafond mémoire comptait aussi l'instantané de
+  // référence — sur un gros budget la pile était ramenée à une poignée
+  // d'étapes, voire à UNE SEULE (voir le contrôle suivant).
   const company = { id: 'mem_c', name: 'Mémoire', currency: 'EUR', year: 2026, groupId: null };
   app.state.companies = [company];
   app.state.activeCompany = company.id;
@@ -22618,13 +22620,20 @@ check('l’historique d’annulation reste borné en mémoire, pas seulement en 
       app.__forceUndoStep();
     }
     const bytes = app.__undoHistoryBytes();
+    const snapshot = app.__undoSnapshotBytes();
+    assert.ok(snapshot > 200000,
+      'le jeu d’essai doit bien produire un état volumineux (' + snapshot + ' caractères)');
+    assert.equal(app.__getUndoDepth().undo, app.__UNDO_MAX(),
+      'les quarante étapes promises doivent toutes être là, quelle que soit la taille du budget');
     assert.ok(bytes <= app.__UNDO_MAX_BYTES(),
-      'la pile d’annulation devrait respecter son plafond mémoire (' + bytes + ' > ' + app.__UNDO_MAX_BYTES() + ')');
-    assert.ok(app.__getUndoDepth().undo >= 1,
-      'même sous plafond, il doit toujours rester au moins une étape annulable');
+      'l’historique devrait respecter son plafond mémoire (' + bytes + ' > ' + app.__UNDO_MAX_BYTES() + ')');
+    // Et de très loin : un montant corrigé ne change que quelques
+    // caractères. Quarante étapes doivent coûter moins qu'UNE copie de
+    // l'état — c'est tout l'intérêt des écarts.
+    assert.ok(bytes < snapshot,
+      'quarante écarts (' + bytes + ') doivent peser moins qu’une seule copie de l’état (' + snapshot + ')');
 
-    // Une modification qui ne change rien ne doit pas empiler une copie
-    // complète de l'état pour rien.
+    // Une modification qui ne change rien ne doit pas empiler d'étape.
     const before = app.__getUndoDepth().undo;
     app.save();
     app.__forceUndoStep();
@@ -22639,6 +22648,131 @@ check('l’historique d’annulation reste borné en mémoire, pas seulement en 
     app.resetUndoHistory();
     app.render();
   }
+});
+
+check('Correctif : annuler et refaire restent utilisables autant de fois qu’il y a eu de modifications, même sur un budget de production', () => {
+  // Alexis, 07/10/2026 : « l'option de retour en arrière et de retour en
+  // avant ne sont pas fonctionnel → le retour en arrière est limité à une
+  // seule utilisation ». Le budget de production pèse 2,2 Mo sérialisé ;
+  // chaque étape étant alors une copie complète, le plafond mémoire de 4 Mo
+  // (qui comptait aussi l'instantané de référence) ramenait la pile à UNE
+  // étape et vidait le « rétablir » dans le `trimUndoHistory()` que
+  // `undo()` appelait juste après l'avoir rempli.
+  const savedLines = app.state.lines.slice();
+  const savedCompanies = app.state.companies.slice();
+  const savedActive = app.state.activeCompany;
+
+  const company = { id: 'undo_big_c', name: 'Gros Budget', currency: 'EUR', year: 2026, groupId: null };
+  app.state.companies = [company];
+  app.state.activeCompany = company.id;
+  app.state.lines = [];
+  // Assez de lignes pour dépasser le plafond de 4 Mo dès la deuxième étape
+  // avec l'ancien mécanisme — l'ordre de grandeur du budget réel.
+  for (let i = 0; i < 9000; i++) {
+    app.state.lines.push({
+      id: 'undo_big_l' + i, companyId: company.id, account: '70105100',
+      name: 'Ligne de chiffre d’affaires numéro ' + i, note: 'commentaire de remplissage',
+      amounts: months(1000 + i),
+    });
+  }
+  const target = app.state.lines[0];
+
+  try {
+    app.resetUndoHistory();
+    const snapshot = app.__undoSnapshotBytes();
+    assert.ok(snapshot > app.__UNDO_MAX_BYTES() / 3,
+      'le jeu d’essai doit atteindre l’ordre de grandeur du budget de production (' + snapshot + ' caractères)');
+
+    // Douze modifications bien distinctes : 100, 200, … 1200.
+    const steps = 12;
+    for (let i = 1; i <= steps; i++) {
+      target.amounts[0] = i * 100;
+      app.save();
+      app.__forceUndoStep();
+    }
+    assert.equal(app.__getUndoDepth().undo, steps,
+      'les douze modifications doivent donner douze étapes annulables, pas une seule');
+
+    // On remonte toute la pile, une valeur à la fois.
+    const line = function () { return app.state.lines.find((l) => l.id === 'undo_big_l0'); };
+    for (let i = steps - 1; i >= 1; i--) {
+      assert.equal(app.undo(), true, 'annuler devrait encore être possible à l’étape ' + i);
+      assert.equal(line().amounts[0], i * 100,
+        'annuler devrait ramener à ' + (i * 100) + ', pas s’arrêter en route');
+    }
+    assert.equal(app.undo(), true, 'une dernière annulation ramène à la valeur d’origine');
+    assert.equal(line().amounts[0], 1000, 'la valeur d’origine de la ligne doit être retrouvée');
+    assert.equal(app.undo(), false, 'et là, plus rien à annuler');
+
+    // Puis on redescend : « rétablir » doit être tout aussi utilisable.
+    assert.equal(app.__getUndoDepth().redo, steps,
+      'les douze étapes doivent être rétablissables — c’est ce que l’ancien trim effaçait');
+    for (let i = 1; i <= steps; i++) {
+      assert.equal(app.redo(), true, 'rétablir devrait encore être possible à l’étape ' + i);
+      assert.equal(line().amounts[0], i * 100, 'rétablir devrait avancer à ' + (i * 100));
+    }
+    assert.equal(app.redo(), false, 'et là, plus rien à rétablir');
+
+    // L'historique n'a jamais été tronqué en route : `rebaseUndoHistory`
+    // vide les deux piles si la référence se décale, ce qui se verrait ici.
+    assert.equal(app.__getUndoDepth().undo, steps,
+      'aucune étape ne doit avoir été perdue pendant l’aller-retour (référence restée fidèle)');
+  } finally {
+    app.state.lines = savedLines;
+    app.state.companies = savedCompanies;
+    app.state.activeCompany = savedActive;
+    app.resetUndoHistory();
+    app.render();
+  }
+});
+
+check('Historique d’annulation : l’écart entre deux états est exact, et ignore ce qui ne regarde pas le budget', () => {
+  // Les écarts remplacent les copies complètes depuis le 07/10/2026 : leur
+  // exactitude est ce qui fait tenir tout l'historique.
+  const cases = [
+    ['identique', 'abc', 'abc'],
+    ['un caractère au milieu', 'a{"x":1}z', 'a{"x":9}z'],
+    ['plus long', '{"a":1}', '{"a":1,"b":2}'],
+    ['plus court', '{"a":1,"b":2}', '{"a":1}'],
+    ['changement au tout début', 'xbc', 'abc'],
+    ['changement à la toute fin', 'abx', 'abc'],
+    ['tout change', 'abc', 'xyz'],
+    ['vers une chaîne vide', 'abc', ''],
+    ['depuis une chaîne vide', '', 'abc'],
+    ['répétitions trompeuses', 'aaaaa', 'aaa'],
+  ];
+  for (const [label, from, to] of cases) {
+    const delta = app.makeUndoDelta(from, to);
+    assert.equal(app.applyUndoDelta(from, delta), to, 'écart inexact : ' + label);
+  }
+
+  // Un montant corrigé dans un état volumineux ne doit coûter qu'une
+  // poignée de caractères : c'est la propriété qui rend l'historique viable.
+  const big = JSON.stringify({ lines: Array.from({ length: 2000 }, (_, i) => ({ id: 'l' + i, a: 1000 + i })) });
+  const bigChanged = big.replace('"a":1500', '"a":1501');
+  assert.notEqual(bigChanged, big, 'le jeu d’essai doit bien contenir une modification');
+  assert.ok(app.makeUndoDelta(big, bigChanged).text.length < 20,
+    'un chiffre corrigé dans un gros état ne doit tenir que sur quelques caractères');
+
+  // Ce que l'historique ignore : comptes, journaux, horodatage et choix
+  // d'affichage. Deux états qui n'en diffèrent que par là sont, pour
+  // l'historique, le même état — sinon chaque case saisie (qui allonge
+  // `editLog`) ou chaque sauvegarde (qui réécrit `lastSavedAt`) décalerait
+  // la référence des écarts.
+  for (const key of ['users', 'authLog', 'editLog', 'lastSavedAt', 'activeCompany',
+    'activeEnvironmentId', 'activeScenario']) {
+    assert.ok(app.UNDO_IGNORED_KEYS.includes(key), key + ' doit rester hors de l’historique');
+  }
+  const base = { companies: [], lines: [{ id: 'l1', amounts: [1] }] };
+  const a = app.undoSerialize(Object.assign({}, base, {
+    editLog: [{ at: 'hier' }], lastSavedAt: '2026-10-07T10:00:00Z', activeCompany: 'c1',
+  }));
+  const b = app.undoSerialize(Object.assign({}, base, {
+    editLog: [{ at: 'hier' }, { at: 'aujourd’hui' }], lastSavedAt: '2026-10-07T11:00:00Z', activeCompany: 'c2',
+  }));
+  assert.equal(a, b, 'journal, horodatage et société affichée ne doivent pas entrer dans l’historique');
+  const c = app.undoSerialize(Object.assign({}, base, { lines: [{ id: 'l1', amounts: [2] }] }));
+  assert.notEqual(a, c, 'un montant, lui, doit bien y entrer');
 });
 
 check('supprimer une société emporte son réalisé quotidien', () => {
