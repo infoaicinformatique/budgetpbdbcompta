@@ -10,7 +10,7 @@ WORKDIR /app
 # Dépendances de production seulement (ldapts, pour l'authentification LDAP).
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
-COPY server.mjs auth-ldap.mjs rights.mjs data.mjs budget-app.html ./
+COPY server.mjs auth-ldap.mjs rights.mjs data.mjs presence.mjs budget-app.html ./
 
 # Droits d'accès (Paramètres › Droits d'accès) et données budgétaires
 # (sociétés, budgets, avec leur historique) : seul dossier inscriptible

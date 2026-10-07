@@ -77,117 +77,111 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
-### Extras : la main-d'œuvre payée à la journée (08/10/2026)
+### Qui a la main sur un budget : lecture seule pour la personne arrivée ensuite (08/10/2026)
 
-Alexis : « Sur le payroll il faut qu'on développe un moyen pour saisir les
-extras par jour travaillé et que l'on puisse entrer les montants payés, de
-manière à ce que tout soit simple et intuitif ».
+Alexis : « Lorsque deux personnes édite le même budget en même temps →
+indiquer à la personne qui s'est connecté la dernière que les modifications
+sont impossibles et indiquer la personne qui a la main ».
 
-Un extra n'a pas de salaire mensuel : il vient une soirée, une journée, et on
-le paie à la journée. Le type de contrat « Extra » existait depuis le
-06/08/2026, mais il n'était qu'une étiquette sur une fiche collaborateur — il
-obligeait à inventer un net mensuel, des dates d'entrée et de sortie, une
-augmentation, pour un besoin qui se compte en journées.
+Jusqu'ici les saisies simultanées ne se réglaient qu'**après** coup : chaque
+société porte le numéro de la révision qui l'a modifiée, et la deuxième
+écriture était refusée (409, `data.mjs`, 02/10/2026) avec un « refaites votre
+dernière saisie ». Personne n'était prévenu **avant** de taper — on pouvait
+remplir un mois entier pour apprendre ensuite qu'il était perdu.
 
-**Deux questions posées à Alexis avant d'écrire une ligne**, parce que les
-réponses changeaient le travail :
+La main se prend donc à l'arrivée, **société par société** : la première
+personne l'obtient, les suivantes le lisent en haut de chaque écran et
+travaillent en lecture seule. Par société et non pour la base entière : deux
+directeurs sur deux établissements différents ne se gênent pas, et c'est déjà
+la maille des conflits d'écriture.
 
-1. *La maille de saisie.* Retenue : **une ligne nommée par besoin** (« Extra
-   salle », « Extra plonge »), rattachée à un centre de coûts, et pour chaque
-   mois **deux chiffres — les journées travaillées et le montant payé pour une
-   journée**. Le coût du mois en découle. C'est la maille à laquelle on budgète
-   réellement un an à l'avance : on ne sait pas quels samedis de juillet seront
-   chargés, on sait qu'il faudra quarante journées d'extra. (Les deux autres
-   options proposées étaient le montant total du mois, et une grille datée jour
-   par jour façon matrice CA.)
-2. *La nature du montant et son compte.* Retenue : **un BRUT**, sur lequel les
-   charges patronales s'ajoutent, l'ensemble atterrissant sur les **6411 et
-   6451 du centre** — les mêmes comptes que le reste de la masse salariale. Les
-   extras comptent donc dans la ligne Payroll du P&L et dans le Ratio (le
-   préfixe `payroll` du moteur couvre 6411/6412/645). L'option « coût tout
-   compris sur le 6211 Personnel intérimaire » les en aurait sortis.
+**Côté serveur, `presence.mjs`** (nouveau fichier, ajouté au `Dockerfile` et
+au `.dockerignore`) :
 
-Ce qui a été écrit (section `EXTRAS` de `budget-app.html`) :
+- `createPresenceStore({ now, ttlMs })` tient une main par société :
+  `claim` (la première personne l'obtient, un deuxième appel de la même
+  personne ne fait que repousser l'expiration sans changer l'heure de prise),
+  `holderOf`, `heldByOther`, `release` (la sienne seulement — on ne reprend
+  pas une main de force), `all` ;
+- `refusalFor(account, sociétés déclarées, état)` rend la phrase à opposer à
+  une écriture, ou `null`. Elle vit **dans le module et non dans le
+  gestionnaire HTTP** pour être vérifiable : la phrase affichée à quelqu'un
+  dont la saisie vient d'être refusée doit nommer la bonne personne et la
+  bonne société ;
+- `PRESENCE_TTL_MS = 70 s` : la main se libère d'elle-même faute de nouvelles.
+  Un onglet fermé, un poste éteint ou une personne partie déjeuner ne doivent
+  pas bloquer un budget pour la journée ;
+- **en mémoire seulement** : un verrou qui survivrait au redémarrage du
+  conteneur serait un verrou que personne ne pourrait plus lever.
 
-- **modèle** : `state.payrollExtras`, un tableau de `{ id, companyId, name,
-  center, employerRate, days[12], dailyGross[12] }`. `payrollExtrasOf`,
-  `payrollExtraById`, `newPayrollExtra`, `payrollExtraLabel` ;
-- **calcul** : `payrollExtraMonthGross` (journées × montant, et zéro si l'un
-  des deux manque — on ne devine pas un tarif, on ne compte pas un montant
-  sans journée), `payrollExtraMonths` (brut / charges patronales / coût
-  employeur, mêmes noms que `employeeMonth`), `payrollExtraTotals` (par
-  société, ou restreint à un centre), `payrollExtraCenters` ;
-- **taux** : `payrollExtraEmployerRate` — le taux figé par le contrôle de
-  gestion prime sur celui de la ligne, et la case se grise, exactement comme
-  la fiche collaborateur ;
-- **report dans la Saisie** : `payrollCenterMonths` ajoute le brut des extras
-  du centre au 6411 et leurs charges au 6451 ; `syncPayrollLines` prend
-  désormais l'union des centres employant un collaborateur **et** de ceux
-  faisant venir des extras, sans quoi un centre sans salarié n'aurait aucune
-  ligne où recevoir leur coût ;
-- **mutations** : toutes passent par `commitPayrollExtraChange`, qui réaligne
-  la Saisie et ne fait qu'UN geste annulable — le piège déjà corrigé pour les
-  collaborateurs (un montant saisi ici doit bouger le 6411 tout de suite, sans
-  penser à « Forcer le re-calcul ») ;
-- **rubrique `payroll-extras`**, juste après « Équipe ». Trois rangées par
-  ligne sur le modèle de la matrice CA — ce qu'on saisit (journées, montant de
-  la journée), puis ce qui en découle (le coût), jamais mélangés ; le nom, le
-  centre et le taux tiennent dans la colonne figée, en regard des trois. Les
-  cases portent `.month-input` : tabulation et flèches comme dans un tableur,
-  sans rien recâbler. Pied de tableau : total journées, brut, charges
-  patronales, coût employeur ;
-- **KPI de l'onglet** : les extras entrent dans « Coût employeur année » et
-  « Masse brute » (avec leur part nommée dans le sous-titre). Les laisser
-  dehors aurait fait dire deux chiffres différents à l'onglet et au P&L pour
-  la même masse salariale. Ils ne pèsent **pas** sur l'effectif moyen : un ETP
-  se compte en contrats, pas en journées — c'est écrit dans « Comment ces
-  chiffres sont calculés », où une ligne « Coût d'un extra » a été ajoutée ;
-- **périmètre** : un extra rattaché à un centre hors droits n'apparaît pas, et
-  les totaux du panneau portent sur ce qui est affiché — un total qui
-  compterait des lignes invisibles ne se vérifierait pas à l'écran. Le menu de
-  centre ne propose que les centres autorisés, plus le sien.
+**Côté `server.mjs`** : `POST /api/donnees/main` (`{ company }`, ou
+`{ company, release: true }`) rend `{ holder, mine, ttlMs }`. Le PUT des
+données refuse (409) toute société déclarée modifiée qu'une autre personne
+tient, en la nommant — **c'est ce qui rend vraie la phrase affichée** ; sans
+ce refus, elle ne serait qu'un avertissement que la première frappe
+démentirait. Deux détails :
 
-**Pas de congés payés sur un extra** (compte 6412). La règle des 10 % du brut
-payé a été dictée pour les collaborateurs le 17/09/2026 ; l'étendre d'office
-aux extras aurait gonflé leur budget de 10 % sans que personne ne le demande.
-À ajouter si Alexis le demande : une ligne dans `payrollCenterMonths`, rien de
-plus.
+- POST est désormais admis sur `/api/donnees` (le garde-fou de méthodes n'y
+  laissait passer que GET et PUT, d'où un 405 muet au premier essai). Prendre
+  la main n'est pas une écriture du budget, et un PUT sur une ressource sans
+  corps à remplacer n'aurait pas le bon sens ;
+- le contrôle de périmètre de ce chemin lit la **seule fiche de droits**
+  (`allowedCompanies`) et non `scopeOf`, qui demande l'état complet :
+  appelé par battement de cœur, il aurait relu et reparsé les 2,2 Mo du
+  budget à chaque battement de chaque poste. `scopeOf` ne garde qu'un
+  sous-ensemble de `allowedCompanies` : refuser sur cette liste ne peut donc
+  jamais refuser à tort.
 
-Plomberie d'une donnée rattachée à une société, au complet : état par défaut,
-migration `adoptState` (séries ramenées à douze valeurs positives — une série
-trop courte casserait l'affichage, un texte remonterait en NaN jusque dans le
-6411), `SERVER_COMPANY_ARRAYS` et `COMPANY_ARRAYS` de `data.mjs` (sans quoi
-les extras partiraient au serveur comme un élément commun), `purgeCompanyData`,
-`emptyServerState` et `duplicateCompany` (le tarif de la journée indexé comme
-un salaire ; en « nouvel exercice » tarif ET journées repartent à zéro, parce
-qu'un nombre de journées en face d'un tarif vide serait plus trompeur qu'une
-ligne vierge).
+**Côté application** (section « Qui a la main sur le budget ouvert ») :
 
-Contrôles ajoutés (`check-budget-app.mjs`, +3) :
+- `claimBudgetHand` / `releaseBudgetHand` / `budgetHand` /
+  `budgetHandHeldByOther` / `budgetHandHolderName`. Un seul point de décision,
+  que lisent la bannière, les montants et le verrou de structure ;
+- `startBudgetHandBeat` bat toutes les **20 s**, fenêtre visible seulement
+  (comme la relecture des droits) : le délai du serveur survit donc à deux
+  battements perdus, et un onglet laissé au fond rend la main. Le battement
+  **ne re-rend l'écran que si la situation a changé** — un battement qui
+  confirme ce qui est déjà affiché ne doit pas reconstruire le tableau sous
+  les doigts de quelqu'un en train de saisir ;
+- `onActiveCompanyChanged()`, appelé depuis `render()` : la main suit la
+  société affichée (et rend la précédente) en un seul endroit, plutôt que
+  d'instrumenter chaque bouton de sélection ;
+- `budgetHandBannerHtml()` s'affiche dans **`viewPage`**, donc en tête de tous
+  les onglets, et reste collé en haut au défilement (`.hand-banner`). En
+  bandeau et non en toast : un message qui disparaît au bout de trois
+  secondes ne prévient qu'une fois, alors que la situation dure ;
+- la lecture seule est réelle : `centerReadOnly` (Saisie) devient vrai pour
+  **tous** les centres, avec la raison dans l'infobulle des douze cases, et
+  `canEditLineStructure()` rend faux — plus de bouton d'ajout, de suppression
+  ni de déplacement. La ligne reste **visible** : c'est de la lecture seule,
+  pas un masquage ;
+- le refus 409 du serveur retient la main au passage (`handHolder`) pour que
+  la bannière apparaisse tout de suite, sans attendre le battement suivant, et
+  son message remplace le « refaites votre dernière saisie » — il n'y a rien à
+  refaire, il faut attendre que la personne rende la main ;
+- **SAS réseau** : `/api/donnees/main` a été ajouté à la liste blanche de
+  `serverRequest`. Sans ça l'appel serait refusé avant même de partir
+  (« Sortie réseau interdite ») — un contrôle le vérifie.
 
-- « les extras se saisissent par journée travaillée, et leur coût rejoint le
-  6411/6451 du centre » : la création, le calcul (4 × 130 = 520 € en janvier,
-  40 × 145 = 5 800 € en juillet), les charges au taux de la ligne, une journée
-  sans montant qui ne coûte rien, l'atterrissage sur le 6411 et le 6451 d'un
-  centre **sans aucun salarié**, l'absence de 6412, le taux modifiable, le
-  changement de centre qui déménage le coût et libère l'ancien, les totaux par
-  société et par centre, et les KPI de l'onglet ;
-- « le tableau montre les deux saisies et ce qui en découle, jamais mélangés » :
-  l'état vide qui explique la maille, douze cases de journées et douze de
-  montant, la classe `.month-input` sur chacune, le nom/centre/taux/retrait sur la
-  ligne, les trois rangées nommées, le coût affiché, le pied de tableau, et le
-  taux figé qui grise la case **et** refuse l'écriture ;
-- « les extras suivent leur société » : la migration (séries trop courtes,
-  texte, négatif, taux illisible, clé absente), la déclaration dans le
-  périmètre serveur, la duplication avec coefficient, la duplication « nouvel
-  exercice », et la suppression de la société.
+Contrôles ajoutés : **+11 tests serveur** (`test/presence.test.mjs`, 37 → 48 :
+première personne servie, deuxième en lecture seule et informée, sociétés
+indépendantes, battement qui conserve la main sans changer l'heure de prise,
+expiration, `heldByOther`, `release` qui ne touche que les siennes, annonce
+vide, cohérence du délai avec le battement du navigateur, et les deux cas de
+`refusalFor` — nom de la société, repli sur l'identifiant, acceptation d'un
+`Set` comme le rend `declarationOf`) et **+1 contrôle d'application** (la
+bannière absente pour qui a la main, présente et nommée pour les autres sur
+les quatre onglets testés, les douze cases verrouillées avec leur raison, les
+boutons de structure disparus, la main d'une AUTRE société qui ne verrouille
+rien, l'absence de main hors mode serveur, le battement plus court que
+l'expiration, et la liste blanche du SAS).
 
-Vérifiés en échec si l'on retire la correction, dans les trois sens : extras
-retirés de `payrollCenterMonths` (`0 !== 520`), centres à extras retirés de
-`syncPayrollLines` (lignes 6411/6451 absentes), migration neutralisée
-(`4 !== 12`).
+Vérifié aussi de bout en bout par un vrai aller-retour HTTP (serveur lancé sur
+un volume temporaire) : prise de main, battement, écriture par le détenteur,
+puis main rendue. Le contrôle d'application échoue si l'on retire la bannière
+de `viewPage` ou la main de `centerReadOnly`.
 
-`APP_BUILD` passe à `2026-10-08.1`.
+`APP_BUILD` passe à `2026-10-08.2`.
 
 ### La colonne C de la matrice d'import devient le nom de la dépense (05/10/2026)
 
@@ -11314,6 +11308,8 @@ const app = await importApp(
     '  viewParametres, serverAuthInfo, parametresLdapBody, SERVER_AUTH_COOKIE,\n' +
     '  serverRequest, adoptServerSession, buildServerDirectory, serverRightsPayload, serverUserFromRights,\n' +
     '  serverLandingTab, sessionUsername, isServerUserId, applyPagePermissions,\n' +
+    '  budgetHand, budgetHandHeldByOther, budgetHandHolderName, budgetHandBannerHtml,\n' +
+    '  claimBudgetHand, releaseBudgetHand, onActiveCompanyChanged, BUDGET_HAND_BEAT_MS,\n' +
     '  applyRefreshedServerRights, serverRightsSignature,\n' +
     '  serverStatePayload, emptyServerState, adoptServerState, parametresDonneesPanel, SERVER_PRIVATE_KEYS,\n' +
     '  serverDataHasPendingChanges, markServerDataInSync, serverChangesBetween };\n' +
@@ -21614,6 +21610,108 @@ check('Fenêtres : la fermeture ignore un clic né d’une sélection qui débor
     assert.ok(directGuard.test(appSource) || guardedListener.test(appSource),
       `« ${attribute} » doit vérifier isRealClickOn avant de fermer la fenêtre, sinon une sélection ` +
       'qui déborde du cadre la referme par erreur.');
+  }
+});
+
+check('Saisie simultanée : la personne arrivée ensuite est en lecture seule, et sait qui a la main', () => {
+  // Alexis, 08/10/2026 : « lorsque deux personnes édite le même budget en
+  // même temps → indiquer à la personne qui s'est connecté la dernière que
+  // les modifications sont impossibles et indiquer la personne qui a la
+  // main ». La main se prend société par société (voir presence.mjs) ; ici
+  // on vérifie ce que l'application en fait à l'écran.
+  const savedServerData = app.__getServerData ? app.__getServerData() : null;
+  const saved = {
+    companies: app.state.companies.slice(), active: app.state.activeCompany,
+    lines: app.state.lines.slice(), tab: app.__getTab(),
+  };
+  try {
+    const company = { id: 'main_c', name: 'Palm Beach', currency: 'EUR', year: 2026, groupId: null };
+    app.state.companies = [company];
+    app.state.activeCompany = company.id;
+    app.state.lines = [{
+      id: 'main_l1', companyId: company.id, account: '60103100', name: 'Achat F&B',
+      note: '', amounts: months(100),
+    }];
+    app.resetStateIndexes();
+
+    const base = {
+      ready: true, revision: 4, empty: false, access: { unrestricted: true, shared: true },
+      updatedAt: null, updatedBy: null, error: null, sending: false, lastSentJson: null,
+      localCopy: null, retryTimer: null, hand: null,
+    };
+
+    // 1. La main est à moi : rien ne change, aucune bannière.
+    app.__setServerData(Object.assign({}, base, {
+      hand: { company: company.id, mine: true, holder: { account: 'a.porrati', name: 'Alexis Porrati' } },
+    }));
+    assert.equal(app.budgetHandHeldByOther(), false, 'celui qui a la main n’est pas en lecture seule');
+    assert.equal(app.budgetHandBannerHtml(), '', 'et ne voit aucune bannière');
+
+    // 2. La main est à quelqu'un d'autre.
+    app.__setServerData(Object.assign({}, base, {
+      hand: { company: company.id, mine: false, holder: { account: 'j.quere', name: 'Jean Quéré' } },
+    }));
+    assert.equal(app.budgetHandHeldByOther(), true);
+    assert.equal(app.budgetHandHolderName(), 'Jean Quéré');
+
+    const banner = app.budgetHandBannerHtml();
+    assert.ok(banner.includes('Lecture seule'), 'la bannière doit dire que les modifications sont impossibles');
+    assert.ok(banner.includes('Jean Quéré'), 'et nommer la personne qui a la main');
+    assert.ok(banner.includes('Palm Beach'), 'et la société concernée');
+
+    // La bannière est en tête de TOUS les onglets : `viewPage` est le seul
+    // endroit instrumenté, la lecture seule valant pour le budget entier.
+    for (const tabId of ['saisie', 'ca', 'payroll', 'pnl']) {
+      app.__setTab(tabId);
+      app.render();
+      const rendered = document.getElementById('view').innerHTML;
+      assert.ok(rendered.includes('hand-banner'), 'la bannière doit s’afficher sur l’onglet ' + tabId);
+      assert.ok(rendered.includes('Jean Quéré'), 'avec le nom du détenteur sur l’onglet ' + tabId);
+    }
+
+    // Les montants de la Saisie passent en lecture seule, et la structure
+    // du budget se ferme : le message n'est pas qu'un avertissement.
+    app.__setTab('saisie');
+    app.__setCenter('F&B');
+    app.render();
+    const saisie = document.getElementById('view').innerHTML;
+    assert.ok(saisie.includes('Achat F&amp;B'), 'la ligne reste visible : c’est de la lecture seule, pas un masquage');
+    assert.ok(saisie.includes('a la main sur ce budget — lecture seule'),
+      'les douze cases doivent être verrouillées, et dire pourquoi');
+    assert.ok(!saisie.includes('data-add-line='), 'aucun ajout de ligne tant qu’on n’a pas la main');
+    assert.ok(!saisie.includes('data-delete='), 'aucune suppression non plus');
+    assert.equal(app.canEditLineStructure(), false, 'la structure du budget est fermée');
+
+    // 3. Une main sur une AUTRE société ne verrouille pas celle-ci.
+    app.__setServerData(Object.assign({}, base, {
+      hand: { company: 'autre_c', mine: false, holder: { account: 'j.quere', name: 'Jean Quéré' } },
+    }));
+    assert.equal(app.budgetHandHeldByOther(), false,
+      'la main est par société : un autre établissement ne bloque pas celui-ci');
+    assert.equal(app.budgetHandBannerHtml(), '', 'et n’affiche aucune bannière ici');
+
+    // 4. Hors mode serveur (fichier local, une seule personne) : jamais de main.
+    app.__setServerData(null);
+    assert.equal(app.budgetHand(), null, 'sans serveur, la question ne se pose pas');
+    assert.equal(app.budgetHandHeldByOther(), false);
+    assert.equal(app.canEditLineStructure(), true, 'et rien n’est verrouillé');
+
+    // Le battement doit rester plus court que l'expiration du serveur
+    // (PRESENCE_TTL_MS = 70 s), sinon la main sauterait toute seule.
+    assert.ok(app.BUDGET_HAND_BEAT_MS <= 30000,
+      'le battement doit tenir dans le délai d’expiration du serveur, deux fois au moins');
+
+    // Le chemin doit être autorisé par le SAS réseau, sinon l'appel est
+    // refusé avant même de partir (« Sortie réseau interdite »).
+    assert.ok(appSource.includes('donnees(\\/(revision|main))?'),
+      'le SAS réseau doit laisser passer /api/donnees/main');
+  } finally {
+    app.state.companies = saved.companies; app.state.activeCompany = saved.active;
+    app.state.lines = saved.lines;
+    app.resetStateIndexes();
+    app.__setServerData(savedServerData);
+    app.__setTab(saved.tab);
+    app.render();
   }
 });
 

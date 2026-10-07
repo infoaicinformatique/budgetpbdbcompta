@@ -520,6 +520,8 @@ const app = await importApp(
     '  viewParametres, serverAuthInfo, parametresLdapBody, SERVER_AUTH_COOKIE,\n' +
     '  serverRequest, adoptServerSession, buildServerDirectory, serverRightsPayload, serverUserFromRights,\n' +
     '  serverLandingTab, sessionUsername, isServerUserId, applyPagePermissions,\n' +
+    '  budgetHand, budgetHandHeldByOther, budgetHandHolderName, budgetHandBannerHtml,\n' +
+    '  claimBudgetHand, releaseBudgetHand, onActiveCompanyChanged, BUDGET_HAND_BEAT_MS,\n' +
     '  applyRefreshedServerRights, serverRightsSignature,\n' +
     '  serverStatePayload, emptyServerState, adoptServerState, parametresDonneesPanel, SERVER_PRIVATE_KEYS,\n' +
     '  serverDataHasPendingChanges, markServerDataInSync, serverChangesBetween };\n' +
@@ -10819,6 +10821,108 @@ check('Fenêtres : la fermeture ignore un clic né d’une sélection qui débor
     assert.ok(directGuard.test(appSource) || guardedListener.test(appSource),
       `« ${attribute} » doit vérifier isRealClickOn avant de fermer la fenêtre, sinon une sélection ` +
       'qui déborde du cadre la referme par erreur.');
+  }
+});
+
+check('Saisie simultanée : la personne arrivée ensuite est en lecture seule, et sait qui a la main', () => {
+  // Alexis, 08/10/2026 : « lorsque deux personnes édite le même budget en
+  // même temps → indiquer à la personne qui s'est connecté la dernière que
+  // les modifications sont impossibles et indiquer la personne qui a la
+  // main ». La main se prend société par société (voir presence.mjs) ; ici
+  // on vérifie ce que l'application en fait à l'écran.
+  const savedServerData = app.__getServerData ? app.__getServerData() : null;
+  const saved = {
+    companies: app.state.companies.slice(), active: app.state.activeCompany,
+    lines: app.state.lines.slice(), tab: app.__getTab(),
+  };
+  try {
+    const company = { id: 'main_c', name: 'Palm Beach', currency: 'EUR', year: 2026, groupId: null };
+    app.state.companies = [company];
+    app.state.activeCompany = company.id;
+    app.state.lines = [{
+      id: 'main_l1', companyId: company.id, account: '60103100', name: 'Achat F&B',
+      note: '', amounts: months(100),
+    }];
+    app.resetStateIndexes();
+
+    const base = {
+      ready: true, revision: 4, empty: false, access: { unrestricted: true, shared: true },
+      updatedAt: null, updatedBy: null, error: null, sending: false, lastSentJson: null,
+      localCopy: null, retryTimer: null, hand: null,
+    };
+
+    // 1. La main est à moi : rien ne change, aucune bannière.
+    app.__setServerData(Object.assign({}, base, {
+      hand: { company: company.id, mine: true, holder: { account: 'a.porrati', name: 'Alexis Porrati' } },
+    }));
+    assert.equal(app.budgetHandHeldByOther(), false, 'celui qui a la main n’est pas en lecture seule');
+    assert.equal(app.budgetHandBannerHtml(), '', 'et ne voit aucune bannière');
+
+    // 2. La main est à quelqu'un d'autre.
+    app.__setServerData(Object.assign({}, base, {
+      hand: { company: company.id, mine: false, holder: { account: 'j.quere', name: 'Jean Quéré' } },
+    }));
+    assert.equal(app.budgetHandHeldByOther(), true);
+    assert.equal(app.budgetHandHolderName(), 'Jean Quéré');
+
+    const banner = app.budgetHandBannerHtml();
+    assert.ok(banner.includes('Lecture seule'), 'la bannière doit dire que les modifications sont impossibles');
+    assert.ok(banner.includes('Jean Quéré'), 'et nommer la personne qui a la main');
+    assert.ok(banner.includes('Palm Beach'), 'et la société concernée');
+
+    // La bannière est en tête de TOUS les onglets : `viewPage` est le seul
+    // endroit instrumenté, la lecture seule valant pour le budget entier.
+    for (const tabId of ['saisie', 'ca', 'payroll', 'pnl']) {
+      app.__setTab(tabId);
+      app.render();
+      const rendered = document.getElementById('view').innerHTML;
+      assert.ok(rendered.includes('hand-banner'), 'la bannière doit s’afficher sur l’onglet ' + tabId);
+      assert.ok(rendered.includes('Jean Quéré'), 'avec le nom du détenteur sur l’onglet ' + tabId);
+    }
+
+    // Les montants de la Saisie passent en lecture seule, et la structure
+    // du budget se ferme : le message n'est pas qu'un avertissement.
+    app.__setTab('saisie');
+    app.__setCenter('F&B');
+    app.render();
+    const saisie = document.getElementById('view').innerHTML;
+    assert.ok(saisie.includes('Achat F&amp;B'), 'la ligne reste visible : c’est de la lecture seule, pas un masquage');
+    assert.ok(saisie.includes('a la main sur ce budget — lecture seule'),
+      'les douze cases doivent être verrouillées, et dire pourquoi');
+    assert.ok(!saisie.includes('data-add-line='), 'aucun ajout de ligne tant qu’on n’a pas la main');
+    assert.ok(!saisie.includes('data-delete='), 'aucune suppression non plus');
+    assert.equal(app.canEditLineStructure(), false, 'la structure du budget est fermée');
+
+    // 3. Une main sur une AUTRE société ne verrouille pas celle-ci.
+    app.__setServerData(Object.assign({}, base, {
+      hand: { company: 'autre_c', mine: false, holder: { account: 'j.quere', name: 'Jean Quéré' } },
+    }));
+    assert.equal(app.budgetHandHeldByOther(), false,
+      'la main est par société : un autre établissement ne bloque pas celui-ci');
+    assert.equal(app.budgetHandBannerHtml(), '', 'et n’affiche aucune bannière ici');
+
+    // 4. Hors mode serveur (fichier local, une seule personne) : jamais de main.
+    app.__setServerData(null);
+    assert.equal(app.budgetHand(), null, 'sans serveur, la question ne se pose pas');
+    assert.equal(app.budgetHandHeldByOther(), false);
+    assert.equal(app.canEditLineStructure(), true, 'et rien n’est verrouillé');
+
+    // Le battement doit rester plus court que l'expiration du serveur
+    // (PRESENCE_TTL_MS = 70 s), sinon la main sauterait toute seule.
+    assert.ok(app.BUDGET_HAND_BEAT_MS <= 30000,
+      'le battement doit tenir dans le délai d’expiration du serveur, deux fois au moins');
+
+    // Le chemin doit être autorisé par le SAS réseau, sinon l'appel est
+    // refusé avant même de partir (« Sortie réseau interdite »).
+    assert.ok(appSource.includes('donnees(\\/(revision|main))?'),
+      'le SAS réseau doit laisser passer /api/donnees/main');
+  } finally {
+    app.state.companies = saved.companies; app.state.activeCompany = saved.active;
+    app.state.lines = saved.lines;
+    app.resetStateIndexes();
+    app.__setServerData(savedServerData);
+    app.__setTab(saved.tab);
+    app.render();
   }
 });
 

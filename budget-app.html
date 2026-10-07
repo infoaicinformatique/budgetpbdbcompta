@@ -1793,6 +1793,13 @@
     padding: var(--space-3) var(--space-4); margin-bottom: var(--space-3);
     font-size: var(--text-md); line-height: 1.55; border-radius: 0 var(--radius) var(--radius) 0;
   }
+  /* « X a la main sur ce budget » : en tête de chaque onglet, et collé en
+     haut de la zone qui défile — la lecture seule vaut pour toute la page,
+     le rappel doit rester visible quand on descend dans un tableau. */
+  .hand-banner {
+    position: sticky; top: 0; z-index: 4;
+    margin: 0 0 var(--space-4); box-shadow: 0 2px 8px rgba(0, 0, 0, .12);
+  }
   /* Jauge de stockage local (onglet Sécurité) : verte tant qu'il y a de la
      marge, ambre puis rouge à l'approche et au-delà de la limite estimée. */
   .quota-bar { height: 8px; border-radius: var(--radius-sm); background: var(--bg); overflow: hidden; }
@@ -3280,7 +3287,9 @@
 /* Seules portes laissées entrouvertes, vers le serveur qui a servi la
    page : les droits d'accès (`/api/droits`, voir `loadServerSession`) et,
    depuis le 02/10/2026, les données budgétaires de la personne connectée
-   (`/api/donnees`, voir « Données tenues par le serveur »). `serverRequest`
+   (`/api/donnees`, voir « Données tenues par le serveur »), dont
+   `/api/donnees/main` depuis le 08/10/2026 : qui a la main sur la société
+   ouverte (voir « Qui a la main sur le budget ouvert »). `serverRequest`
    garde pour lui le `fetch` d'origine avant qu'il ne soit neutralisé, et
    n'accepte que ces chemins relatifs — jamais une autre adresse. `null` là
    où `fetch` n'existe pas. */
@@ -3298,7 +3307,7 @@ let serverData = null;
   const nativeFetch = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null;
   if (nativeFetch) {
     serverRequest = function (method, path, body) {
-      if (!/^\/api\/(droits(\/[A-Za-z0-9._@%-]+)?|donnees(\/revision)?)$/.test(String(path))) {
+      if (!/^\/api\/(droits(\/[A-Za-z0-9._@%-]+)?|donnees(\/(revision|main))?)$/.test(String(path))) {
         return Promise.reject(new Error('Sortie réseau interdite (' + path + ').'));
       }
       const options = { method: method, credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers: {} };
@@ -3420,7 +3429,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-08.1';
+const APP_BUILD = '2026-10-08.2';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -8473,6 +8482,10 @@ function isCenterAllowed(user, centerId) {
  * MONTANTS des lignes de son périmètre et consulte tout le reste.
  */
 function canEditLineStructure() {
+  // La main tenue par quelqu'un d'autre ferme la structure comme elle ferme
+  // les montants : créer une ligne serait refusé par le serveur, autant ne
+  // pas proposer le bouton.
+  if (budgetHandHeldByOther()) return false;
   return !directorModeActive();
 }
 
@@ -9367,7 +9380,8 @@ async function detectLocalCopy() {
  */
 async function loadServerData() {
   serverData = { ready: false, revision: 0, empty: false, access: { unrestricted: false, shared: false },
-    updatedAt: null, updatedBy: null, error: null, sending: false, lastSentJson: null, localCopy: null, retryTimer: null };
+    updatedAt: null, updatedBy: null, error: null, sending: false, lastSentJson: null, localCopy: null,
+    retryTimer: null, hand: null };
   serverData.localCopy = await detectLocalCopy();
   try {
     const res = await serverRequest('GET', '/api/donnees');
@@ -9443,6 +9457,17 @@ async function persistToServer() {
   } catch (e) {
     serverData.sending = false;
     if (e.status === 409) {
+      // Refus parce qu'une autre personne a la main (et non parce que la
+      // société a bougé entre-temps) : le message du serveur la nomme déjà,
+      // et il n'y a rien à « refaire » — il faut attendre qu'elle rende la
+      // main. On retient la main au passage pour que la bannière s'affiche
+      // tout de suite, sans attendre le prochain battement.
+      const refused = e.data || {};
+      if (refused.handHolder) {
+        serverData.hand = { company: refused.handCompany, mine: false, holder: refused.handHolder };
+        await reloadServerData(e.message);
+        return;
+      }
       await reloadServerData('Non enregistré : ' + e.message + ' Les données à jour sont affichées ; refaites votre dernière saisie.');
       return;
     }
@@ -9453,6 +9478,156 @@ async function persistToServer() {
   } finally {
     serverData.sending = false;
   }
+}
+
+/* ---------------- Qui a la main sur le budget ouvert ----------------
+
+   Alexis, 08/10/2026 : « lorsque deux personnes édite le même budget en
+   même temps → indiquer à la personne qui s'est connecté la dernière que
+   les modifications sont impossibles et indiquer la personne qui a la
+   main ».
+
+   Jusqu'ici les saisies simultanées ne se réglaient qu'APRÈS coup : la
+   deuxième écriture était refusée (409, voir `data.mjs`) avec un « refaites
+   votre dernière saisie », et personne n'était prévenu avant de taper. La
+   main se prend désormais à l'arrivée sur une société : la première
+   personne l'obtient, les suivantes le lisent en haut de chaque écran et
+   travaillent en lecture seule (voir `presence.mjs` côté serveur, qui
+   refuse aussi leurs écritures — sans quoi le message affiché ne serait
+   qu'un avertissement que la première frappe démentirait).
+
+   Le battement est volontairement plus court que le délai d'expiration du
+   serveur (70 s) : deux battements peuvent se perdre sans que la main
+   saute. Il ne bat que fenêtre visible — un onglet laissé ouvert dans le
+   fond rend donc la main, ce qui évite qu'un poste oublié bloque un budget
+   pour la journée. */
+const BUDGET_HAND_BEAT_MS = 20000;
+
+/** Dernière société annoncée au serveur, pour ne pas rebattre pour rien. */
+let budgetHandCompany = null;
+let budgetHandBeating = false;
+
+/**
+ * Annonce la société ouverte et retient qui a la main. Silencieuse en cas
+ * de panne réseau : une relecture de la main qui échoue ne doit pas
+ * verrouiller l'écran (`serverData.hand` reste tel quel), contrairement à
+ * un refus franc du serveur.
+ */
+async function claimBudgetHand(companyId) {
+  if (!serverData || !serverSession || !companyId) return null;
+  try {
+    const res = await serverRequest('POST', '/api/donnees/main', { company: companyId });
+    serverData.hand = {
+      company: res.company || companyId,
+      mine: res.mine === true,
+      holder: res.holder || null,
+    };
+    budgetHandCompany = companyId;
+    return serverData.hand;
+  } catch (e) {
+    // Hors périmètre (403) : pas de main, et surtout pas de lecture seule
+    // trompeuse — l'écran de périmètre vide dit déjà ce qu'il faut.
+    if (e.status === 403) serverData.hand = null;
+    return null;
+  }
+}
+
+/** Rend la main (déconnexion, changement de société). */
+function releaseBudgetHand(companyId) {
+  if (!serverData || !serverSession || !companyId) return;
+  serverRequest('POST', '/api/donnees/main', { company: companyId, release: true }).catch(function () {});
+  if (serverData.hand && serverData.hand.company === companyId) serverData.hand = null;
+}
+
+/**
+ * La main sur la société affichée : `null` hors mode serveur (fichier
+ * local, un seul utilisateur) ou tant qu'elle n'est pas connue.
+ */
+function budgetHand() {
+  if (!serverData || !serverData.hand) return null;
+  const company = state && state.activeCompany;
+  if (!company || serverData.hand.company !== company) return null;
+  return serverData.hand;
+}
+
+/**
+ * Quelqu'un d'autre a-t-il la main sur la société affichée ? C'est le seul
+ * point de décision : la bannière, les montants en lecture seule et le
+ * verrou de la structure du budget le lisent tous.
+ */
+function budgetHandHeldByOther() {
+  const hand = budgetHand();
+  return Boolean(hand && hand.mine === false && hand.holder);
+}
+
+/** Nom de la personne qui a la main, pour l'écrire à l'écran. */
+function budgetHandHolderName() {
+  const hand = budgetHand();
+  return hand && hand.holder ? (hand.holder.name || hand.holder.account) : '';
+}
+
+/**
+ * Bandeau affiché en tête de CHAQUE onglet (voir `viewPage`) tant que la
+ * main est à quelqu'un d'autre. En tête et non dans un toast : un message
+ * qui disparaît au bout de trois secondes ne prévient qu'une fois, alors
+ * que la situation dure.
+ */
+function budgetHandBannerHtml() {
+  if (!budgetHandHeldByOther()) return '';
+  const company = activeCompany();
+  return '<div class="alert hand-banner">' +
+    '<strong>Lecture seule — ' + escapeHtml(budgetHandHolderName()) + ' a la main' +
+    (company ? ' sur « ' + escapeHtml(company.name) + ' »' : '') + '.</strong> ' +
+    'Vos modifications ne seraient pas enregistrées : le serveur les refuse tant que cette personne ' +
+    'y travaille. La main se libère d’elle-même peu après qu’elle a quitté le budget — ou quand elle ' +
+    'passe sur une autre société.' +
+    '</div>';
+}
+
+/**
+ * Battement de cœur de la main, et prise à chaque changement de société.
+ * Fenêtre visible seulement, comme la relecture des droits.
+ */
+function startBudgetHandBeat() {
+  if (budgetHandBeating || !serverSession || typeof document === 'undefined' || typeof window === 'undefined') return;
+  budgetHandBeating = true;
+  const beat = function () {
+    if (!serverData || !serverData.ready || !state) return;
+    const company = state.activeCompany;
+    if (!company) return;
+    const was = serverData.hand && serverData.hand.mine;
+    claimBudgetHand(company).then(function (hand) {
+      // On ne re-rend que si la situation a changé : un battement qui
+      // confirme ce qui est déjà à l'écran ne doit pas interrompre une
+      // saisie en cours en reconstruisant le tableau sous les doigts.
+      if (!hand) return;
+      if (hand.company !== company) return;
+      if (was === hand.mine) return;
+      render();
+    });
+  };
+  setInterval(function () {
+    if (document.visibilityState !== 'hidden') beat();
+  }, BUDGET_HAND_BEAT_MS);
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible') beat();
+  });
+  beat();
+}
+
+/**
+ * Changement de société affichée : on rend la main sur la précédente (pour
+ * ne pas tenir deux budgets à la fois) et on prend celle de la nouvelle.
+ */
+function onActiveCompanyChanged() {
+  if (!serverSession || !serverData || !state) return;
+  const company = state.activeCompany;
+  if (budgetHandCompany === company) return;
+  const previous = budgetHandCompany;
+  budgetHandCompany = company;
+  if (previous && previous !== company) releaseBudgetHand(previous);
+  if (!company) return;
+  claimBudgetHand(company).then(function (hand) { if (hand) render(); });
 }
 
 /**
@@ -12029,6 +12204,7 @@ function render() {
   // Même logique pour la société active : une société sortie du périmètre
   // ne doit jamais rester affichée (droits modifiés, changement d'utilisateur).
   enforceCompanyPermission();
+  onActiveCompanyChanged(); // la main suit la société affichée (voir sa définition)
   // Plus de garde sur le centre de coûts affiché dans la Saisie : depuis le
   // 18/09/2026, TOUS les centres y sont ouverts, ceux hors périmètre en
   // lecture seule (voir `viewSaisie`). Recaler d'office sur le premier
@@ -12405,7 +12581,11 @@ function breadcrumbHtml(tabId) {
 
 function viewPage(opts) {
   const o = opts || {};
-  return '<div class="page-head">' + breadcrumbHtml(tab) +
+  // Le bandeau « X a la main » s'affiche au-dessus du titre de TOUS les
+  // onglets : la lecture seule ne vaut pas pour un écran mais pour le
+  // budget entier, et il n'y a qu'un seul endroit à instrumenter.
+  return budgetHandBannerHtml() +
+    '<div class="page-head">' + breadcrumbHtml(tab) +
     '<h2>' + escapeHtml(o.title || '') + '</h2>' +
     (o.hint ? '<p class="page-hint">' + o.hint + '</p>' : '') +
     '</div>' +
@@ -12508,7 +12688,12 @@ function viewSaisie() {
   //  - la personne peut-elle créer ou supprimer une charge (voir
   //    `canEditLineStructure`) — non pour un directeur, y compris sur son
   //    propre centre, où il reste libre de remplir les montants.
-  const centerReadOnly = currentCenter !== 'PRODUITS' && !isCenterAllowed(saisieUser, currentCenter);
+  // Deux raisons de ne pas pouvoir écrire dans un centre : il est hors de
+  // votre périmètre, ou quelqu'un d'autre a la main sur ce budget. Le
+  // rendu est le même (`readonly` sur les douze cases, actions masquées) —
+  // seule la raison affichée change.
+  const centerReadOnly = budgetHandHeldByOther()
+    || (currentCenter !== 'PRODUITS' && !isCenterAllowed(saisieUser, currentCenter));
   const canStructure = canEditLineStructure();
   const canAddHere = canStructure && !centerReadOnly;
 
@@ -12641,7 +12826,9 @@ function viewSaisie() {
           'data-line="' + line.id + '" data-month="' + month + '" value="' +
           Math.round(line.amounts[month] || 0) + '"' +
           (centerReadOnly
-            ? ' readonly title="Centre hors périmètre — lecture seule"'
+            ? (budgetHandHeldByOther()
+              ? ' readonly title="' + escapeHtml(budgetHandHolderName()) + ' a la main sur ce budget — lecture seule"'
+              : ' readonly title="Centre hors périmètre — lecture seule"')
             : computed
               ? ' readonly title="Montant calculé — voir les actions de la ligne"'
               : ' title="Double-clic : répartir un montant annuel sur les douze mois"') + ' /></td>';
@@ -32381,6 +32568,9 @@ async function boot() {
     resetUndoHistory();
     render();
     markServerDataInSync();
+    // Qui a la main sur la société ouverte : pris maintenant, puis tenu à
+    // jour par battement de cœur (voir `startBudgetHandBeat`).
+    startBudgetHandBeat();
     if (serverData.empty && serverData.access.shared) {
       showToast('La base du serveur est vide : publiez les données depuis Paramètres › Données.');
     }

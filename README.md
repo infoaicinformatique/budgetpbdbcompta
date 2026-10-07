@@ -183,12 +183,23 @@ budgets, collaborateurs, CA, objectifs… sont lus et écrits sur le serveur
 - **Ce que chacun écrit** : ses sociétés. Créer ou supprimer une société,
   modifier groupes, environnements, plans, scénarios, taux : contrôleur sans
   restriction (ou administrateur sans restriction) seulement.
-- **Saisies simultanées** : chaque envoi déclare les sociétés modifiées et la
-  révision de départ. Une société modifiée entre-temps par quelqu'un d'autre
-  est refusée (409) ; la page recharge les données à jour et le dit. Deux
-  personnes sur des sociétés différentes ne se gênent pas. Les modifications
-  des autres arrivent à la relecture (chaque minute, et au retour sur
-  l'onglet).
+- **Saisies simultanées — qui a la main** (08/10/2026, `presence.mjs`) : en
+  arrivant sur une société, le navigateur l'annonce au serveur
+  (`POST /api/donnees/main`). La **première** personne obtient la main et la
+  garde ; les suivantes voient en tête de chaque onglet « Lecture seule — X a
+  la main », leurs montants sont verrouillés, et le serveur **refuse** leurs
+  écritures (409, en nommant la personne). La main se garde par battement de
+  cœur (toutes les 20 s, fenêtre visible) et se libère d'elle-même **70 s**
+  après le dernier signe de vie — un onglet fermé ou un poste éteint ne
+  bloque donc pas le budget pour la journée. Elle est **par société** : deux
+  directeurs sur deux établissements différents ne se gênent pas. En mémoire
+  seulement : un verrou qui survivrait au redémarrage du conteneur serait un
+  verrou que personne ne pourrait plus lever.
+- **Saisies simultanées — le filet** : chaque envoi déclare aussi les sociétés
+  modifiées et la révision de départ. Une société modifiée entre-temps (main
+  expirée entre deux battements, par exemple) est refusée (409) ; la page
+  recharge les données à jour et le dit. Les modifications des autres arrivent
+  à la relecture (chaque minute, et au retour sur l'onglet).
 - **Stockage** : `DATA_FILE` (Docker : `/data/budget.json`, même volume que
   les droits), écrit de façon atomique, et `historique/` à côté : une copie
   au plus toutes les dix minutes, les 200 dernières gardées.

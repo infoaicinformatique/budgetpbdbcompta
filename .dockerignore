@@ -6,3 +6,4 @@
 !auth-ldap.mjs
 !rights.mjs
 !data.mjs
+!presence.mjs
