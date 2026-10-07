@@ -77,6 +77,80 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Les directeurs lisent la ventilation du CA, sans la régler (07/10/2026)
+
+Alexis : « Dans le CA il faut que les directeurs puissent voir comment est
+ventilé le CA, sans pour autant pouvoir modifier les pourcentages ».
+
+La rubrique « Ventilation du CA par compte » était fermée aux directeurs
+depuis le 19/08/2026 : ils renseignaient leur CA dans la matrice couverts ×
+ticket moyen sans jamais voir où il partait. **Voir et régler sont deux
+choses différentes** — c'est la distinction que posait déjà la Saisie le
+18/09/2026 (tous les centres visibles, ceux hors périmètre en lecture seule).
+
+Ce qui change :
+
+- `canEditCaVentilation()` — même forme que `canEditObjectives()` et
+  `canValidateCompanyBudget()` : seul le contrôle de gestion pose les
+  pourcentages. Le directeur subit la ventilation de son CA, il ne la décide
+  pas ;
+- `caVentilationPanel()` se rend en **lecture seule** quand on n'a pas ce
+  droit : les pourcentages s'affichent en clair (`percentCell`) au lieu de
+  cases de saisie, la colonne d'actions disparaît en-tête comprise
+  (`actionsHeader`/`actionsCell`, et `accountSpan` pour les lignes pleine
+  largeur, sinon le tableau se décalerait), et le bouton « Appliquer aux
+  comptes » n'est pas rendu. **Tout le reste est montré à l'identique** :
+  montants mois par mois, totaux de contrôle, et les alertes de ventilation
+  incomplète — c'est précisément « comment est ventilé le CA » ;
+- la consigne du panneau change de voix. « Vous choisissez d'abord la part
+  qui revient à Food… » s'adresse à qui règle ; en lecture seule elle devient
+  une explication (« Voici comment votre chiffre d'affaires est réparti […]
+  ces pourcentages sont posés par le contrôle de gestion : vous les lisez
+  ici, vous ne les modifiez pas »). Écrire « vous choisissez » à quelqu'un
+  qui ne peut rien choisir lui ferait chercher des cases qui ne sont pas là.
+  Les deux états vides changent de voix pour la même raison : on n'envoie pas
+  un directeur « ajouter des comptes suivis », il n'en a pas la main ;
+- **gardes côté action**, en plus de l'interface — même principe que
+  `canEditLineStructure` : les trois branches de gestionnaire
+  (`caCategoryVentilation`, `caVentilation`, `applyCaVentilation`) refusent le
+  geste. Un pourcentage posé par qui n'en a pas le droit réécrirait le budget
+  de tous les comptes de sa catégorie ;
+- `DIRECTEUR_DEFAULT_PAGES.ca` passe de `['ca-couverts']` à
+  `['ca-couverts', 'ca-ventilation']`. Les comptes suivis, la pondération
+  jour/saison et la migration des lignes produits restent fermés.
+
+**Ce n'est qu'un point de départ, et c'est voulu.** `DIRECTEUR_DEFAULT_PAGES`
+ne vaut que pour un directeur fraîchement créé : les fiches existantes gardent
+les rubriques qu'elles portent. Ce que chacun voit se règle dans Paramètres ›
+Droits d'accès, et nulle part ailleurs — un administrateur y ouvre (ou
+referme) la ventilation personne par personne. Au 07/10/2026, les onze
+directeurs de production ont tous des rubriques explicites dans
+`/data/droits.json` (huit ont l'onglet CA, aucun n'a `ca-ventilation`) : la
+case reste donc à cocher pour eux, et c'est à Alexis de choisir lesquels.
+
+Contrôle ajouté (`check-budget-app.mjs`, +1) :
+
+- « un directeur LIT la ventilation de son chiffre d'affaires, sans pouvoir
+  toucher aux pourcentages » : la rubrique ouverte à un directeur et les deux
+  autres toujours fermées ; le panneau vu par un contrôleur (ses trois sortes
+  de contrôles présentes) ; le même panneau vu par un directeur — les
+  pourcentages en clair (70 % / 30 %), les comptes nommés, les lignes de
+  contrôle, le montant ventilé du mois (3 500 € pour 70 % de 5 000 €), et
+  **aucun** `<input`, aucune des quatre commandes d'écriture, ni la consigne
+  du contrôleur ; la largeur des lignes pleine largeur (15 colonnes en lecture
+  seule, 16 avec la colonne d'actions) ; et la présence des trois gardes dans
+  les gestionnaires.
+
+Le panneau est appelé directement plutôt que lu dans le rendu complet :
+`applyPagePermissions()` élague le vrai DOM, que le harnais ne simule pas
+(`querySelectorAll` y rend un tableau vide). La visibilité se vérifie donc par
+`canAccessPage`, le contenu par le panneau lui-même.
+
+Le contrôle échoue si l'on retire la correction, dans les trois sens : panneau
+toujours modifiable (`70 %` introuvable, les cases ayant repris la place du
+texte), rubrique refermée par défaut, ou garde de gestionnaire retirée.
+`APP_BUILD` passe à `2026-10-07.4`.
+
 ### La colonne C de la matrice d'import devient le nom de la dépense (05/10/2026)
 
 Alexis : « la colonne C […] est indispensable dans l'import des charges, sans
@@ -11177,7 +11251,7 @@ const app = await importApp(
     '  clearSignInAttempts, randomBytes, randomHex, exportedPayloadIsEncrypted };\n' +
     'export { setUserScope, allowedCompanyIds, allowedCostCenterIds, isCompanyAllowed,\n' +
     '  visibleCompanies, enforceCompanyPermission, rawLinesOf,\n' +
-    '  isCenterAllowed, visibleCostCenters, canEditLineStructure,\n' +
+    '  isCenterAllowed, visibleCostCenters, canEditLineStructure, canEditCaVentilation,\n' +
     '  scopeCenterRowsHtml, applyRoleDefaultCentersToEditor, DIRECTEUR_DEFAULT_COST_CENTERS,\n' +
     '  companyIdsInSuperGroupRaw, companyIdsInEnvironments, userEnvironmentIds, environmentById,\n' +
     '  availableEnvironments, canSeeAllEnvironments, activeEnvironmentId, setActiveEnvironment,\n' +
@@ -21058,6 +21132,144 @@ await checkAsync('Autorisations : seul le statut administrateur ouvre l’onglet
   }
 });
 
+await checkAsync('CA : un directeur LIT la ventilation de son chiffre d’affaires, sans pouvoir toucher aux pourcentages', async () => {
+  // Alexis, 07/10/2026 : « dans le CA il faut que les directeurs puissent
+  // voir comment est ventilé le CA, sans pour autant pouvoir modifier les
+  // pourcentages ».
+  //
+  // Le panneau est appelé directement plutôt que lu dans le rendu complet :
+  // `applyPagePermissions()` élague le vrai DOM, que le harness ne simule
+  // pas (`querySelectorAll` y rend un tableau vide). La VISIBILITÉ se
+  // vérifie donc par `canAccessPage`, et le CONTENU par le panneau lui-même.
+  const saved = {
+    users: (app.state.users || []).slice(), authLog: (app.state.authLog || []).slice(),
+    companies: app.state.companies.slice(), active: app.state.activeCompany,
+    lines: app.state.lines.slice(), caLines: (app.state.caLines || []).slice(),
+    matrix: app.state.serviceMatrix,
+    ventilation: JSON.parse(JSON.stringify(app.state.caVentilation || {})),
+    categoryVentilation: JSON.parse(JSON.stringify(app.state.caCategoryVentilation || {})),
+    tab: app.__getTab(),
+  };
+  try {
+    authFixture();
+    const company = { id: 'vent_ro_c', name: 'Ventilation Lecture', currency: 'EUR', year: 2026, groupId: null };
+    app.state.companies = [company];
+    app.state.activeCompany = company.id;
+    app.state.lines = [];
+    app.state.caLines = [];
+    app.state.serviceMatrix = {};
+    app.state.caVentilation = {};
+    app.state.caCategoryVentilation = {};
+    app.resetStateIndexes();
+
+    // Un CA à ventiler (5 000 € en janvier), deux comptes de produits, et
+    // des pourcentages posés : 70 % Food, 30 % Beverage.
+    app.setServiceMatrixValue(company.id, 'covers', 'lunch', '2026-01-05', 100);
+    app.setServiceMatrixValue(company.id, 'ticket', 'lunch', '2026-01-05', 50);
+    const food = app.addCaLine(company.id, '70101100', 'Nourriture');
+    app.setCaCategory(food.id, 'food');
+    const bev = app.addCaLine(company.id, '70102100', 'Boissons');
+    app.setCaCategory(bev.id, 'beverage');
+    app.setCaCategoryVentilationPercent(company.id, 'food', 70);
+    app.setCaCategoryVentilationPercent(company.id, 'beverage', 30);
+    app.setCaVentilationPercent(company.id, food.account, 100);
+    app.setCaVentilationPercent(company.id, bev.account, 100);
+
+    await app.createUser({ username: 'vent_cdg', role: 'controleur', password: 'MotDePasse1!xyz', isAdmin: true });
+    const directeur = await app.createUser({ username: 'vent_dir', role: 'directeur', password: 'MotDePasse1!xyz' });
+    app.setUserScope(directeur.id, null, ['F&B']);
+
+    // La rubrique est OUVERTE au directeur, les deux autres réglages non.
+    assert.ok(app.canAccessPage(directeur, 'ca', 'ca-ventilation'),
+      'la ventilation doit être visible par un directeur');
+    for (const page of ['ca-comptes', 'ca-ponderation']) {
+      assert.ok(!app.canAccessPage(directeur, 'ca', page),
+        '« ' + page + ' » reste hors du périmètre d’un directeur');
+    }
+
+    // --- Le contrôle de gestion : tout est réglable. -------------------
+    await app.signIn('vent_cdg', 'MotDePasse1!xyz');
+    app.__setTab('ca');
+    const cdgPanel = app.caVentilationPanel(company);
+    assert.equal(app.canEditCaVentilation(), true, 'le contrôle de gestion règle la ventilation');
+    assert.ok(cdgPanel.includes('data-ca-category-ventilation="food"'),
+      'le contrôleur doit avoir une case pour la part de catégorie');
+    assert.ok(cdgPanel.includes('data-ca-ventilation="' + food.account + '"'),
+      'et une case pour la part du compte dans sa catégorie');
+    assert.ok(cdgPanel.includes('data-apply-ca-ventilation='),
+      'et le bouton « Appliquer aux comptes »');
+    assert.ok(cdgPanel.includes('data-delete-ca-account="' + food.id + '"'),
+      'et le bouton « retirer » de chaque compte');
+
+    // --- Le directeur : la même rubrique, en lecture. -----------------
+    app.signOut();
+    await app.signIn('vent_dir', 'MotDePasse1!xyz');
+    app.__setTab('ca');
+    const dirPanel = app.caVentilationPanel(company);
+    assert.equal(app.canEditCaVentilation(), false, 'un directeur ne règle pas la ventilation');
+
+    // Elle montre bien la répartition — c'est tout l'objet de la demande :
+    // pourcentages en clair, comptes nommés, montants mois par mois,
+    // lignes de contrôle.
+    assert.ok(dirPanel.includes('70 %') && dirPanel.includes('30 %'),
+      'les parts de catégorie doivent se lire en clair (70 % / 30 %)');
+    assert.ok(dirPanel.includes('Nourriture') && dirPanel.includes('Boissons'),
+      'les comptes entre lesquels le CA est réparti doivent être nommés');
+    assert.ok(dirPanel.includes('Total catégories') && dirPanel.includes('Total ventilé'),
+      'les lignes de contrôle restent affichées : elles disent si tout le CA est réparti');
+    assert.ok(dirPanel.includes(app.money(3500)),
+      'le montant ventilé du mois doit s’afficher (70 % de 5 000 € = 3 500 €)');
+
+    // Mais rien n'y est modifiable.
+    assert.ok(!dirPanel.includes('<input'),
+      'aucune case de saisie dans la ventilation vue par un directeur');
+    assert.ok(!dirPanel.includes('data-ca-category-ventilation='),
+      'aucune case de part de catégorie pour un directeur');
+    assert.ok(!dirPanel.includes('data-ca-ventilation='),
+      'aucune case de part de compte pour un directeur');
+    assert.ok(!dirPanel.includes('data-apply-ca-ventilation='),
+      'pas de bouton « Appliquer aux comptes » pour un directeur');
+    assert.ok(!dirPanel.includes('data-delete-ca-account='),
+      'pas de bouton « retirer » : un directeur ne retire pas un compte suivi');
+    // La consigne ne doit pas lui parler de cases qui n'existent pas.
+    assert.ok(!dirPanel.includes('Vous choisissez d’abord la part'),
+      'la consigne du contrôleur ne doit pas s’afficher à un directeur');
+    assert.ok(dirPanel.includes('vous ne les modifiez pas'),
+      'le directeur doit lire qui pose ces pourcentages');
+
+    // Les deux tableaux gardent une largeur cohérente : la colonne
+    // d'actions disparaît avec les boutons, en-tête comprise (sinon les
+    // lignes de titre de catégorie, en `colspan`, décaleraient le tableau).
+    const dirSpans = (dirPanel.match(/colspan="(\d+)"/g) || []);
+    assert.ok(dirSpans.length > 0, 'le panneau doit comporter des lignes de titre en colspan');
+    assert.ok(dirSpans.every((c) => c === 'colspan="15"'),
+      'en lecture seule, les lignes pleine largeur couvrent 15 colonnes (compte + part + 12 mois + année), trouvé : ' +
+      dirSpans.join(', '));
+    assert.ok((cdgPanel.match(/colspan="16"/g) || []).length > 0,
+      'avec la colonne d’actions, elles en couvrent 16');
+
+    // Garde côté action, en plus de l'interface : le geste est refusé même
+    // atteint autrement (même principe que `canEditLineStructure`).
+    for (const branch of ['caCategoryVentilation', 'caVentilation', 'applyCaVentilation']) {
+      const at = appSource.indexOf('dataset.' + branch + ' !== undefined');
+      assert.ok(at > 0, 'branche « ' + branch + ' » introuvable dans les gestionnaires');
+      assert.ok(appSource.slice(at, at + 700).includes('canEditCaVentilation()'),
+        'la branche « ' + branch + ' » doit refuser le geste sans le droit de régler la ventilation');
+    }
+  } finally {
+    app.signOut();
+    app.state.users = saved.users; app.state.authLog = saved.authLog;
+    app.state.companies = saved.companies; app.state.activeCompany = saved.active;
+    app.state.lines = saved.lines; app.state.caLines = saved.caLines;
+    app.state.serviceMatrix = saved.matrix;
+    app.state.caVentilation = saved.ventilation;
+    app.state.caCategoryVentilation = saved.categoryVentilation;
+    app.resetStateIndexes();
+    app.__setTab(saved.tab);
+    app.render();
+  }
+});
+
 await checkAsync('Autorisations : la matrice ouvre onglet par onglet et rubrique par rubrique', async () => {
   const saved = { users: (app.state.users || []).slice(), authLog: (app.state.authLog || []).slice() };
   try {
@@ -21072,10 +21284,15 @@ await checkAsync('Autorisations : la matrice ouvre onglet par onglet et rubrique
       'un onglet hors périmètre reste fermé par défaut');
 
     // Périmètre arrêté le 19/08/2026 : le directeur voit son CA mais pas
-    // les réglages de l'onglet qui relèvent du contrôle de gestion.
+    // les réglages de l'onglet qui relèvent du contrôle de gestion. Depuis
+    // le 07/10/2026 la VENTILATION fait exception : il la voit, en lecture
+    // seule (Alexis : « qu'ils puissent voir comment est ventilé le CA,
+    // sans pour autant pouvoir modifier les pourcentages »).
     assert.ok(app.canAccessPage(directeur, 'ca', 'ca-couverts'),
       'la matrice couverts × ticket moyen est à lui');
-    for (const page of ['ca-comptes', 'ca-ponderation', 'ca-ventilation']) {
+    assert.ok(app.canAccessPage(directeur, 'ca', 'ca-ventilation'),
+      'la ventilation du CA est désormais ouverte par défaut à un directeur, en lecture seule');
+    for (const page of ['ca-comptes', 'ca-ponderation', 'ca-migration']) {
       assert.ok(!app.canAccessPage(directeur, 'ca', page),
         `« ${page} » relève du contrôle de gestion, pas du directeur`);
     }
@@ -26209,6 +26426,77 @@ await checkAsync('Onglet Import : un nom saisi en colonne C du fichier télécha
   }
 });
 
+check('Compatibilité : un classeur téléchargé AVANT le 05/10/2026 se réimporte sans rien renommer', () => {
+  // Les fichiers déjà entre les mains d'Alexis portent l'ancien en-tête
+  // « Ligne(s) nommée(s) » en colonne C, et le repérage de l'en-tête se fait
+  // sur la colonne A (« Compte 2026 ») : ils restent lisibles. Surtout, la
+  // colonne C y contient l'étiquette écrite par l'export — exactement la même
+  // que celle écrite aujourd'hui (`importMatrixNamesLabel`) — donc un tel
+  // fichier ne doit renommer AUCUNE dépense, y compris sur un compte qui en
+  // porte deux (« Boissons, Cave » n'est le nom de personne) ou sur une ligne
+  // restée sans nom (« (sans nom) » n'est pas un nom).
+  const companyId = 'imp_compat';
+  const savedCompanies = app.state.companies.slice();
+  const savedLines = app.state.lines.slice();
+  app.state.companies = app.state.companies.concat([
+    { id: companyId, name: 'Import Compat', currency: 'EUR', year: 2026, groupId: null },
+  ]);
+  app.state.lines = [
+    { id: 'compat_l1', companyId: companyId, account: '60101100', name: 'Boissons', amounts: months(100) },
+    { id: 'compat_l2', companyId: companyId, account: '60101100', name: 'Cave', amounts: months(50) },
+    { id: 'compat_l3', companyId: companyId, account: '60630100', name: '', amounts: months(40) },
+    { id: 'compat_l4', companyId: companyId, account: '64110100', name: 'Salaires', amounts: months(200),
+      payrollCenterLink: { center: 'F&B' } },
+  ];
+  try {
+    app.resetStateIndexes();
+    const sheets = new Map([
+      ['Food & Beverage', [
+        ['Palm Beach Cannes · Matrice import montants — Import Compat 2026'],
+        ['Généré le 01/10/2026'],
+        [],
+        ['Compte 2026', 'Libellé du compte', 'Ligne(s) nommée(s)'].concat(new Array(13).fill('')),
+        ['60101100', 'Achats', 'Boissons, Cave'].concat(months(150)),
+        ['60630100', 'China expense', '(sans nom)'].concat(months(40)),
+        ['64110100', 'Rémunérations', 'Salaires (calculée depuis Payroll)'].concat(months(200)),
+      ]],
+    ]);
+    const parsed = app.parseImportMatrixRows(sheets, companyId);
+    assert.equal(parsed.issues.length, 0, 'l’ancien en-tête doit rester lisible, sans anomalie');
+    assert.deepEqual(parsed.rows.map((r) => r.name), ['', '', ''],
+      'un fichier de l’ancien format n’apporte aucun nom nouveau : ses cellules sont celles de l’export');
+
+    const summary = app.applyImportRows(companyId, parsed.rows, 'overwrite');
+    assert.equal(summary.renamed, 0, 'un aller-retour sans modification ne doit renommer aucune dépense');
+    assert.equal(summary.created, 0, 'ni créer de ligne');
+    assert.equal(summary.skippedComputed, 1, 'la ligne calculée (Payroll) doit rester ignorée, comme avant');
+    assert.deepEqual(app.state.lines.filter((l) => l.companyId === companyId).map((l) => l.name),
+      ['Boissons', 'Cave', '', 'Salaires'], 'aucun nom ne doit changer');
+    // Les montants du fichier ne sont pas écrits sur la ligne calculée : elle
+    // reste pilotée par Payroll (ici recalculée à 0, cette société de test
+    // n'ayant aucun collaborateur — c'est bien la preuve que l'import n'y a
+    // pas touché).
+    assert.notDeepEqual(app.state.lines.find((l) => l.id === 'compat_l4').amounts, months(200),
+      'le montant du fichier ne doit jamais être écrit sur une ligne calculée');
+    assert.deepEqual(app.state.lines.find((l) => l.id === 'compat_l3').amounts, months(40),
+      'la ligne sans nom doit retrouver son propre montant, sans être nommée de force');
+    // Comportement inchangé (antérieur au 05/10/2026) : sur un compte porté
+    // par deux dépenses, le fichier ne transporte qu'un total, qui atterrit en
+    // mode « écraser » sur la première ligne. C'est la raison d'être de la
+    // fenêtre additionner/écraser — et de la possibilité, désormais, d'écrire
+    // une ligne par nom dans le fichier.
+    assert.deepEqual(app.state.lines.find((l) => l.id === 'compat_l1').amounts, months(150),
+      'le total du compte atterrit sur la première dépense, comme avant');
+    assert.deepEqual(app.state.lines.find((l) => l.id === 'compat_l2').amounts, months(50),
+      'la seconde dépense du compte n’est pas touchée');
+  } finally {
+    app.state.companies = savedCompanies;
+    app.state.lines = savedLines;
+    app.resetStateIndexes();
+    app.render();
+  }
+});
+
 check('detectImportConflicts / applyImportedAccountAmounts : additionner ou écraser une valeur déjà saisie', () => {
   const companyId = 'imp_conflict';
   const savedLines = app.state.lines.slice();
@@ -26336,7 +26624,7 @@ check('applyImportedAccountAmounts : la colonne C devient le nom de la dépense 
   ]);
   app.state.lines = [
     { id: 'nom_l1', companyId: companyId, account: '60101100', name: 'Boissons', amounts: months(100) },
-    { id: 'nom_l2', companyId: companyId, account: '60104100', name: '', amounts: months(40) },
+    { id: 'nom_l2', companyId: companyId, account: '60630100', name: '', amounts: months(40) },
   ];
   try {
     app.resetStateIndexes();
@@ -26351,7 +26639,7 @@ check('applyImportedAccountAmounts : la colonne C devient le nom de la dépense 
     assert.equal(rejected.length, 0, 'une ligne importée nommée doit entrer dans le budget, pas être rejetée');
 
     // 2. Une ligne existante restée sans nom se fait nommer depuis Excel.
-    const named = app.applyImportedAccountAmounts(companyId, '60104100', months(60), 'overwrite', 'Nappage', true);
+    const named = app.applyImportedAccountAmounts(companyId, '60630100', months(60), 'overwrite', 'Nappage', true);
     assert.equal(named.status, 'updated');
     assert.equal(named.renamed, true, 'le changement de nom doit être signalé pour le compte-rendu');
     assert.equal(app.state.lines.find((l) => l.id === 'nom_l2').name, 'Nappage',
@@ -26381,11 +26669,11 @@ check('applyImportedAccountAmounts : la colonne C devient le nom de la dépense 
 
     // 6. Une ligne nommée mais sans montant est créée quand même : le nom est
     //    une intention explicite (la saisie manquante est signalée ailleurs).
-    const zero = app.applyImportedAccountAmounts(companyId, '60105100', months(0), 'overwrite', 'Prévu, non chiffré', true);
+    const zero = app.applyImportedAccountAmounts(companyId, '60631100', months(0), 'overwrite', 'Prévu non chiffré', true);
     assert.equal(zero.status, 'created');
     // Sans nom, en revanche, rien n’est créé : la matrice propose TOUS les
     // comptes du plan, la plupart à zéro et sans nom.
-    const empty = app.applyImportedAccountAmounts(companyId, '60106100', months(0), 'overwrite', '', true);
+    const empty = app.applyImportedAccountAmounts(companyId, '60632100', months(0), 'overwrite', '', true);
     assert.equal(empty.status, 'skipped-empty', 'un compte ni nommé ni chiffré ne doit rien créer');
   } finally {
     app.state.companies = savedCompanies;
