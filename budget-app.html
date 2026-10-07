@@ -3393,7 +3393,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-05.1';
+const APP_BUILD = '2026-10-07.3';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -6935,50 +6935,139 @@ function confirmModalHtml() {
    sauvegarde automatique permettait de revenir en arrière, et elle
    remontait TOUT l'état d'un coup, y compris ce qu'on voulait garder.
 
-   Principe : un instantané sérialisé de `state` avant chaque modification.
-   Le point de passage unique est `save()`, appelé par toutes les fonctions
-   qui touchent aux données — pas besoin de les instrumenter une à une, et
-   rien ne peut être oublié au fil des évolutions.
+   Principe : UN seul état sérialisé de référence (`undoSnapshot`, celui
+   qui est à l'écran) et, de part et d'autre, des ÉCARTS — le petit morceau
+   de texte qui sépare deux sérialisations successives (voir
+   `makeUndoDelta`). Le point de passage unique est `save()`, appelé par
+   toutes les fonctions qui touchent aux données — pas besoin de les
+   instrumenter une à une, et rien ne peut être oublié au fil des
+   évolutions.
 
    Frappe au clavier : `save()` est appelé à chaque caractère. Sans
    précaution, annuler ne reculerait que d'un chiffre à la fois. Les
    modifications rapprochées (moins de `UNDO_COALESCE_MS`) sont donc
    regroupées en une seule étape d'annulation — on annule « le montant
    qu'on vient de taper », pas « le dernier chiffre ».
+
+   Pourquoi des écarts, et pas des copies (corrigé le 07/10/2026) :
+   jusqu'à cette date chaque étape était une COPIE COMPLÈTE de l'état
+   sérialisé, et le plafond mémoire (`UNDO_MAX_BYTES`, 4 Mo) comptait aussi
+   l'instantané de référence. Le budget de production pèse 2,2 Mo : la
+   référence et UNE seule étape saturaient déjà le plafond, si bien que
+   `trimUndoHistory` ramenait la pile à une étape et vidait le « refaire »
+   au moment même où `undo()` venait de l'alimenter. Alexis :
+   « l'option de retour en arrière et de retour en avant ne sont pas
+   fonctionnel → le retour en arrière est limité à une seule utilisation ».
+   Ce n'était pas un réglage trop serré mais un mécanisme qui ne tenait pas
+   l'échelle : un montant corrigé ne change que quelques caractères dans
+   une sérialisation de 2,2 Mo, et c'est ce morceau-là qu'il faut garder.
    ================================================================== */
 
 const UNDO_MAX = 40;
 /**
- * Plafond mémoire de l'historique d'annulation.
+ * Plafond mémoire de l'historique d'annulation. Il ne porte QUE sur les
+ * écarts : l'instantané de référence est une copie unique de l'état
+ * courant, inévitable et indépendante de la profondeur de l'historique —
+ * la compter revenait à faire payer à l'historique quelque chose qui n'est
+ * pas lui (c'est ce qui a cassé l'annulation, voir plus haut).
  *
- * Chaque étape est une copie complète de l'état sérialisé. Sur un petit
- * budget c'est indolore ; sur un gros (plusieurs sociétés, des milliers de
- * lignes), quarante copies d'un état de 300 Ko font plus de douze
- * mégaoctets retenus en permanence — pour un fichier censé rester léger.
- *
- * On garde donc les deux limites : au plus `UNDO_MAX` étapes, et au plus
- * `UNDO_MAX_BYTES` en mémoire. Sur un budget courant la seconde ne se
- * déclenche jamais et rien ne change ; sur un gros budget on annule moins
- * loin, mais l'application ne gonfle pas indéfiniment. Une étape est
- * toujours conservée : « annuler » ne devient jamais impossible.
+ * Un écart ordinaire pèse quelques dizaines d'octets : les quarante étapes
+ * promises tiennent sans jamais approcher ce plafond. Il reste un garde-fou
+ * pour les opérations qui réécrivent tout (import d'un budget, duplication
+ * d'exercice), dont l'écart vaut la taille de ce qui a changé. Une étape
+ * d'annulation ET une étape de rétablissement sont toujours conservées :
+ * ni « annuler » ni « rétablir » ne doivent devenir impossibles.
  */
 const UNDO_MAX_BYTES = 4 * 1024 * 1024;
 const UNDO_COALESCE_MS = 700;
+/** Écarts vers le passé (le dernier de la liste ramène à l'étape précédente). */
 let undoStack = [];
+/** Écarts vers le futur, alimentés par `undo()` (le dernier rétablit l'étape annulée). */
 let redoStack = [];
-/** État sérialisé au dernier point de reprise — ce vers quoi « annuler » ramène. */
+/**
+ * État sérialisé de référence : ce qui est à l'écran, et le point d'appui
+ * de TOUS les écarts des deux piles. Seule copie complète que l'historique
+ * garde en mémoire.
+ */
 let undoSnapshot = null;
 /** Prise d'instantané en attente de la fin de la rafale de frappe, ou `null`. */
 let undoSnapshotTimer = null;
 /** `true` pendant l'application d'une annulation : `save()` ne doit pas la prendre pour une nouvelle modification. */
 let undoApplying = false;
 
+/**
+ * Ce que l'historique ne regarde pas, et qu'une annulation ne touche donc
+ * jamais — deux raisons, qui tombent sur la même liste :
+ *
+ *   - la SÉCURITÉ et la TRAÇABILITÉ (24/09/2026, audit de bugs) : les
+ *     comptes (droits, mots de passe, verrouillages) et les deux journaux.
+ *     Avant, Ctrl+Z restaurait l'état entier : un directeur connecté après
+ *     un contrôleur pouvait, en trois Ctrl+Z, récupérer un onglet qu'on
+ *     venait de lui retirer — et effacer au passage les entrées du journal
+ *     des connexions. Ctrl+Z annule du budget, pas de la sécurité.
+ *   - la STABILITÉ de la référence (07/10/2026) : les écarts de
+ *     l'historique ne valent que si la référence correspond, au caractère
+ *     près, à l'état installé. Or le journal des modifications grossit à
+ *     chaque case saisie, l'horodatage d'enregistrement change à chaque
+ *     sauvegarde, et `render()` recale l'environnement et la société
+ *     affichés (`enforceCompanyPermission`). Ces valeurs varient donc
+ *     SANS qu'on ait rien annulé : les laisser dans la sérialisation
+ *     aurait décalé la référence, et créé des étapes d'annulation qui ne
+ *     changent rien à l'écran. Ce sont aussi, à `editLog` près, les clés
+ *     que le mode serveur garde pour lui (`SERVER_PRIVATE_KEYS`) : rien
+ *     là-dedans n'est du budget.
+ */
+const UNDO_IGNORED_KEYS = ['users', 'authLog', 'editLog', 'lastSavedAt',
+  'activeCompany', 'activeEnvironmentId', 'activeScenario'];
+
+/** L'état tel que l'historique le voit : le budget sérialisé, sans ce qui ne le concerne pas. */
+function undoSerialize(source) {
+  if (!source) return null;
+  const kept = {};
+  // Dans l'ordre des clés de l'état : la sérialisation doit être
+  // reproductible à l'identique, c'est tout ce qui fait tenir les écarts.
+  for (const key of Object.keys(source)) {
+    if (UNDO_IGNORED_KEYS.indexOf(key) === -1) kept[key] = source[key];
+  }
+  return JSON.stringify(kept);
+}
+
+/**
+ * Écart entre deux états sérialisés : de quoi retrouver `to` à partir de
+ * `from`, sans garder `to` en entier.
+ *
+ * Deux sérialisations qui ne diffèrent que par un montant partagent un
+ * immense début et une immense fin communs. On ne retient donc que le
+ * morceau du milieu qui change : `{ head, tail, text }` se relit comme
+ * « garde les `head` premiers caractères, puis `text`, puis les `tail`
+ * derniers ». Corriger un chiffre dans un budget de 2,2 Mo coûte ainsi
+ * quelques dizaines d'octets au lieu de 2,2 Mo.
+ *
+ * Comparaison sur les CARACTÈRES, pas sur les objets : aucune hypothèse
+ * sur la forme de l'état, et l'écart est exact par construction — on le
+ * vérifie d'ailleurs à chaque application (voir `rebaseUndoHistory`).
+ */
+function makeUndoDelta(from, to) {
+  const max = Math.min(from.length, to.length);
+  let head = 0;
+  while (head < max && from.charCodeAt(head) === to.charCodeAt(head)) head++;
+  let tail = 0;
+  while (tail < max - head &&
+    from.charCodeAt(from.length - 1 - tail) === to.charCodeAt(to.length - 1 - tail)) tail++;
+  return { head: head, tail: tail, text: to.slice(head, to.length - tail) };
+}
+
+/** Applique un écart : rend l'état sérialisé que `makeUndoDelta` visait. */
+function applyUndoDelta(from, delta) {
+  return from.slice(0, delta.head) + delta.text + from.slice(from.length - delta.tail);
+}
+
 /** Prépare la pile au premier affichage (ou après déverrouillage) : rien à annuler, mais un point de départ connu. */
 function resetUndoHistory() {
   if (undoSnapshotTimer !== null) { clearTimeout(undoSnapshotTimer); undoSnapshotTimer = null; }
   undoStack = [];
   redoStack = [];
-  undoSnapshot = state ? JSON.stringify(state) : null;
+  undoSnapshot = state ? undoSerialize(state) : null;
 }
 
 /**
@@ -7002,19 +7091,20 @@ function captureUndoStep() {
 }
 
 /**
- * Clôt l'étape d'annulation en cours : l'instantané précédent rejoint la
- * pile, et l'état courant devient le nouveau point de reprise.
+ * Clôt l'étape d'annulation en cours : l'écart qui ramène à l'étape
+ * précédente rejoint la pile, et l'état courant devient la référence.
  */
 function commitUndoSnapshot() {
   if (undoSnapshotTimer !== null) { clearTimeout(undoSnapshotTimer); undoSnapshotTimer = null; }
   if (undoApplying || !state) return;
-  const current = JSON.stringify(state);
+  const current = undoSerialize(state);
   // Rien n'a bougé (un `save()` déclenché par une action sans effet, un
-  // champ réécrit à l'identique) : empiler une copie de plus donnerait une
-  // étape d'annulation qui ne change rien à l'écran, et coûterait la
-  // taille de tout l'état.
+  // champ réécrit à l'identique) : empiler une étape de plus donnerait une
+  // annulation qui ne change rien à l'écran.
   if (undoSnapshot !== null && undoSnapshot !== current) {
-    undoStack.push(undoSnapshot);
+    // L'écart part de l'état COURANT (la future référence) et ramène au
+    // précédent : c'est bien dans ce sens qu'`undo()` le lira.
+    undoStack.push(makeUndoDelta(current, undoSnapshot));
     // Toute nouvelle modification rend le « refaire » caduc : on ne peut
     // pas refaire un futur qui n'existe plus.
     redoStack = [];
@@ -7024,48 +7114,54 @@ function commitUndoSnapshot() {
   refreshUndoButtons();
 }
 
-/** Mémoire occupée par l'historique d'annulation, en caractères. */
+/**
+ * Mémoire occupée par l'HISTORIQUE, en caractères : la somme des écarts.
+ * L'instantané de référence n'en fait pas partie — c'est une copie unique
+ * de l'état courant, qui ne grandit pas avec la profondeur de l'historique
+ * (la compter a cassé l'annulation jusqu'au 07/10/2026, voir l'en-tête de
+ * section).
+ */
 function undoHistoryBytes() {
-  let bytes = undoSnapshot ? undoSnapshot.length : 0;
-  for (const step of undoStack) bytes += step.length;
-  for (const step of redoStack) bytes += step.length;
+  let bytes = 0;
+  for (const step of undoStack) bytes += step.text.length;
+  for (const step of redoStack) bytes += step.text.length;
   return bytes;
 }
 
 /**
  * Ramène l'historique dans ses limites : nombre d'étapes, puis mémoire.
- * Les étapes les plus anciennes partent en premier — ce sont celles qu'on
- * a le moins de chances de vouloir retrouver.
+ * Les étapes les plus anciennes partent en premier — pour « annuler » le
+ * passé le plus lointain, pour « rétablir » le futur le plus lointain.
+ * Dans les deux cas c'est le bout de la chaîne qu'on atteint en dernier :
+ * la retirer ne décale rien de ce qui reste.
  */
 function trimUndoHistory() {
   while (undoStack.length > UNDO_MAX) undoStack.shift();
   while (redoStack.length > UNDO_MAX) redoStack.shift();
   while (undoHistoryBytes() > UNDO_MAX_BYTES) {
-    // Chaque tour retire une étape, ou sort : la boucle se termine.
+    // Chaque tour retire une étape, ou sort : la boucle se termine. Une
+    // étape de chaque côté survit toujours — sans quoi un `undo()` sur un
+    // état énorme viderait le « rétablir » qu'il vient de remplir.
     if (undoStack.length > 1) { undoStack.shift(); continue; }
-    if (redoStack.length) { redoStack.shift(); continue; }
-    break; // une étape est toujours gardée
+    if (redoStack.length > 1) { redoStack.shift(); continue; }
+    break;
   }
 }
 
-/** Remet l'application dans un état sérialisé, caches compris. */
 /**
- * Parties de l'état qu'annuler/rétablir ne touchent JAMAIS (24/09/2026,
- * audit de bugs) : les comptes (droits, mots de passe, verrouillages) et
- * les deux journaux. Avant, Ctrl+Z restaurait l'état entier : un directeur
- * connecté après un contrôleur pouvait, en trois Ctrl+Z, récupérer un
- * onglet qu'on venait de lui retirer — et effacer au passage les entrées
- * du journal des connexions. Ctrl+Z annule du budget, pas de la sécurité
- * ni de la traçabilité.
+ * Remet l'application dans un état sérialisé, caches compris. Ce que
+ * l'historique ignore (`UNDO_IGNORED_KEYS` : comptes, journaux,
+ * horodatage, choix d'affichage) est absent de la sérialisation et repris
+ * tel quel sur l'état en cours — c'est ce qui fait qu'un Ctrl+Z ne rend
+ * jamais un droit retiré, n'efface aucun journal, et ne fait pas sauter
+ * l'écran d'une société à l'autre.
  */
-const UNDO_PRESERVED_KEYS = ['users', 'authLog', 'editLog'];
-
 function applyUndoState(serialized) {
   undoApplying = true;
   const preserved = {};
-  if (state) for (const key of UNDO_PRESERVED_KEYS) preserved[key] = state[key];
+  if (state) for (const key of UNDO_IGNORED_KEYS) preserved[key] = state[key];
   state = JSON.parse(serialized);
-  for (const key of Object.keys(preserved)) {
+  for (const key of UNDO_IGNORED_KEYS) {
     if (preserved[key] !== undefined) state[key] = preserved[key];
   }
   resetStateIndexes();
@@ -7090,17 +7186,42 @@ function applyUndoState(serialized) {
   undoApplying = false;
 }
 
+/**
+ * Recale la référence sur ce que l'application contient VRAIMENT après
+ * avoir installé une étape, et dit si elle est bien celle attendue.
+ *
+ * Les écarts s'appuient les uns sur les autres : ils ne valent que si la
+ * référence correspond au caractère près à l'état installé. `render()`
+ * recalcule au passage les lignes liées à un multiplicateur
+ * (`recomputeAllRateLinkedLines`) ; ce recalcul est déterministe et doit
+ * donc retomber exactement sur ce qui a été enregistré. S'il n'y retombait
+ * pas, les écarts plus profonds ne s'appliqueraient plus à rien : on garde
+ * alors la référence réelle et on VIDE les deux piles. Un historique
+ * tronqué se voit (les boutons se grisent) ; un historique décalé ferait
+ * réapparaître des chiffres faux, ce qui est bien pire.
+ */
+function rebaseUndoHistory(expected) {
+  undoSnapshot = undoSerialize(state);
+  if (undoSnapshot === expected) return true;
+  undoStack = [];
+  redoStack = [];
+  refreshUndoButtons();
+  return false;
+}
+
 function undo() {
   // Ctrl+Z juste après avoir tapé : la rafale n'est pas encore close, son
   // étape n'est donc pas sur la pile. On la clôt d'abord, sans quoi
   // l'annulation semblerait ignorée pendant la seconde qui suit la frappe.
   if (undoSnapshotTimer !== null) commitUndoSnapshot();
   if (!undoStack.length) { showToast('Rien à annuler.'); return false; }
-  redoStack.push(JSON.stringify(state));
+  const target = applyUndoDelta(undoSnapshot, undoStack.pop());
+  // L'écart de rétablissement part de l'état qu'on installe (la future
+  // référence) et ramène à celui qu'on quitte.
+  redoStack.push(makeUndoDelta(target, undoSnapshot));
+  applyUndoState(target);
+  rebaseUndoHistory(target);
   trimUndoHistory();
-  const previous = undoStack.pop();
-  applyUndoState(previous);
-  undoSnapshot = previous;
   showToast('Modification annulée — Ctrl+Y pour rétablir.');
   return true;
 }
@@ -7108,11 +7229,11 @@ function undo() {
 function redo() {
   if (undoSnapshotTimer !== null) commitUndoSnapshot();
   if (!redoStack.length) { showToast('Rien à rétablir.'); return false; }
-  undoStack.push(JSON.stringify(state));
+  const target = applyUndoDelta(undoSnapshot, redoStack.pop());
+  undoStack.push(makeUndoDelta(target, undoSnapshot));
+  applyUndoState(target);
+  rebaseUndoHistory(target);
   trimUndoHistory();
-  const next = redoStack.pop();
-  applyUndoState(next);
-  undoSnapshot = next;
   showToast('Modification rétablie.');
   return true;
 }
@@ -8650,7 +8771,7 @@ async function signIn(username, password) {
     : (firstAllowedTab(user) || 'saisie');
   // L'historique d'annulation de la personne précédente ne suit jamais la
   // suivante sur le même poste : on repart de l'état tel qu'il est à la
-  // connexion (voir aussi `signOut` et `UNDO_PRESERVED_KEYS`).
+  // connexion (voir aussi `signOut` et `UNDO_IGNORED_KEYS`).
   resetUndoHistory();
   save();
   return { ok: true, user: user, mustChangePassword: Boolean(user.mustChangePassword) };
