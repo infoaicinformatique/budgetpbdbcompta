@@ -39,6 +39,7 @@ import {
 } from './auth-ldap.mjs';
 import { createRightsStore, parseAdminList, normalizeAccount, RightsError } from './rights.mjs';
 import { createDataStore, declarationOf, DataError } from './data.mjs';
+import { createPresenceStore, PRESENCE_TTL_MS } from './presence.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const HOST = process.env.HOST || '127.0.0.1';
@@ -66,6 +67,8 @@ const rights = createRightsStore(RIGHTS_FILE, RIGHTS_ADMINS);
 
 const DATA_FILE = process.env.DATA_FILE || join(root, 'data', 'budget.json');
 const dataStore = createDataStore(DATA_FILE);
+/* Qui a la main sur quelle société — en mémoire, voir presence.mjs. */
+const presence = createPresenceStore();
 
 const appPath = join(root, 'budget-app.html');
 
@@ -444,12 +447,53 @@ async function handleDataApi(req, res, url, auth) {
     if (url.pathname === DATA_PREFIX + '/revision' && req.method === 'GET') {
       return sendJson(res, 200, { revision: dataStore.revision() });
     }
+    /* Qui a la main sur une société (presence.mjs). Le navigateur appelle
+       ce chemin en arrivant sur une société puis par battement de cœur :
+       la première personne l'obtient, les suivantes apprennent qui l'a. */
+    if (url.pathname === DATA_PREFIX + '/main' && req.method === 'POST') {
+      if (!sameOriginWrite(req)) return sendJson(res, 403, { error: 'Requête refusée : origine non vérifiée.' });
+      if (!own) return sendJson(res, 403, { error: 'Aucun droit enregistré pour ce compte.' });
+      const body = await readJsonBody(req);
+      const companyId = body && typeof body.company === 'string' ? body.company : '';
+      const name = auth.displayName || auth.account || by;
+      if (body && body.release === true) {
+        presence.release(by, companyId || undefined);
+        return sendJson(res, 200, { company: companyId, holder: null, mine: false, ttlMs: PRESENCE_TTL_MS });
+      }
+      // Une société hors périmètre ne donne droit à aucune main : sans ce
+      // garde-fou, on pourrait bloquer le budget d'un établissement qu'on
+      // n'a même pas le droit de lire.
+      //
+      // Contrôle fait sur la seule fiche de droits, pas sur `scopeOf` : ce
+      // chemin est appelé par battement de cœur, et `scopeOf` demande
+      // l'état complet (environnements → groupes → sociétés), donc une
+      // lecture et un parsing du fichier de 2 Mo à chaque battement de
+      // chaque poste. La liste `allowedCompanies` borne déjà le périmètre
+      // réel (`scopeOf` n'en garde qu'un sous-ensemble) : la refuser ici ne
+      // peut donc jamais refuser à tort. Une fiche sans cette liste — les
+      // contrôleurs — n'est pas restreinte de ce côté, et leur périmètre de
+      // lecture est de toute façon large.
+      const allowed = Array.isArray(own.allowedCompanies) ? new Set(own.allowedCompanies) : null;
+      if (companyId && allowed && !allowed.has(companyId)) {
+        return sendJson(res, 403, { error: 'Société hors de votre périmètre.' });
+      }
+      const claimed = presence.claim(by, name, companyId);
+      return sendJson(res, 200, Object.assign({ company: companyId, ttlMs: PRESENCE_TTL_MS }, claimed));
+    }
     if (url.pathname !== DATA_PREFIX) return sendJson(res, 404, { error: 'Introuvable.' });
     if (req.method === 'GET') return sendDataJson(req, res, 200, dataStore.read(own));
     if (req.method !== 'PUT') return sendJson(res, 405, { error: 'Méthode non prise en charge.' });
     if (!sameOriginWrite(req)) return sendJson(res, 403, { error: 'Requête refusée : origine non vérifiée.' });
     const body = await readJsonBody(req, DATA_BODY_MAX);
-    const result = dataStore.write(own, body && body.baseRevision, body && body.state, by, declarationOf(body));
+    /* La main avant la révision : une société tenue par quelqu'un d'autre
+       ne s'écrit pas, même si la révision de départ est à jour. C'est ce
+       qui rend vraie la phrase affichée au navigateur (« X a la main,
+       modifications impossibles ») — sans ce refus, elle ne serait qu'un
+       avertissement que la première frappe démentirait. */
+    const declared = declarationOf(body);
+    const refusal = declared ? presence.refusalFor(by, declared.companies, body && body.state) : null;
+    if (refusal) return sendJson(res, 409, refusal);
+    const result = dataStore.write(own, body && body.baseRevision, body && body.state, by, declared);
     if (result.changedCompanies.length || result.sharedChanged) {
       console.log(`Données enregistrées par « ${by} » (révision ${result.revision}, ${result.changedCompanies.length} société(s)${result.sharedChanged ? ', réglages communs' : ''})`);
     }
@@ -484,9 +528,14 @@ async function handle(req, res) {
 
   const api = url.pathname === API_PREFIX || url.pathname.startsWith(API_PREFIX + '/');
   const dataApi = url.pathname === DATA_PREFIX || url.pathname.startsWith(DATA_PREFIX + '/');
+  // POST n'est admis que sur les données, pour `/api/donnees/main` (qui a
+  // la main sur une société, voir presence.mjs) : prendre la main n'est pas
+  // une écriture du budget, et un PUT sur une ressource sans corps à
+  // remplacer n'aurait pas le bon sens.
   if (req.method !== 'GET' && req.method !== 'HEAD' &&
-    !(api && (req.method === 'PUT' || req.method === 'DELETE')) && !(dataApi && req.method === 'PUT')) {
-    res.writeHead(405, { Allow: api ? 'GET, PUT, DELETE' : dataApi ? 'GET, PUT' : 'GET, HEAD' });
+    !(api && (req.method === 'PUT' || req.method === 'DELETE')) &&
+    !(dataApi && (req.method === 'PUT' || req.method === 'POST'))) {
+    res.writeHead(405, { Allow: api ? 'GET, PUT, DELETE' : dataApi ? 'GET, PUT, POST' : 'GET, HEAD' });
     return res.end();
   }
 

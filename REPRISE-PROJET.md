@@ -77,6 +77,112 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Qui a la main sur un budget : lecture seule pour la personne arrivée ensuite (08/10/2026)
+
+Alexis : « Lorsque deux personnes édite le même budget en même temps →
+indiquer à la personne qui s'est connecté la dernière que les modifications
+sont impossibles et indiquer la personne qui a la main ».
+
+Jusqu'ici les saisies simultanées ne se réglaient qu'**après** coup : chaque
+société porte le numéro de la révision qui l'a modifiée, et la deuxième
+écriture était refusée (409, `data.mjs`, 02/10/2026) avec un « refaites votre
+dernière saisie ». Personne n'était prévenu **avant** de taper — on pouvait
+remplir un mois entier pour apprendre ensuite qu'il était perdu.
+
+La main se prend donc à l'arrivée, **société par société** : la première
+personne l'obtient, les suivantes le lisent en haut de chaque écran et
+travaillent en lecture seule. Par société et non pour la base entière : deux
+directeurs sur deux établissements différents ne se gênent pas, et c'est déjà
+la maille des conflits d'écriture.
+
+**Côté serveur, `presence.mjs`** (nouveau fichier, ajouté au `Dockerfile` et
+au `.dockerignore`) :
+
+- `createPresenceStore({ now, ttlMs })` tient une main par société :
+  `claim` (la première personne l'obtient, un deuxième appel de la même
+  personne ne fait que repousser l'expiration sans changer l'heure de prise),
+  `holderOf`, `heldByOther`, `release` (la sienne seulement — on ne reprend
+  pas une main de force), `all` ;
+- `refusalFor(account, sociétés déclarées, état)` rend la phrase à opposer à
+  une écriture, ou `null`. Elle vit **dans le module et non dans le
+  gestionnaire HTTP** pour être vérifiable : la phrase affichée à quelqu'un
+  dont la saisie vient d'être refusée doit nommer la bonne personne et la
+  bonne société ;
+- `PRESENCE_TTL_MS = 70 s` : la main se libère d'elle-même faute de nouvelles.
+  Un onglet fermé, un poste éteint ou une personne partie déjeuner ne doivent
+  pas bloquer un budget pour la journée ;
+- **en mémoire seulement** : un verrou qui survivrait au redémarrage du
+  conteneur serait un verrou que personne ne pourrait plus lever.
+
+**Côté `server.mjs`** : `POST /api/donnees/main` (`{ company }`, ou
+`{ company, release: true }`) rend `{ holder, mine, ttlMs }`. Le PUT des
+données refuse (409) toute société déclarée modifiée qu'une autre personne
+tient, en la nommant — **c'est ce qui rend vraie la phrase affichée** ; sans
+ce refus, elle ne serait qu'un avertissement que la première frappe
+démentirait. Deux détails :
+
+- POST est désormais admis sur `/api/donnees` (le garde-fou de méthodes n'y
+  laissait passer que GET et PUT, d'où un 405 muet au premier essai). Prendre
+  la main n'est pas une écriture du budget, et un PUT sur une ressource sans
+  corps à remplacer n'aurait pas le bon sens ;
+- le contrôle de périmètre de ce chemin lit la **seule fiche de droits**
+  (`allowedCompanies`) et non `scopeOf`, qui demande l'état complet :
+  appelé par battement de cœur, il aurait relu et reparsé les 2,2 Mo du
+  budget à chaque battement de chaque poste. `scopeOf` ne garde qu'un
+  sous-ensemble de `allowedCompanies` : refuser sur cette liste ne peut donc
+  jamais refuser à tort.
+
+**Côté application** (section « Qui a la main sur le budget ouvert ») :
+
+- `claimBudgetHand` / `releaseBudgetHand` / `budgetHand` /
+  `budgetHandHeldByOther` / `budgetHandHolderName`. Un seul point de décision,
+  que lisent la bannière, les montants et le verrou de structure ;
+- `startBudgetHandBeat` bat toutes les **20 s**, fenêtre visible seulement
+  (comme la relecture des droits) : le délai du serveur survit donc à deux
+  battements perdus, et un onglet laissé au fond rend la main. Le battement
+  **ne re-rend l'écran que si la situation a changé** — un battement qui
+  confirme ce qui est déjà affiché ne doit pas reconstruire le tableau sous
+  les doigts de quelqu'un en train de saisir ;
+- `onActiveCompanyChanged()`, appelé depuis `render()` : la main suit la
+  société affichée (et rend la précédente) en un seul endroit, plutôt que
+  d'instrumenter chaque bouton de sélection ;
+- `budgetHandBannerHtml()` s'affiche dans **`viewPage`**, donc en tête de tous
+  les onglets, et reste collé en haut au défilement (`.hand-banner`). En
+  bandeau et non en toast : un message qui disparaît au bout de trois
+  secondes ne prévient qu'une fois, alors que la situation dure ;
+- la lecture seule est réelle : `centerReadOnly` (Saisie) devient vrai pour
+  **tous** les centres, avec la raison dans l'infobulle des douze cases, et
+  `canEditLineStructure()` rend faux — plus de bouton d'ajout, de suppression
+  ni de déplacement. La ligne reste **visible** : c'est de la lecture seule,
+  pas un masquage ;
+- le refus 409 du serveur retient la main au passage (`handHolder`) pour que
+  la bannière apparaisse tout de suite, sans attendre le battement suivant, et
+  son message remplace le « refaites votre dernière saisie » — il n'y a rien à
+  refaire, il faut attendre que la personne rende la main ;
+- **SAS réseau** : `/api/donnees/main` a été ajouté à la liste blanche de
+  `serverRequest`. Sans ça l'appel serait refusé avant même de partir
+  (« Sortie réseau interdite ») — un contrôle le vérifie.
+
+Contrôles ajoutés : **+11 tests serveur** (`test/presence.test.mjs`, 37 → 48 :
+première personne servie, deuxième en lecture seule et informée, sociétés
+indépendantes, battement qui conserve la main sans changer l'heure de prise,
+expiration, `heldByOther`, `release` qui ne touche que les siennes, annonce
+vide, cohérence du délai avec le battement du navigateur, et les deux cas de
+`refusalFor` — nom de la société, repli sur l'identifiant, acceptation d'un
+`Set` comme le rend `declarationOf`) et **+1 contrôle d'application** (la
+bannière absente pour qui a la main, présente et nommée pour les autres sur
+les quatre onglets testés, les douze cases verrouillées avec leur raison, les
+boutons de structure disparus, la main d'une AUTRE société qui ne verrouille
+rien, l'absence de main hors mode serveur, le battement plus court que
+l'expiration, et la liste blanche du SAS).
+
+Vérifié aussi de bout en bout par un vrai aller-retour HTTP (serveur lancé sur
+un volume temporaire) : prise de main, battement, écriture par le détenteur,
+puis main rendue. Le contrôle d'application échoue si l'on retire la bannière
+de `viewPage` ou la main de `centerReadOnly`.
+
+`APP_BUILD` passe à `2026-10-08.2`.
+
 ### La colonne C de la matrice d'import devient le nom de la dépense (05/10/2026)
 
 Alexis : « la colonne C […] est indispensable dans l'import des charges, sans
@@ -11195,6 +11301,8 @@ const app = await importApp(
     '  viewParametres, serverAuthInfo, parametresLdapBody, SERVER_AUTH_COOKIE,\n' +
     '  serverRequest, adoptServerSession, buildServerDirectory, serverRightsPayload, serverUserFromRights,\n' +
     '  serverLandingTab, sessionUsername, isServerUserId, applyPagePermissions,\n' +
+    '  budgetHand, budgetHandHeldByOther, budgetHandHolderName, budgetHandBannerHtml,\n' +
+    '  claimBudgetHand, releaseBudgetHand, onActiveCompanyChanged, BUDGET_HAND_BEAT_MS,\n' +
     '  applyRefreshedServerRights, serverRightsSignature,\n' +
     '  serverStatePayload, emptyServerState, adoptServerState, parametresDonneesPanel, SERVER_PRIVATE_KEYS,\n' +
     '  serverDataHasPendingChanges, markServerDataInSync, serverChangesBetween };\n' +
@@ -20895,6 +21003,108 @@ check('Fenêtres : la fermeture ignore un clic né d’une sélection qui débor
   }
 });
 
+check('Saisie simultanée : la personne arrivée ensuite est en lecture seule, et sait qui a la main', () => {
+  // Alexis, 08/10/2026 : « lorsque deux personnes édite le même budget en
+  // même temps → indiquer à la personne qui s'est connecté la dernière que
+  // les modifications sont impossibles et indiquer la personne qui a la
+  // main ». La main se prend société par société (voir presence.mjs) ; ici
+  // on vérifie ce que l'application en fait à l'écran.
+  const savedServerData = app.__getServerData ? app.__getServerData() : null;
+  const saved = {
+    companies: app.state.companies.slice(), active: app.state.activeCompany,
+    lines: app.state.lines.slice(), tab: app.__getTab(),
+  };
+  try {
+    const company = { id: 'main_c', name: 'Palm Beach', currency: 'EUR', year: 2026, groupId: null };
+    app.state.companies = [company];
+    app.state.activeCompany = company.id;
+    app.state.lines = [{
+      id: 'main_l1', companyId: company.id, account: '60103100', name: 'Achat F&B',
+      note: '', amounts: months(100),
+    }];
+    app.resetStateIndexes();
+
+    const base = {
+      ready: true, revision: 4, empty: false, access: { unrestricted: true, shared: true },
+      updatedAt: null, updatedBy: null, error: null, sending: false, lastSentJson: null,
+      localCopy: null, retryTimer: null, hand: null,
+    };
+
+    // 1. La main est à moi : rien ne change, aucune bannière.
+    app.__setServerData(Object.assign({}, base, {
+      hand: { company: company.id, mine: true, holder: { account: 'a.porrati', name: 'Alexis Porrati' } },
+    }));
+    assert.equal(app.budgetHandHeldByOther(), false, 'celui qui a la main n’est pas en lecture seule');
+    assert.equal(app.budgetHandBannerHtml(), '', 'et ne voit aucune bannière');
+
+    // 2. La main est à quelqu'un d'autre.
+    app.__setServerData(Object.assign({}, base, {
+      hand: { company: company.id, mine: false, holder: { account: 'j.quere', name: 'Jean Quéré' } },
+    }));
+    assert.equal(app.budgetHandHeldByOther(), true);
+    assert.equal(app.budgetHandHolderName(), 'Jean Quéré');
+
+    const banner = app.budgetHandBannerHtml();
+    assert.ok(banner.includes('Lecture seule'), 'la bannière doit dire que les modifications sont impossibles');
+    assert.ok(banner.includes('Jean Quéré'), 'et nommer la personne qui a la main');
+    assert.ok(banner.includes('Palm Beach'), 'et la société concernée');
+
+    // La bannière est en tête de TOUS les onglets : `viewPage` est le seul
+    // endroit instrumenté, la lecture seule valant pour le budget entier.
+    for (const tabId of ['saisie', 'ca', 'payroll', 'pnl']) {
+      app.__setTab(tabId);
+      app.render();
+      const rendered = document.getElementById('view').innerHTML;
+      assert.ok(rendered.includes('hand-banner'), 'la bannière doit s’afficher sur l’onglet ' + tabId);
+      assert.ok(rendered.includes('Jean Quéré'), 'avec le nom du détenteur sur l’onglet ' + tabId);
+    }
+
+    // Les montants de la Saisie passent en lecture seule, et la structure
+    // du budget se ferme : le message n'est pas qu'un avertissement.
+    app.__setTab('saisie');
+    app.__setCenter('F&B');
+    app.render();
+    const saisie = document.getElementById('view').innerHTML;
+    assert.ok(saisie.includes('Achat F&amp;B'), 'la ligne reste visible : c’est de la lecture seule, pas un masquage');
+    assert.ok(saisie.includes('a la main sur ce budget — lecture seule'),
+      'les douze cases doivent être verrouillées, et dire pourquoi');
+    assert.ok(!saisie.includes('data-add-line='), 'aucun ajout de ligne tant qu’on n’a pas la main');
+    assert.ok(!saisie.includes('data-delete='), 'aucune suppression non plus');
+    assert.equal(app.canEditLineStructure(), false, 'la structure du budget est fermée');
+
+    // 3. Une main sur une AUTRE société ne verrouille pas celle-ci.
+    app.__setServerData(Object.assign({}, base, {
+      hand: { company: 'autre_c', mine: false, holder: { account: 'j.quere', name: 'Jean Quéré' } },
+    }));
+    assert.equal(app.budgetHandHeldByOther(), false,
+      'la main est par société : un autre établissement ne bloque pas celui-ci');
+    assert.equal(app.budgetHandBannerHtml(), '', 'et n’affiche aucune bannière ici');
+
+    // 4. Hors mode serveur (fichier local, une seule personne) : jamais de main.
+    app.__setServerData(null);
+    assert.equal(app.budgetHand(), null, 'sans serveur, la question ne se pose pas');
+    assert.equal(app.budgetHandHeldByOther(), false);
+    assert.equal(app.canEditLineStructure(), true, 'et rien n’est verrouillé');
+
+    // Le battement doit rester plus court que l'expiration du serveur
+    // (PRESENCE_TTL_MS = 70 s), sinon la main sauterait toute seule.
+    assert.ok(app.BUDGET_HAND_BEAT_MS <= 30000,
+      'le battement doit tenir dans le délai d’expiration du serveur, deux fois au moins');
+
+    // Le chemin doit être autorisé par le SAS réseau, sinon l'appel est
+    // refusé avant même de partir (« Sortie réseau interdite »).
+    assert.ok(appSource.includes('donnees(\\/(revision|main))?'),
+      'le SAS réseau doit laisser passer /api/donnees/main');
+  } finally {
+    app.state.companies = saved.companies; app.state.activeCompany = saved.active;
+    app.state.lines = saved.lines;
+    app.resetStateIndexes();
+    app.__setServerData(savedServerData);
+    app.__setTab(saved.tab);
+    app.render();
+  }
+});
+
 check('Autorisations : une connexion est réclamée sur le seul chemin obligatoire (render)', () => {
   // Déverrouillage d'un fichier chiffré, restauration d'une sauvegarde
   // contenant des comptes, expiration de session : chacun laissait sinon
@@ -26209,6 +26419,77 @@ await checkAsync('Onglet Import : un nom saisi en colonne C du fichier télécha
   }
 });
 
+check('Compatibilité : un classeur téléchargé AVANT le 05/10/2026 se réimporte sans rien renommer', () => {
+  // Les fichiers déjà entre les mains d'Alexis portent l'ancien en-tête
+  // « Ligne(s) nommée(s) » en colonne C, et le repérage de l'en-tête se fait
+  // sur la colonne A (« Compte 2026 ») : ils restent lisibles. Surtout, la
+  // colonne C y contient l'étiquette écrite par l'export — exactement la même
+  // que celle écrite aujourd'hui (`importMatrixNamesLabel`) — donc un tel
+  // fichier ne doit renommer AUCUNE dépense, y compris sur un compte qui en
+  // porte deux (« Boissons, Cave » n'est le nom de personne) ou sur une ligne
+  // restée sans nom (« (sans nom) » n'est pas un nom).
+  const companyId = 'imp_compat';
+  const savedCompanies = app.state.companies.slice();
+  const savedLines = app.state.lines.slice();
+  app.state.companies = app.state.companies.concat([
+    { id: companyId, name: 'Import Compat', currency: 'EUR', year: 2026, groupId: null },
+  ]);
+  app.state.lines = [
+    { id: 'compat_l1', companyId: companyId, account: '60101100', name: 'Boissons', amounts: months(100) },
+    { id: 'compat_l2', companyId: companyId, account: '60101100', name: 'Cave', amounts: months(50) },
+    { id: 'compat_l3', companyId: companyId, account: '60630100', name: '', amounts: months(40) },
+    { id: 'compat_l4', companyId: companyId, account: '64110100', name: 'Salaires', amounts: months(200),
+      payrollCenterLink: { center: 'F&B' } },
+  ];
+  try {
+    app.resetStateIndexes();
+    const sheets = new Map([
+      ['Food & Beverage', [
+        ['Palm Beach Cannes · Matrice import montants — Import Compat 2026'],
+        ['Généré le 01/10/2026'],
+        [],
+        ['Compte 2026', 'Libellé du compte', 'Ligne(s) nommée(s)'].concat(new Array(13).fill('')),
+        ['60101100', 'Achats', 'Boissons, Cave'].concat(months(150)),
+        ['60630100', 'China expense', '(sans nom)'].concat(months(40)),
+        ['64110100', 'Rémunérations', 'Salaires (calculée depuis Payroll)'].concat(months(200)),
+      ]],
+    ]);
+    const parsed = app.parseImportMatrixRows(sheets, companyId);
+    assert.equal(parsed.issues.length, 0, 'l’ancien en-tête doit rester lisible, sans anomalie');
+    assert.deepEqual(parsed.rows.map((r) => r.name), ['', '', ''],
+      'un fichier de l’ancien format n’apporte aucun nom nouveau : ses cellules sont celles de l’export');
+
+    const summary = app.applyImportRows(companyId, parsed.rows, 'overwrite');
+    assert.equal(summary.renamed, 0, 'un aller-retour sans modification ne doit renommer aucune dépense');
+    assert.equal(summary.created, 0, 'ni créer de ligne');
+    assert.equal(summary.skippedComputed, 1, 'la ligne calculée (Payroll) doit rester ignorée, comme avant');
+    assert.deepEqual(app.state.lines.filter((l) => l.companyId === companyId).map((l) => l.name),
+      ['Boissons', 'Cave', '', 'Salaires'], 'aucun nom ne doit changer');
+    // Les montants du fichier ne sont pas écrits sur la ligne calculée : elle
+    // reste pilotée par Payroll (ici recalculée à 0, cette société de test
+    // n'ayant aucun collaborateur — c'est bien la preuve que l'import n'y a
+    // pas touché).
+    assert.notDeepEqual(app.state.lines.find((l) => l.id === 'compat_l4').amounts, months(200),
+      'le montant du fichier ne doit jamais être écrit sur une ligne calculée');
+    assert.deepEqual(app.state.lines.find((l) => l.id === 'compat_l3').amounts, months(40),
+      'la ligne sans nom doit retrouver son propre montant, sans être nommée de force');
+    // Comportement inchangé (antérieur au 05/10/2026) : sur un compte porté
+    // par deux dépenses, le fichier ne transporte qu'un total, qui atterrit en
+    // mode « écraser » sur la première ligne. C'est la raison d'être de la
+    // fenêtre additionner/écraser — et de la possibilité, désormais, d'écrire
+    // une ligne par nom dans le fichier.
+    assert.deepEqual(app.state.lines.find((l) => l.id === 'compat_l1').amounts, months(150),
+      'le total du compte atterrit sur la première dépense, comme avant');
+    assert.deepEqual(app.state.lines.find((l) => l.id === 'compat_l2').amounts, months(50),
+      'la seconde dépense du compte n’est pas touchée');
+  } finally {
+    app.state.companies = savedCompanies;
+    app.state.lines = savedLines;
+    app.resetStateIndexes();
+    app.render();
+  }
+});
+
 check('detectImportConflicts / applyImportedAccountAmounts : additionner ou écraser une valeur déjà saisie', () => {
   const companyId = 'imp_conflict';
   const savedLines = app.state.lines.slice();
@@ -26336,7 +26617,7 @@ check('applyImportedAccountAmounts : la colonne C devient le nom de la dépense 
   ]);
   app.state.lines = [
     { id: 'nom_l1', companyId: companyId, account: '60101100', name: 'Boissons', amounts: months(100) },
-    { id: 'nom_l2', companyId: companyId, account: '60104100', name: '', amounts: months(40) },
+    { id: 'nom_l2', companyId: companyId, account: '60630100', name: '', amounts: months(40) },
   ];
   try {
     app.resetStateIndexes();
@@ -26351,7 +26632,7 @@ check('applyImportedAccountAmounts : la colonne C devient le nom de la dépense 
     assert.equal(rejected.length, 0, 'une ligne importée nommée doit entrer dans le budget, pas être rejetée');
 
     // 2. Une ligne existante restée sans nom se fait nommer depuis Excel.
-    const named = app.applyImportedAccountAmounts(companyId, '60104100', months(60), 'overwrite', 'Nappage', true);
+    const named = app.applyImportedAccountAmounts(companyId, '60630100', months(60), 'overwrite', 'Nappage', true);
     assert.equal(named.status, 'updated');
     assert.equal(named.renamed, true, 'le changement de nom doit être signalé pour le compte-rendu');
     assert.equal(app.state.lines.find((l) => l.id === 'nom_l2').name, 'Nappage',
@@ -26381,11 +26662,11 @@ check('applyImportedAccountAmounts : la colonne C devient le nom de la dépense 
 
     // 6. Une ligne nommée mais sans montant est créée quand même : le nom est
     //    une intention explicite (la saisie manquante est signalée ailleurs).
-    const zero = app.applyImportedAccountAmounts(companyId, '60105100', months(0), 'overwrite', 'Prévu, non chiffré', true);
+    const zero = app.applyImportedAccountAmounts(companyId, '60631100', months(0), 'overwrite', 'Prévu non chiffré', true);
     assert.equal(zero.status, 'created');
     // Sans nom, en revanche, rien n’est créé : la matrice propose TOUS les
     // comptes du plan, la plupart à zéro et sans nom.
-    const empty = app.applyImportedAccountAmounts(companyId, '60106100', months(0), 'overwrite', '', true);
+    const empty = app.applyImportedAccountAmounts(companyId, '60632100', months(0), 'overwrite', '', true);
     assert.equal(empty.status, 'skipped-empty', 'un compte ni nommé ni chiffré ne doit rien créer');
   } finally {
     app.state.companies = savedCompanies;
