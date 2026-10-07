@@ -77,6 +77,18 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Les six changements du 07–08/10/2026 ont été livrés ensemble
+
+Les six entrées qui suivent ont d'abord été préparées en six branches
+distinctes, puis fusionnées en **une seule livraison** à la demande d'Alexis
+(« peux-tu PR l'ensemble ? »). Chacune mentionne l'`APP_BUILD` qui lui aurait
+correspondu si elle était partie seule (`2026-10-07.1` à `2026-10-08.1`) :
+ces numéros marquent l'ordre dans lequel elles ont été écrites, pas des mises
+en production successives. **Un seul `APP_BUILD` a été servi pour les six :
+`2026-10-08.2`.** Même remarque pour les décomptes de contrôles, donnés en
+écart (« +2 », « +3 ») et non en total : le total après les six est de 545
+contrôles d'application et 48 tests serveur.
+
 ### Qui a la main sur un budget : lecture seule pour la personne arrivée ensuite (08/10/2026)
 
 Alexis : « Lorsque deux personnes édite le même budget en même temps →
@@ -182,6 +194,432 @@ puis main rendue. Le contrôle d'application échoue si l'on retire la bannière
 de `viewPage` ou la main de `centerReadOnly`.
 
 `APP_BUILD` passe à `2026-10-08.2`.
+
+### Extras : la main-d'œuvre payée à la journée (08/10/2026)
+
+Alexis : « Sur le payroll il faut qu'on développe un moyen pour saisir les
+extras par jour travaillé et que l'on puisse entrer les montants payés, de
+manière à ce que tout soit simple et intuitif ».
+
+Un extra n'a pas de salaire mensuel : il vient une soirée, une journée, et on
+le paie à la journée. Le type de contrat « Extra » existait depuis le
+06/08/2026, mais il n'était qu'une étiquette sur une fiche collaborateur — il
+obligeait à inventer un net mensuel, des dates d'entrée et de sortie, une
+augmentation, pour un besoin qui se compte en journées.
+
+**Deux questions posées à Alexis avant d'écrire une ligne**, parce que les
+réponses changeaient le travail :
+
+1. *La maille de saisie.* Retenue : **une ligne nommée par besoin** (« Extra
+   salle », « Extra plonge »), rattachée à un centre de coûts, et pour chaque
+   mois **deux chiffres — les journées travaillées et le montant payé pour une
+   journée**. Le coût du mois en découle. C'est la maille à laquelle on budgète
+   réellement un an à l'avance : on ne sait pas quels samedis de juillet seront
+   chargés, on sait qu'il faudra quarante journées d'extra. (Les deux autres
+   options proposées étaient le montant total du mois, et une grille datée jour
+   par jour façon matrice CA.)
+2. *La nature du montant et son compte.* Retenue : **un BRUT**, sur lequel les
+   charges patronales s'ajoutent, l'ensemble atterrissant sur les **6411 et
+   6451 du centre** — les mêmes comptes que le reste de la masse salariale. Les
+   extras comptent donc dans la ligne Payroll du P&L et dans le Ratio (le
+   préfixe `payroll` du moteur couvre 6411/6412/645). L'option « coût tout
+   compris sur le 6211 Personnel intérimaire » les en aurait sortis.
+
+Ce qui a été écrit (section `EXTRAS` de `budget-app.html`) :
+
+- **modèle** : `state.payrollExtras`, un tableau de `{ id, companyId, name,
+  center, employerRate, days[12], dailyGross[12] }`. `payrollExtrasOf`,
+  `payrollExtraById`, `newPayrollExtra`, `payrollExtraLabel` ;
+- **calcul** : `payrollExtraMonthGross` (journées × montant, et zéro si l'un
+  des deux manque — on ne devine pas un tarif, on ne compte pas un montant
+  sans journée), `payrollExtraMonths` (brut / charges patronales / coût
+  employeur, mêmes noms que `employeeMonth`), `payrollExtraTotals` (par
+  société, ou restreint à un centre), `payrollExtraCenters` ;
+- **taux** : `payrollExtraEmployerRate` — le taux figé par le contrôle de
+  gestion prime sur celui de la ligne, et la case se grise, exactement comme
+  la fiche collaborateur ;
+- **report dans la Saisie** : `payrollCenterMonths` ajoute le brut des extras
+  du centre au 6411 et leurs charges au 6451 ; `syncPayrollLines` prend
+  désormais l'union des centres employant un collaborateur **et** de ceux
+  faisant venir des extras, sans quoi un centre sans salarié n'aurait aucune
+  ligne où recevoir leur coût ;
+- **mutations** : toutes passent par `commitPayrollExtraChange`, qui réaligne
+  la Saisie et ne fait qu'UN geste annulable — le piège déjà corrigé pour les
+  collaborateurs (un montant saisi ici doit bouger le 6411 tout de suite, sans
+  penser à « Forcer le re-calcul ») ;
+- **rubrique `payroll-extras`**, juste après « Équipe ». Trois rangées par
+  ligne sur le modèle de la matrice CA — ce qu'on saisit (journées, montant de
+  la journée), puis ce qui en découle (le coût), jamais mélangés ; le nom, le
+  centre et le taux tiennent dans la colonne figée, en regard des trois. Les
+  cases portent `.month-input` : tabulation et flèches comme dans un tableur,
+  sans rien recâbler. Pied de tableau : total journées, brut, charges
+  patronales, coût employeur ;
+- **KPI de l'onglet** : les extras entrent dans « Coût employeur année » et
+  « Masse brute » (avec leur part nommée dans le sous-titre). Les laisser
+  dehors aurait fait dire deux chiffres différents à l'onglet et au P&L pour
+  la même masse salariale. Ils ne pèsent **pas** sur l'effectif moyen : un ETP
+  se compte en contrats, pas en journées — c'est écrit dans « Comment ces
+  chiffres sont calculés », où une ligne « Coût d'un extra » a été ajoutée ;
+- **périmètre** : un extra rattaché à un centre hors droits n'apparaît pas, et
+  les totaux du panneau portent sur ce qui est affiché — un total qui
+  compterait des lignes invisibles ne se vérifierait pas à l'écran. Le menu de
+  centre ne propose que les centres autorisés, plus le sien.
+
+**Pas de congés payés sur un extra** (compte 6412). La règle des 10 % du brut
+payé a été dictée pour les collaborateurs le 17/09/2026 ; l'étendre d'office
+aux extras aurait gonflé leur budget de 10 % sans que personne ne le demande.
+À ajouter si Alexis le demande : une ligne dans `payrollCenterMonths`, rien de
+plus.
+
+Plomberie d'une donnée rattachée à une société, au complet : état par défaut,
+migration `adoptState` (séries ramenées à douze valeurs positives — une série
+trop courte casserait l'affichage, un texte remonterait en NaN jusque dans le
+6411), `SERVER_COMPANY_ARRAYS` et `COMPANY_ARRAYS` de `data.mjs` (sans quoi
+les extras partiraient au serveur comme un élément commun), `purgeCompanyData`,
+`emptyServerState` et `duplicateCompany` (le tarif de la journée indexé comme
+un salaire ; en « nouvel exercice » tarif ET journées repartent à zéro, parce
+qu'un nombre de journées en face d'un tarif vide serait plus trompeur qu'une
+ligne vierge).
+
+Contrôles ajoutés (`check-budget-app.mjs`, +3) :
+
+- « les extras se saisissent par journée travaillée, et leur coût rejoint le
+  6411/6451 du centre » : la création, le calcul (4 × 130 = 520 € en janvier,
+  40 × 145 = 5 800 € en juillet), les charges au taux de la ligne, une journée
+  sans montant qui ne coûte rien, l'atterrissage sur le 6411 et le 6451 d'un
+  centre **sans aucun salarié**, l'absence de 6412, le taux modifiable, le
+  changement de centre qui déménage le coût et libère l'ancien, les totaux par
+  société et par centre, et les KPI de l'onglet ;
+- « le tableau montre les deux saisies et ce qui en découle, jamais mélangés » :
+  l'état vide qui explique la maille, douze cases de journées et douze de
+  montant, la classe `.month-input` sur chacune, le nom/centre/taux/retrait sur la
+  ligne, les trois rangées nommées, le coût affiché, le pied de tableau, et le
+  taux figé qui grise la case **et** refuse l'écriture ;
+- « les extras suivent leur société » : la migration (séries trop courtes,
+  texte, négatif, taux illisible, clé absente), la déclaration dans le
+  périmètre serveur, la duplication avec coefficient, la duplication « nouvel
+  exercice », et la suppression de la société.
+
+Vérifiés en échec si l'on retire la correction, dans les trois sens : extras
+retirés de `payrollCenterMonths` (`0 !== 520`), centres à extras retirés de
+`syncPayrollLines` (lignes 6411/6451 absentes), migration neutralisée
+(`4 !== 12`).
+
+`APP_BUILD` passe à `2026-10-08.1`.
+
+### Les directeurs lisent la ventilation du CA, sans la régler (07/10/2026)
+
+Alexis : « Dans le CA il faut que les directeurs puissent voir comment est
+ventilé le CA, sans pour autant pouvoir modifier les pourcentages ».
+
+La rubrique « Ventilation du CA par compte » était fermée aux directeurs
+depuis le 19/08/2026 : ils renseignaient leur CA dans la matrice couverts ×
+ticket moyen sans jamais voir où il partait. **Voir et régler sont deux
+choses différentes** — c'est la distinction que posait déjà la Saisie le
+18/09/2026 (tous les centres visibles, ceux hors périmètre en lecture seule).
+
+Ce qui change :
+
+- `canEditCaVentilation()` — même forme que `canEditObjectives()` et
+  `canValidateCompanyBudget()` : seul le contrôle de gestion pose les
+  pourcentages. Le directeur subit la ventilation de son CA, il ne la décide
+  pas ;
+- `caVentilationPanel()` se rend en **lecture seule** quand on n'a pas ce
+  droit : les pourcentages s'affichent en clair (`percentCell`) au lieu de
+  cases de saisie, la colonne d'actions disparaît en-tête comprise
+  (`actionsHeader`/`actionsCell`, et `accountSpan` pour les lignes pleine
+  largeur, sinon le tableau se décalerait), et le bouton « Appliquer aux
+  comptes » n'est pas rendu. **Tout le reste est montré à l'identique** :
+  montants mois par mois, totaux de contrôle, et les alertes de ventilation
+  incomplète — c'est précisément « comment est ventilé le CA » ;
+- la consigne du panneau change de voix. « Vous choisissez d'abord la part
+  qui revient à Food… » s'adresse à qui règle ; en lecture seule elle devient
+  une explication (« Voici comment votre chiffre d'affaires est réparti […]
+  ces pourcentages sont posés par le contrôle de gestion : vous les lisez
+  ici, vous ne les modifiez pas »). Écrire « vous choisissez » à quelqu'un
+  qui ne peut rien choisir lui ferait chercher des cases qui ne sont pas là.
+  Les deux états vides changent de voix pour la même raison : on n'envoie pas
+  un directeur « ajouter des comptes suivis », il n'en a pas la main ;
+- **gardes côté action**, en plus de l'interface — même principe que
+  `canEditLineStructure` : les trois branches de gestionnaire
+  (`caCategoryVentilation`, `caVentilation`, `applyCaVentilation`) refusent le
+  geste. Un pourcentage posé par qui n'en a pas le droit réécrirait le budget
+  de tous les comptes de sa catégorie ;
+- `DIRECTEUR_DEFAULT_PAGES.ca` passe de `['ca-couverts']` à
+  `['ca-couverts', 'ca-ventilation']`. Les comptes suivis, la pondération
+  jour/saison et la migration des lignes produits restent fermés.
+
+**Ce n'est qu'un point de départ, et c'est voulu.** `DIRECTEUR_DEFAULT_PAGES`
+ne vaut que pour un directeur fraîchement créé : les fiches existantes gardent
+les rubriques qu'elles portent. Ce que chacun voit se règle dans Paramètres ›
+Droits d'accès, et nulle part ailleurs — un administrateur y ouvre (ou
+referme) la ventilation personne par personne. Au 07/10/2026, les onze
+directeurs de production ont tous des rubriques explicites dans
+`/data/droits.json` (huit ont l'onglet CA, aucun n'a `ca-ventilation`) : la
+case reste donc à cocher pour eux, et c'est à Alexis de choisir lesquels.
+
+Contrôle ajouté (`check-budget-app.mjs`, +1) :
+
+- « un directeur LIT la ventilation de son chiffre d'affaires, sans pouvoir
+  toucher aux pourcentages » : la rubrique ouverte à un directeur et les deux
+  autres toujours fermées ; le panneau vu par un contrôleur (ses trois sortes
+  de contrôles présentes) ; le même panneau vu par un directeur — les
+  pourcentages en clair (70 % / 30 %), les comptes nommés, les lignes de
+  contrôle, le montant ventilé du mois (3 500 € pour 70 % de 5 000 €), et
+  **aucun** `<input`, aucune des quatre commandes d'écriture, ni la consigne
+  du contrôleur ; la largeur des lignes pleine largeur (15 colonnes en lecture
+  seule, 16 avec la colonne d'actions) ; et la présence des trois gardes dans
+  les gestionnaires.
+
+Le panneau est appelé directement plutôt que lu dans le rendu complet :
+`applyPagePermissions()` élague le vrai DOM, que le harnais ne simule pas
+(`querySelectorAll` y rend un tableau vide). La visibilité se vérifie donc par
+`canAccessPage`, le contenu par le panneau lui-même.
+
+Le contrôle échoue si l'on retire la correction, dans les trois sens : panneau
+toujours modifiable (`70 %` introuvable, les cases ayant repris la place du
+texte), rubrique refermée par défaut, ou garde de gestionnaire retirée.
+`APP_BUILD` passe à `2026-10-07.4`.
+
+### Annuler / Rétablir : l'historique passe aux écarts (07/10/2026)
+
+Alexis : « L'option de retour en arrière et de retour en avant ne sont pas
+fonctionnel → le retour en arrière est limité à une seule utilisation ».
+
+**Ce n'était pas un réglage trop serré, mais un mécanisme qui ne tenait pas
+l'échelle.** Chaque étape d'annulation était une **copie complète** de l'état
+sérialisé, et le plafond mémoire `UNDO_MAX_BYTES` (4 Mo) comptait aussi
+l'instantané de référence. Or `/data/budget.json` pèse aujourd'hui **2,2 Mo** :
+
+- référence (2,2 Mo) + une étape (2,2 Mo) = 4,4 Mo, déjà au-delà du plafond ;
+- `trimUndoHistory()` ramenait donc la pile à **une seule** étape — d'où « le
+  retour en arrière est limité à une seule utilisation » ;
+- et comme `undo()` empilait le « rétablir » **puis** appelait
+  `trimUndoHistory()`, la branche `if (redoStack.length) redoStack.shift()`
+  jetait aussitôt l'étape qu'il venait de créer : le « retour en avant » ne
+  pouvait jamais rien rétablir.
+
+Les deux symptômes avaient donc une seule cause. Le mécanisme marchait sur un
+petit budget (c'est pourquoi les contrôles passaient : le jeu d'essai de 1 500
+lignes pèse 265 Ko, soit 14 étapes) et s'effondrait à mesure que le budget
+réel grossissait.
+
+Ce qui change :
+
+- l'historique garde **un seul** état sérialisé de référence (`undoSnapshot`,
+  celui qui est à l'écran) et, de part et d'autre, des **écarts** —
+  `makeUndoDelta(from, to)` ne retient que le morceau de texte qui change
+  entre deux sérialisations : `{ head, tail, text }`, à relire comme « garde
+  les `head` premiers caractères, puis `text`, puis les `tail` derniers ».
+  Comparaison sur les **caractères**, pas sur les objets : aucune hypothèse
+  sur la forme de l'état, et l'écart est exact par construction ;
+- `undoHistoryBytes()` ne mesure plus que les écarts. Compter la référence
+  revenait à faire payer à l'historique une copie qui ne grandit pas avec sa
+  profondeur — c'est précisément ce qui cassait l'annulation ;
+- `trimUndoHistory()` conserve toujours **une étape de chaque côté** (`> 1`
+  des deux côtés), et retire d'abord les plus anciennes : pour « annuler » le
+  passé le plus lointain, pour « rétablir » le futur le plus lointain. Dans
+  les deux cas c'est le bout de chaîne qu'on atteint en dernier, donc le seul
+  qu'on puisse retirer sans décaler ce qui reste ;
+- `undoSerialize()` sort de l'historique ce qui ne regarde pas le budget
+  (`UNDO_IGNORED_KEYS`, qui remplace `UNDO_PRESERVED_KEYS` : une seule liste
+  pour les deux usages, puisque ce que l'historique ignore est exactement ce
+  qu'une annulation ne doit pas toucher). **Deux raisons qui tombent sur la
+  même liste** : la sécurité et la traçabilité (comptes et journaux, audit du
+  24/09/2026 — Ctrl+Z annule du budget, pas des droits), et désormais la
+  stabilité de la référence. Le journal des modifications grossit à chaque
+  case saisie, l'horodatage change à chaque sauvegarde, et `render()` recale
+  la société et l'environnement affichés (`enforceCompanyPermission`) : ces
+  valeurs varient **sans** qu'on ait rien annulé. Les laisser dans la
+  sérialisation aurait décalé la référence des écarts, et créé des étapes
+  d'annulation qui ne changent rien à l'écran ;
+- `rebaseUndoHistory(attendu)` recale la référence sur ce que l'application
+  contient **vraiment** après avoir installé une étape, et vide les deux piles
+  si elle ne correspond pas. Les écarts s'appuyant les uns sur les autres, une
+  référence décalée ferait réapparaître des chiffres faux : un historique
+  tronqué se voit (les boutons se grisent), un historique décalé non.
+
+**Mémoire.** Elle baisse en même temps que la profondeur remonte : sur le
+budget de production, l'ancien mécanisme retenait 4,4 Mo pour **une** étape ;
+le nouveau retient 2,2 Mo (la référence, inévitable) plus quelques centaines
+d'octets pour les **quarante** étapes promises. Un montant corrigé ne change
+que quelques caractères dans 2,2 Mo de JSON — c'est ce morceau-là qu'il faut
+garder.
+
+Contrôles ajoutés et repris (`check-budget-app.mjs`, +2, un réécrit) :
+
+- « annuler et refaire restent utilisables autant de fois qu'il y a eu de
+  modifications, même sur un budget de production » : 9 000 lignes (l'ordre de
+  grandeur du budget réel), douze modifications, douze étapes, puis douze
+  annulations qui reviennent valeur par valeur, puis douze rétablissements qui
+  repartent valeur par valeur, et aucune étape perdue en route. **Rejoué avec
+  l'ancienne économie (une copie complète par étape, la référence comptée dans
+  le plafond, le trim qui vide le « rétablir »), ce contrôle échoue sur
+  `1 !== 12`** — exactement ce que décrivait Alexis ;
+- le contrôle mémoire existant exigeait « au moins une étape » : il passait
+  donc avec le bug. Il exige maintenant les **quarante** étapes sur un budget
+  volumineux, et que les quarante écarts pèsent **moins qu'une seule copie** de
+  l'état (rejoué à l'ancienne : `14 !== 40`) ;
+- « l'écart entre deux états est exact » : dix cas de `makeUndoDelta` /
+  `applyUndoDelta` (identique, un caractère au milieu, plus long, plus court,
+  changement au tout début et à la toute fin, tout change, vers et depuis une
+  chaîne vide, répétitions trompeuses), le coût d'un chiffre corrigé dans un
+  gros état (moins de vingt caractères), et le fait que journal, horodatage et
+  société affichée n'entrent pas dans l'historique alors qu'un montant, lui, y
+  entre.
+
+Le contrôle de sécurité du 24/09/2026 (« Ctrl+Z ne rend jamais un droit retiré
+ni n'efface le journal ») passe sans modification : la liste a changé de nom et
+s'est allongée, pas de rôle. `APP_BUILD` passe à `2026-10-07.3`.
+
+### CA Event : montant global par jour, et compté dans le total (07/10/2026)
+
+Alexis : « Dans la matrice de saisie de CA le total ne prend pas le montant du
+CA Event. Il faut également modifier les deux options (matrices et au sein de
+l'application) de saisir du CA event en montant global par jour au lieu de
+saisir couverts et Prix moyen. Ex : 80 000 € directement sans mettre 800 € en
+PM et 100 couverts ».
+
+Deux demandes, et les deux constats étaient exacts :
+
+- le total de la **matrice Excel** s'appelait « TOTAL CA MIDI + SOIR » et
+  additionnait les deux seuls services servis au couvert, Event exclu — à la
+  fois sur la feuille des douze mois et sur la « Synthèse annuelle ». (Dans
+  l'application, la ligne « CA Total » prenait déjà les trois services : c'est
+  bien le fichier qui laissait l'Event dehors.)
+- un événement se facture au forfait : le prix moyen et le nombre de couverts
+  y étaient une reconstitution après coup, deux chiffres inventés pour
+  retomber sur le montant connu.
+
+Ce qui change :
+
+- **`MATRIX_SERVICES`** : Event porte désormais `direct: true`. Les services
+  directs se saisissent en **montant global par jour**, dans un troisième
+  dictionnaire de la matrice, `amount` (à côté de `covers` et `ticket`) ;
+- **`matrixDayRevenue(matrix, serviceId, key)`** est le seul endroit qui
+  connaît la différence entre les deux modes : montant saisi pour un service
+  direct, couverts × prix moyen pour les autres. `matrixServiceRevenue` et
+  `matrixTotalRevenue` passent par lui ;
+- `normalizeServiceMatrix` n'accepte `amount` que pour les services directs,
+  et `covers`/`ticket` que pour les autres ; `setServiceMatrixValue` refuse
+  les paires incohérentes (des couverts sur l'Event, un montant global sur le
+  midi). Aucun état relu ne peut donc porter les deux à la fois, ce qui
+  rendrait le CA du jour ambigu ;
+- **matrice affichée** : les blocs « Couverts » et « Ticket moyen » ne listent
+  plus que Midi et Soir (`MATRIX_COVER_SERVICES`) ; dans le bloc « Chiffre
+  d'affaires », la ligne Event devient **saisissable** — la seule case de la
+  matrice qui la concerne, marquée « montant global » sous son libellé. Sur
+  téléphone, sa carte n'a plus qu'un champ, « CA du jour (€) » ;
+- **matrice Excel** : le bloc EVENT n'a plus qu'une ligne, « CA », et c'est
+  une case à remplir (les lignes CA du midi et du soir restent des formules).
+  Même chose sur la « Synthèse annuelle ». La ligne de total s'appelle
+  désormais **« TOTAL CA »** et additionne les trois services, sur les deux
+  feuilles. Le mode d'emploi du classeur a été réécrit en conséquence ;
+- **import** : la ligne « CA » n'est relue comme une saisie que pour un
+  service direct. Pour le midi et le soir c'est une formule, dont Excel garde
+  une valeur en cache dès qu'il a ouvert le fichier : la lire reviendrait à
+  réimporter un résultat calculé en le prenant pour une saisie.
+
+**Ticket moyen.** Un événement n'apporte plus aucun couvert. Laisser son CA au
+numérateur aurait donné un ticket moyen absurde : 100 couverts à 50 € plus
+80 000 € d'événement auraient affiché 850 € de « ticket moyen » au lieu de 50.
+Le numérateur est donc le **CA servi au couvert** (`matrixCoversRevenue`,
+Event exclu), dans la tuile du mois (`matrixOverallTicket`, légende « CA hors
+Event ÷ couverts du mois ») comme dans la ligne Ticket moyen du P&L
+(`matrixMonthlySeries`). Le **CA**, lui, prend l'Event partout : ligne CA
+Total, tuiles « CA du mois » et « CA de l'année », `matrixYearTotals`.
+
+Migration `matrixEventAmount2026` (`adoptState`, donc aussi sur l'état reçu du
+serveur) : les couverts et prix moyen déjà saisis sur l'Event deviennent un
+montant, `couverts × prix moyen` — le CA exact qu'ils produisaient — puis sont
+effacés. Elle tourne **avant** `normalizeServiceMatrix`, comme
+`mergeBreakfastIntoLunch` juste avant elle : la normalisation n'accepte plus
+ces deux champs sur un service direct et aurait fait disparaître le CA Event
+déjà budgété sans rien reporter. `shiftServiceMatrix` décale aussi `amount`
+(sommé quand deux dates se rejoignent, multiplié par le coefficient d'une
+duplication) et `companyHasDatedData` le regarde.
+
+Les **matrices déjà en circulation** chez les directeurs, où l'EVENT porte
+encore un prix moyen et des couverts, restent acceptées à l'import : leur
+produit tient lieu de montant du jour (`applyCaMatrixImport`). Sans ce repli,
+un fichier parti avant aujourd'hui serait revenu avec un CA Event à zéro.
+
+Contrôles ajoutés (`check-budget-app.mjs`, +3) :
+
+- « l'Event se saisit en montant global par jour, et le CA Total le prend » :
+  l'exemple d'Alexis au centime (100 × 50 au midi + 80 000 € d'Event = 85 000 €
+  de CA Total), l'Event qui n'ajoute aucun couvert, le ticket moyen qui reste
+  à 50 € et non 850 €, le total annuel qui comprend bien l'Event, les écritures
+  incohérentes refusées dans les deux sens, et la matrice affichée (une case
+  `amount` pour l'Event, plus aucune case de couverts ni de prix moyen, les
+  deux cases du midi intactes, la légende de la tuile) ;
+- « migration matrixEventAmount2026 » : 100 couverts à 800 € donnent 80 000 €,
+  les champs d'origine sont effacés sans laisser de journée vide derrière eux,
+  le midi n'est pas touché, le CA du jour est inchangé, et la migration rejouée
+  ne refait rien ;
+- « matrice importée à l'ancien format » : l'EVENT en Prix Moy × Nbr de couv
+  devient un montant, la ligne CA de l'EVENT au nouveau format fait foi
+  (format français compris), et un bloc où seule la formule CA du midi porte
+  une valeur en cache ne compte pas comme rempli.
+
+Les contrôles existants qui saisissaient l'Event en couverts × prix moyen ont
+été repris sur le montant global. `APP_BUILD` passe à `2026-10-07.2`.
+
+### Prénom et nom en deux cases dans la fiche collaborateur (07/10/2026)
+
+Alexis : « Passé la case nom prénom dans le payroll en deux cases une Prénom
+puis une Nom distinctement, tout en laissant l'intitulé du poste par défaut si
+ces deux dernières sont vides ».
+
+La fiche collaborateur n'avait qu'un champ « Nom Prénom », décidé en réunion
+supérieurs (§ 6.2 : « uniquement "Nom Prénom" en un seul champ ; si non
+rempli, prendre automatiquement le nom du poste par défaut »). Le repli sur le
+poste est conservé tel quel : seule la saisie se dédouble.
+
+Ce qui change :
+
+- la fiche (groupe **Identité**) porte deux champs, `employee-first-name`
+  (« Prénom ») puis `employee-last-name` (« Nom »), dans cet ordre ;
+  l'ancien `employee-name` n'existe plus ;
+- `employee.firstName` et `employee.lastName` sont les champs stockés ;
+- `employee.name` reste **le libellé calculé**, et c'est toujours lui que
+  lisent la matrice de la masse salariale, le détail du calcul, la recherche
+  par collaborateur, les exports et la duplication de société. Rien d'autre
+  dans l'application ne connaît la séparation prénom / nom — c'est ce qui
+  rend le changement aussi petit ;
+- il se calcule dans une seule fonction, `employeeLabel(firstName, lastName,
+  role)` : « Prénom Nom » dès qu'une des deux cases est remplie, sinon
+  l'intitulé du poste, sinon « Poste sans nom ». Une seule case remplie suffit
+  donc à nommer la fiche ;
+- `newEmployee` et `duplicateEmployee` initialisent les deux cases à vide (un
+  poste dupliqué reste anonyme le temps qu'on sache qui l'occupera).
+
+Migration (`adoptState`, donc aussi sur l'état reçu du serveur) : les fiches
+enregistrées avant ce jour ne connaissent que `name`. Il est réparti sur les
+deux cases — **premier mot = prénom, le reste = nom**, dans l'ordre de
+l'ancien exemple de saisie (« ex. Marie Dupont »), pour que les noms composés
+restent entiers. Sans ce découpage, rouvrir une fiche aurait affiché deux
+cases vides et l'enregistrer aurait remplacé le nom de la personne par son
+poste : une perte silencieuse. Les libellés qui ne font que **reprendre le
+poste** (le repli) ne sont pas découpés : ils doivent rester un repli,
+recalculé au prochain enregistrement, et non devenir le nom d'une personne.
+
+Contrôles ajoutés (`check-budget-app.mjs`, +2) :
+
+- « Prénom et Nom se saisissent dans deux cases, le poste reste le repli » :
+  les cinq cas de `employeeLabel` (deux cases, prénom seul, nom seul, deux
+  cases vides → poste, sans poste → « Poste sans nom »), la présence des deux
+  champs dans la fiche **et** l'absence de `employee-name`, l'ordre prénom
+  avant nom, l'enregistrement séparé des deux moitiés, leur réaffichage
+  chacune dans sa case à la réouverture, et le retour au poste quand on vide
+  les deux cases d'une fiche déjà nommée ;
+- « une fiche enregistrée avant les deux cases garde son nom (migration) » :
+  « Marie Dupont » se découpe en Marie / Dupont, « Jean Pierre De La Tour »
+  en Jean / Pierre De La Tour, un libellé égal au poste reste intact avec ses
+  deux cases vides, et la migration rejouée ne redécoupe rien.
+
+Les contrôles existants qui pilotaient `employee-name` ont été repris sur les
+deux champs. `APP_BUILD` passe à `2026-10-07.1`.
 
 ### La colonne C de la matrice d'import devient le nom de la dépense (05/10/2026)
 
@@ -11215,12 +11653,11 @@ const app = await importApp(
     '  saveEmployeeFromForm, deleteEmployee, syncPayrollLines,\n' +
     '  togglePayrollMatrixDetail, payrollLockedRates, payrollRateLocked, payrollLockedRateValue,\n' +
     '  setPayrollLockedRate, payrollLockScopeCompanies, lockPayrollRateFromPanel, unlockPayrollRateFromPanel,\n' +
-    '  employeeRateOf, bonusGrossFromNet,\n' +
+    '  employeeRateOf, bonusGrossFromNet, employeeLabel,\n' +
     '  payrollExtrasOf, payrollExtraById, newPayrollExtra, payrollExtraLabel,\n' +
     '  payrollExtraEmployerRate, payrollExtraMonthGross, payrollExtraMonths, payrollExtraTotals,\n' +
     '  payrollExtraCenters, addPayrollExtra, deletePayrollExtra, setPayrollExtraMonth,\n' +
     '  setPayrollExtraName, setPayrollExtraCenter, setPayrollExtraEmployerRate, payrollExtrasPanel,\n' +
-    '  employeeRateOf, bonusGrossFromNet, employeeLabel,\n' +
     '  monthlyLeaveCharge, companyLeaveRelease, setCompanyLeaveRelease, leaveReleaseIsManual,\n' +
     '  PAYROLL_LOCKABLE_RATES,\n' +
     '  employeeRateFieldHtml, payrollLockPanel, employeeEditorHtml,\n' +
@@ -11398,7 +11835,6 @@ const app = await importApp(
     'export { importIssuesSummaryText, importSummaryMessage };\n' +
     'export { changeCompanyYear, shiftDateKey, shiftCompanyDates, purgeCompanyData, COMPANY_KEYED_STATE,\n' +
     '  SERVER_COMPANY_ARRAYS,\n' +
-    '  UNDO_PRESERVED_KEYS };\n' +
     '  UNDO_IGNORED_KEYS };\n' +
     'export { playModalExit, MODAL_EXIT_MS };\n' +
     'export { markWelcomeChoice };\n' +
