@@ -426,7 +426,7 @@ const app = await importApp(
     '  saveEmployeeFromForm, deleteEmployee, syncPayrollLines,\n' +
     '  togglePayrollMatrixDetail, payrollLockedRates, payrollRateLocked, payrollLockedRateValue,\n' +
     '  setPayrollLockedRate, payrollLockScopeCompanies, lockPayrollRateFromPanel, unlockPayrollRateFromPanel,\n' +
-    '  employeeRateOf, bonusGrossFromNet,\n' +
+    '  employeeRateOf, bonusGrossFromNet, employeeLabel,\n' +
     '  monthlyLeaveCharge, companyLeaveRelease, setCompanyLeaveRelease, leaveReleaseIsManual,\n' +
     '  PAYROLL_LOCKABLE_RATES,\n' +
     '  employeeRateFieldHtml, payrollLockPanel, employeeEditorHtml,\n' +
@@ -9179,7 +9179,8 @@ check('Payroll : le report vers la Saisie est automatique, sans clic manuel', ()
     app.state.employees = [];
     app.__setTab('payroll');
     app.openEmployeeEditor('new');
-    document.getElementById('employee-name').value = 'Nina Costa';
+    document.getElementById('employee-first-name').value = 'Nina';
+    document.getElementById('employee-last-name').value = 'Costa';
     document.getElementById('employee-role-select').value = '';
     document.getElementById('employee-center').value = 'F&B';
     document.getElementById('employee-net').value = '1404';
@@ -9301,7 +9302,8 @@ check('Payroll : enregistrer un poste « Autre » conserve le libellé saisi lib
     app.state.employees = [];
     app.__setTab('payroll');
     app.openEmployeeEditor('new');
-    document.getElementById('employee-name').value = 'Léo Fabre';
+    document.getElementById('employee-first-name').value = 'Léo';
+    document.getElementById('employee-last-name').value = 'Fabre';
     document.getElementById('employee-role-select').value = '__autre__';
     document.getElementById('employee-role-custom').value = 'Chef de rang polyvalent';
     document.getElementById('employee-center').value = 'F&B';
@@ -9350,14 +9352,17 @@ check('Payroll V2 : la fiche est horizontale, avec un seul champ « Nom Prénom 
 
     assert.ok(html.includes('modal-box-horizontal'),
       'la fiche doit utiliser la mise en page horizontale, pas la fenêtre étroite d’origine');
-    assert.ok(html.includes('>Nom Prénom<'), 'le champ unique doit s’appeler « Nom Prénom »');
+    assert.ok(html.includes('>Prénom<') && html.includes('>Nom<'),
+      'la fiche doit porter DEUX étiquettes distinctes, « Prénom » puis « Nom »');
+    assert.ok(!html.includes('>Nom Prénom<'),
+      'l’ancien champ unique « Nom Prénom » ne doit plus exister');
     assert.ok(!html.includes('employee-count'),
       'le champ « Nombre de postes identiques à créer » doit avoir disparu');
     assert.ok(!html.includes('employee-contract-type-1'),
       'les lignes de contrat par poste (création en masse) doivent avoir disparu');
     // Les champs essentiels restent tous là : retirer la création en masse
     // ne doit rien avoir emporté d'autre au passage.
-    for (const id of ['employee-name', 'employee-role-select', 'employee-center',
+    for (const id of ['employee-first-name', 'employee-last-name', 'employee-role-select', 'employee-center',
       'employee-contract-type', 'employee-net', 'employee-employer-rate',
       'employee-employee-rate', 'employee-start', 'employee-end',
       'employee-raise-net', 'employee-bonus-amount']) {
@@ -9394,7 +9399,8 @@ check('Payroll V2 : un nom laissé vide reprend le poste, et « CDD Saisonnier �
     app.resetStateIndexes();
     app.__setTab('payroll');
     app.openEmployeeEditor('new');
-    document.getElementById('employee-name').value = ''; // volontairement vide
+    document.getElementById('employee-first-name').value = ''; // volontairement vides
+    document.getElementById('employee-last-name').value = '';
     document.getElementById('employee-role-select').value = 'Commis de salle';
     document.getElementById('employee-center').value = 'F&B';
     document.getElementById('employee-contract-type').value = 'CDD Saisonnier';
@@ -9422,6 +9428,135 @@ check('Payroll V2 : un nom laissé vide reprend le poste, et « CDD Saisonnier �
     app.__setTab(savedTab);
     app.render();
   }
+});
+
+check('Payroll : Prénom et Nom se saisissent dans deux cases, le poste reste le repli', () => {
+  // Alexis, 07/10/2026 : « passer la case nom prénom en deux cases une
+  // Prénom puis une Nom distinctement, tout en laissant l'intitulé du poste
+  // par défaut si ces deux dernières sont vides ».
+  const savedTab = app.__getTab();
+  const saved = {
+    lines: app.state.lines.slice(), companies: app.state.companies.slice(),
+    active: app.state.activeCompany, employees: (app.state.employees || []).slice(),
+  };
+  try {
+    // Le libellé lui-même : « Prénom Nom », puis le poste, puis le dernier
+    // recours. Une seule des deux cases suffit à faire un libellé.
+    assert.equal(app.employeeLabel('Marie', 'Dupont', 'Chef de rang'), 'Marie Dupont',
+      'les deux cases remplies donnent « Prénom Nom », dans cet ordre');
+    assert.equal(app.employeeLabel('Marie', '', 'Chef de rang'), 'Marie',
+      'un prénom seul suffit : on ne retombe pas sur le poste');
+    assert.equal(app.employeeLabel('', 'Dupont', 'Chef de rang'), 'Dupont',
+      'un nom seul suffit aussi');
+    assert.equal(app.employeeLabel('  ', '  ', 'Chef de rang'), 'Chef de rang',
+      'deux cases vides (espaces compris) reprennent l’intitulé du poste');
+    assert.equal(app.employeeLabel('', '', ''), 'Poste sans nom',
+      'sans poste non plus, il reste un libellé plutôt qu’une ligne anonyme');
+
+    // La fiche porte bien deux champs distincts, et plus l'ancien.
+    payrollFixture();
+    app.state.employees = [];
+    app.resetStateIndexes();
+    app.__setTab('payroll');
+    app.openEmployeeEditor('new');
+    const html = app.employeeEditorHtml();
+    assert.ok(html.includes('id="employee-first-name"') && html.includes('id="employee-last-name"'),
+      'la fiche doit offrir deux champs, « employee-first-name » puis « employee-last-name »');
+    assert.ok(!html.includes('id="employee-name"'),
+      'l’ancien champ unique « employee-name » ne doit plus exister');
+    assert.ok(html.indexOf('id="employee-first-name"') < html.indexOf('id="employee-last-name"'),
+      'le prénom se saisit AVANT le nom, comme demandé');
+
+    // Enregistrement : les deux cases sont stockées séparément, `name` reste
+    // le libellé calculé que lisent la matrice et les exports.
+    document.getElementById('employee-first-name').value = 'Marie';
+    document.getElementById('employee-last-name').value = 'Dupont';
+    document.getElementById('employee-role-select').value = 'Chef de rang';
+    document.getElementById('employee-center').value = 'F&B';
+    document.getElementById('employee-net').value = '1800';
+    document.getElementById('employee-employer-rate').value = '42';
+    document.getElementById('employee-employee-rate').value = '22';
+    app.saveEmployeeFromForm();
+    assert.equal(app.state.employees.length, 1, 'une seule fiche créée');
+    const kept = app.state.employees[0];
+    assert.equal(kept.firstName, 'Marie', 'le prénom doit être conservé à part');
+    assert.equal(kept.lastName, 'Dupont', 'le nom doit être conservé à part');
+    assert.equal(kept.name, 'Marie Dupont', 'le libellé reste « Prénom Nom »');
+
+    // Rouvrir la fiche réaffiche chaque moitié dans SA case : sans cela, un
+    // simple aller-retour viderait le nom de la personne.
+    app.openEmployeeEditor(kept.id);
+    const reopened = app.employeeEditorHtml();
+    assert.ok(reopened.includes('id="employee-first-name" value="Marie"'),
+      'le prénom enregistré doit revenir dans la case Prénom');
+    assert.ok(reopened.includes('id="employee-last-name" value="Dupont"'),
+      'le nom enregistré doit revenir dans la case Nom');
+
+    // Vider les deux cases d'une fiche déjà nommée la fait retomber sur le
+    // poste, sans rien bloquer.
+    document.getElementById('employee-first-name').value = '';
+    document.getElementById('employee-last-name').value = '';
+    document.getElementById('employee-role-select').value = 'Chef de rang';
+    document.getElementById('employee-center').value = 'F&B';
+    document.getElementById('employee-net').value = '1800';
+    document.getElementById('employee-employer-rate').value = '42';
+    document.getElementById('employee-employee-rate').value = '22';
+    app.saveEmployeeFromForm();
+    assert.equal(app.employeeById(kept.id).name, 'Chef de rang',
+      'deux cases vidées : le libellé repasse à l’intitulé du poste');
+    assert.equal(app.employeeById(kept.id).firstName, '', 'et la case Prénom reste bien vide');
+  } finally {
+    app.state.lines = saved.lines; app.state.companies = saved.companies;
+    app.state.activeCompany = saved.active; app.state.employees = saved.employees;
+    app.resetStateIndexes();
+    app.__setTab(savedTab);
+    app.render();
+  }
+});
+
+check('Payroll : une fiche enregistrée avant les deux cases garde son nom (migration)', () => {
+  // Les fiches d'avant le 07/10/2026 ne connaissent que le libellé `name`.
+  // Sans découpage à la relecture, rouvrir l'une d'elles afficherait deux
+  // cases vides et l'enregistrer remplacerait le nom de la personne par son
+  // poste — une perte silencieuse.
+  const raw = {
+    companies: [{ id: 'mig_nom', name: 'Mig Nom', currency: 'EUR', year: 2026, groupId: null }],
+    activeCompany: 'mig_nom', lines: [],
+    employees: [
+      { id: 'mig_nom_e1', companyId: 'mig_nom', name: 'Marie Dupont', role: 'Chef de rang',
+        center: 'F&B', grossMonthly: 2000, employerRate: 0.42, employeeRate: 0.22,
+        startDate: '', endDate: '', raises: [], bonuses: [] },
+      // Nom composé : seul le PREMIER mot est le prénom, le reste reste entier.
+      { id: 'mig_nom_e2', companyId: 'mig_nom', name: 'Jean Pierre De La Tour', role: 'Serveur(euse)',
+        center: 'F&B', grossMonthly: 2000, employerRate: 0.42, employeeRate: 0.22,
+        startDate: '', endDate: '', raises: [], bonuses: [] },
+      // Libellé qui n'est que le repli sur le poste : il doit RESTER un
+      // repli, pas devenir le nom d'une personne.
+      { id: 'mig_nom_e3', companyId: 'mig_nom', name: 'Commis de cuisine', role: 'Commis de cuisine',
+        center: 'F&B', grossMonthly: 2000, employerRate: 0.42, employeeRate: 0.22,
+        startDate: '', endDate: '', raises: [], bonuses: [] },
+    ],
+  };
+  const adopted = app.adoptState(JSON.parse(JSON.stringify(raw)));
+  const byId = {};
+  for (const e of adopted.employees) byId[e.id] = e;
+
+  assert.equal(byId.mig_nom_e1.firstName, 'Marie', 'le premier mot devient le prénom');
+  assert.equal(byId.mig_nom_e1.lastName, 'Dupont', 'le reste devient le nom');
+  assert.equal(byId.mig_nom_e1.name, 'Marie Dupont', 'le libellé affiché ne change pas');
+
+  assert.equal(byId.mig_nom_e2.firstName, 'Jean', 'un seul mot pour le prénom');
+  assert.equal(byId.mig_nom_e2.lastName, 'Pierre De La Tour', 'un nom composé n’est pas tronqué');
+
+  assert.equal(byId.mig_nom_e3.firstName, '', 'un libellé qui reprend le poste ne devient pas un prénom');
+  assert.equal(byId.mig_nom_e3.lastName, '', 'ni un nom');
+  assert.equal(byId.mig_nom_e3.name, 'Commis de cuisine', 'et le repli sur le poste reste affiché');
+
+  // Rejouée sur un état déjà migré, elle ne redécoupe rien.
+  const again = app.adoptState(JSON.parse(JSON.stringify(adopted)));
+  const re = again.employees.find(function (e) { return e.id === 'mig_nom_e1'; });
+  assert.equal(re.firstName, 'Marie', 'migration jouée une seule fois');
+  assert.equal(re.lastName, 'Dupont', 'migration jouée une seule fois');
 });
 
 check('Payroll V2 : un taux figé par les CDG s’applique à tous, grise la case et survit à un enregistrement', () => {
@@ -9472,7 +9607,8 @@ check('Payroll V2 : un taux figé par les CDG s’applique à tous, grise la cas
     // que le champ, désactivé, est vide à la lecture.
     app.__setTab('payroll');
     app.openEmployeeEditor('lock_e1');
-    document.getElementById('employee-name').value = 'Ana';
+    document.getElementById('employee-first-name').value = 'Ana';
+    document.getElementById('employee-last-name').value = '';
     document.getElementById('employee-role-select').value = 'Serveur(euse)';
     document.getElementById('employee-center').value = 'F&B';
     document.getElementById('employee-contract-type').value = 'CDI';
@@ -11318,7 +11454,8 @@ check('Payroll : type de contrat (CDI par défaut, liste couvrant CDD/alternance
     // Enregistrer avec un type autre que le défaut doit le conserver.
     app.state.employees = [];
     app.openEmployeeEditor('new');
-    document.getElementById('employee-name').value = 'Apprenti Cuisine';
+    document.getElementById('employee-first-name').value = 'Apprenti';
+    document.getElementById('employee-last-name').value = 'Cuisine';
     document.getElementById('employee-role-select').value = 'Commis de cuisine';
     document.getElementById('employee-contract-type').value = 'Alternance';
     document.getElementById('employee-center').value = 'F&B';

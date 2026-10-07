@@ -3393,7 +3393,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-05.1';
+const APP_BUILD = '2026-10-07.1';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -4827,6 +4827,26 @@ function adoptState(parsed) {
     for (const employee of parsed.employees) {
       if (typeof employee.name !== 'string') employee.name = '';
       if (typeof employee.role !== 'string') employee.role = '';
+      /* Migration 07/10/2026 : le champ unique « Nom Prénom » est devenu
+         deux cases, Prénom puis Nom. Les fiches enregistrées avant ne
+         connaissent que le libellé `name` ; on le répartit sur les deux
+         cases, sinon rouvrir une fiche les afficherait vides et
+         l'enregistrer ferait retomber le libellé sur le poste — le nom de
+         la personne serait perdu sans que personne ne l'ait demandé. Le
+         découpage suit l'ordre de l'ancien exemple de saisie
+         (« ex. Marie Dupont ») : premier mot = prénom, le reste = nom, pour
+         que les noms composés restent entiers. Les libellés qui ne font que
+         reprendre le poste (le repli) ne sont PAS découpés : ils doivent
+         rester un repli, recalculé au prochain enregistrement, et non
+         devenir le nom d'une personne. */
+      if (typeof employee.firstName !== 'string') employee.firstName = '';
+      if (typeof employee.lastName !== 'string') employee.lastName = '';
+      if (!employee.firstName && !employee.lastName && employee.name
+          && employee.name !== employee.role && employee.name !== 'Poste sans nom') {
+        const nameParts = employee.name.trim().split(/\s+/);
+        employee.firstName = nameParts.shift() || '';
+        employee.lastName = nameParts.join(' ');
+      }
       if (!employee.center) employee.center = 'F&B';
       if (typeof employee.startDate !== 'string') employee.startDate = '';
       if (typeof employee.endDate !== 'string') employee.endDate = '';
@@ -19931,6 +19951,25 @@ function monthlyLeaveCharge(paidGross) {
   return (Number(paidGross) || 0) * PAYROLL_BONUS_LEAVE_RATE;
 }
 
+/**
+ * Libellé d'un collaborateur, à partir des deux cases de sa fiche :
+ * « Prénom Nom » dès que l'une des deux est remplie, sinon le poste —
+ * réunion supérieurs § 6.2 : « si non rempli, prendre automatiquement le
+ * nom du poste par défaut ».
+ *
+ * Les deux cases ont remplacé le champ unique « Nom Prénom » le 07/10/2026
+ * (demande d'Alexis). Seul le résultat est stocké dans `employee.name`, que
+ * la matrice, le détail du calcul, la recherche et les exports lisent tel
+ * quel : rien d'autre dans l'application n'a besoin de connaître la
+ * séparation prénom / nom.
+ */
+function employeeLabel(firstName, lastName, role) {
+  const full = [String(firstName || '').trim(), String(lastName || '').trim()]
+    .filter(function (part) { return part; })
+    .join(' ');
+  return full || String(role || '').trim() || 'Poste sans nom';
+}
+
 function newEmployee(companyId) {
   const company = companyById(companyId);
   // Dates par défaut : si la société n'est pas ouverte toute l'année,
@@ -19954,6 +19993,8 @@ function newEmployee(companyId) {
   return {
     id: uid('emp'),
     companyId: companyId,
+    firstName: '',
+    lastName: '',
     name: '',
     role: '',
     contractType: PAYROLL_DEFAULT_CONTRACT_TYPE,
@@ -20028,6 +20069,8 @@ function duplicateEmployee(id) {
   const copy = {
     id: uid('emp'),
     companyId: source.companyId,
+    firstName: '',
+    lastName: '',
     name: '',
     role: source.role,
     contractType: source.contractType || PAYROLL_DEFAULT_CONTRACT_TYPE,
@@ -20276,11 +20319,12 @@ function saveEmployeeFromForm() {
     return isFinite(parsed) ? parsed : 0;
   };
 
-  // Le nom n'est plus obligatoire : laissé vide, c'est le poste qui sert de
-  // libellé (réunion supérieurs § 6.2, voir plus bas). Un poste tout juste
-  // dupliqué peut ainsi rester anonyme le temps qu'on sache qui l'occupera,
-  // sans bloquer l'enregistrement sur une alerte.
-  const name = value('employee-name');
+  // Le nom n'est pas obligatoire : les deux cases laissées vides, c'est le
+  // poste qui sert de libellé (réunion supérieurs § 6.2, voir plus bas). Un
+  // poste tout juste dupliqué peut ainsi rester anonyme le temps qu'on sache
+  // qui l'occupera, sans bloquer l'enregistrement sur une alerte.
+  const firstName = value('employee-first-name');
+  const lastName = value('employee-last-name');
 
   const startDate = value('employee-start');
   const endDate = value('employee-end');
@@ -20300,12 +20344,16 @@ function saveEmployeeFromForm() {
   // libre juste en dessous qui prend le relais (cf. `employeeRoleFieldHtml`).
   const roleSelect = value('employee-role-select');
   employee.role = roleSelect === '__autre__' ? value('employee-role-custom') : roleSelect;
-  // Un seul champ « Nom Prénom », et s'il est vide c'est le poste qui sert
-  // de libellé — réunion supérieurs § 6.2 : « si non rempli, prendre
+  // Prénom et nom se saisissent dans deux cases distinctes depuis le
+  // 07/10/2026 (Alexis) ; les deux vides, c'est le poste qui sert de
+  // libellé — réunion supérieurs § 6.2 : « si non rempli, prendre
   // automatiquement le nom du poste par défaut ». Un poste dupliqué peut
   // ainsi rester anonyme le temps qu'on sache qui l'occupera, sans laisser
-  // une ligne sans nom dans la matrice.
-  employee.name = name || employee.role || 'Poste sans nom';
+  // une ligne sans nom dans la matrice. `name` reste le libellé calculé
+  // (voir `employeeLabel`) : c'est lui que lit tout le reste.
+  employee.firstName = firstName;
+  employee.lastName = lastName;
+  employee.name = employeeLabel(firstName, lastName, employee.role);
   employee.contractType = value('employee-contract-type') || PAYROLL_DEFAULT_CONTRACT_TYPE;
   employee.center = value('employee-center') || 'F&B';
   // Taux figés par les CDG : le champ est `disabled` dans la fiche, donc
@@ -20568,15 +20616,23 @@ function employeeEditorHtml() {
     '<h3>' + (isNew ? 'Ajouter un collaborateur' : 'Modifier ' + escapeHtml(employee.name || 'ce collaborateur')) + '</h3>' +
 
     group('Identité',
-      // Un SEUL champ de nom — réunion § 6.2 : « uniquement "Nom Prénom" en
-      // un seul champ ; si non rempli, prendre automatiquement le nom du
-      // poste par défaut ». Le repli sur le poste se fait à l'enregistrement
-      // (voir `saveEmployeeFromForm`), d'où l'indication ici plutôt qu'une
-      // validation bloquante : laisser le champ vide est un choix valable.
-      '<div class="field" style="flex:2">' +
-      '<label for="employee-name">Nom Prénom</label>' +
-      '<input id="employee-name" value="' + escapeHtml(employee.name) + '" ' +
-      'placeholder="ex. Marie Dupont — sinon le poste sera repris" /></div>' +
+      // DEUX cases de nom, Prénom puis Nom — Alexis, 07/10/2026 : « passer la
+      // case nom prénom en deux cases une Prénom puis une Nom distinctement,
+      // tout en laissant l'intitulé du poste par défaut si ces deux
+      // dernières sont vides ». Elles remplacent le champ unique
+      // « Nom Prénom » de la réunion § 6.2, dont le repli sur le poste est
+      // conservé : il se fait à l'enregistrement (`employeeLabel`, appelé
+      // par `saveEmployeeFromForm`), d'où l'indication dans le second
+      // champ plutôt qu'une validation bloquante — les laisser vides reste
+      // un choix valable.
+      '<div class="field">' +
+      '<label for="employee-first-name">Prénom</label>' +
+      '<input id="employee-first-name" value="' + escapeHtml(employee.firstName || '') + '" ' +
+      'placeholder="ex. Marie" /></div>' +
+      '<div class="field">' +
+      '<label for="employee-last-name">Nom</label>' +
+      '<input id="employee-last-name" value="' + escapeHtml(employee.lastName || '') + '" ' +
+      'placeholder="ex. Dupont — les deux vides, le poste sera repris" /></div>' +
       employeeRoleFieldHtml(employee.role) +
       '<div class="field"><label for="employee-center">Centre de coûts</label>' +
       '<select id="employee-center">' + centerOptions + '</select></div>' +
