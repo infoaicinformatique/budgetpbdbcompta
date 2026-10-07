@@ -428,7 +428,15 @@ const app = await importApp(
     '  saveEmployeeFromForm, deleteEmployee, syncPayrollLines,\n' +
     '  togglePayrollMatrixDetail, payrollLockedRates, payrollRateLocked, payrollLockedRateValue,\n' +
     '  setPayrollLockedRate, payrollLockScopeCompanies, lockPayrollRateFromPanel, unlockPayrollRateFromPanel,\n' +
+<<<<<<< HEAD
     '  employeeRateOf, bonusGrossFromNet, employeeLabel,\n' +
+=======
+    '  employeeRateOf, bonusGrossFromNet,\n' +
+    '  payrollExtrasOf, payrollExtraById, newPayrollExtra, payrollExtraLabel,\n' +
+    '  payrollExtraEmployerRate, payrollExtraMonthGross, payrollExtraMonths, payrollExtraTotals,\n' +
+    '  payrollExtraCenters, addPayrollExtra, deletePayrollExtra, setPayrollExtraMonth,\n' +
+    '  setPayrollExtraName, setPayrollExtraCenter, setPayrollExtraEmployerRate, payrollExtrasPanel,\n' +
+>>>>>>> claude/payroll-extras
     '  monthlyLeaveCharge, companyLeaveRelease, setCompanyLeaveRelease, leaveReleaseIsManual,\n' +
     '  PAYROLL_LOCKABLE_RATES,\n' +
     '  employeeRateFieldHtml, payrollLockPanel, employeeEditorHtml,\n' +
@@ -603,7 +611,12 @@ const app = await importApp(
     'export { currentModalContainer, focusableIn, trapModalTab };\n' +
     'export { importIssuesSummaryText, importSummaryMessage };\n' +
     'export { changeCompanyYear, shiftDateKey, shiftCompanyDates, purgeCompanyData, COMPANY_KEYED_STATE,\n' +
+<<<<<<< HEAD
     '  UNDO_IGNORED_KEYS };\n' +
+=======
+    '  SERVER_COMPANY_ARRAYS,\n' +
+    '  UNDO_PRESERVED_KEYS };\n' +
+>>>>>>> claude/payroll-extras
     'export { playModalExit, MODAL_EXIT_MS };\n' +
     'export { markWelcomeChoice };\n' +
     'export { styledPnlSheet };\n' +
@@ -8962,6 +8975,271 @@ function payrollFixture(overrides) {
   app.state.employees = [employee];
   return { company, employee };
 }
+
+check('Payroll : les extras se saisissent par journée travaillée, et leur coût rejoint le 6411/6451 du centre', () => {
+  // Alexis, 08/10/2026 : « sur le payroll il faut qu'on développe un moyen
+  // pour saisir les extras par jour travaillé et que l'on puisse entrer les
+  // montants payés, de manière à ce que tout soit simple et intuitif ».
+  // Maille arrêtée avec lui : une ligne nommée par besoin, et par mois le
+  // nombre de journées × le montant payé pour une journée (un BRUT, sur
+  // lequel les charges patronales du centre s'ajoutent).
+  const saved = {
+    lines: app.state.lines.slice(), companies: app.state.companies.slice(),
+    active: app.state.activeCompany, employees: (app.state.employees || []).slice(),
+    extras: (app.state.payrollExtras || []).slice(), tab: app.__getTab(),
+  };
+  try {
+    const { company } = payrollFixture();
+    app.state.employees = [];
+    app.state.payrollExtras = [];
+    app.resetStateIndexes();
+
+    const extra = app.addPayrollExtra();
+    assert.ok(extra, 'le bouton « + Ajouter un extra » doit créer une ligne');
+    assert.equal(app.payrollExtrasOf(company.id).length, 1, 'une ligne, rattachée à la société active');
+    assert.equal(extra.center, 'F&B', 'le centre de départ est F&B, comme pour un collaborateur');
+    assert.equal(app.payrollExtraEmployerRate(extra), 0.42,
+      'le taux de charges patronales part du défaut de l’application');
+    assert.equal(app.payrollExtraLabel(extra), 'Extra sans nom',
+      'une ligne sans nom garde un libellé plutôt que d’être anonyme');
+
+    app.setPayrollExtraName(extra.id, 'Extra salle');
+    // Janvier : 4 journées à 130 €. Juillet : 40 journées à 145 €.
+    app.setPayrollExtraMonth(extra.id, 'days', 0, '4');
+    app.setPayrollExtraMonth(extra.id, 'dailyGross', 0, '130');
+    app.setPayrollExtraMonth(extra.id, 'days', 6, '40');
+    app.setPayrollExtraMonth(extra.id, 'dailyGross', 6, '145');
+
+    const months = app.payrollExtraMonths(app.payrollExtraById(extra.id));
+    assert.equal(months.gross[0], 520, 'janvier : 4 journées × 130 € = 520 € de brut');
+    assert.equal(months.gross[6], 5800, 'juillet : 40 × 145 = 5 800 €');
+    assert.equal(months.gross[1], 0, 'un mois sans journée ne coûte rien');
+    assert.ok(Math.abs(months.employerCharges[0] - 520 * 0.42) < 0.01,
+      'les charges patronales s’ajoutent au brut de la journée, au taux de la ligne');
+    assert.ok(Math.abs(months.employerCost[0] - 520 * 1.42) < 0.01,
+      'le coût employeur est le brut plus ses charges');
+
+    // Une journée saisie sans montant (ou l'inverse) ne coûte rien : on ne
+    // devine pas un tarif, et on ne compte pas un montant sans journée.
+    app.setPayrollExtraMonth(extra.id, 'days', 2, '5');
+    assert.equal(app.payrollExtraMonthGross(app.payrollExtraById(extra.id), 2), 0,
+      'des journées sans montant ne produisent aucun coût');
+    app.setPayrollExtraMonth(extra.id, 'days', 2, '0');
+
+    // Report dans la Saisie : le brut sur le 6411 du centre, les charges
+    // sur son 6451, et RIEN sur le 6412 (les congés payés n'ont été dictés
+    // que pour les collaborateurs).
+    const accounts = app.payrollAccountsForCenter('F&B');
+    const gross = app.linesOf(company.id).find(function (l) { return l.account === accounts.gross; });
+    const employer = app.linesOf(company.id).find(function (l) { return l.account === accounts.employer; });
+    const leave = app.linesOf(company.id).find(function (l) { return l.account === accounts.leave; });
+    assert.ok(gross && employer, 'les lignes 6411 et 6451 du centre doivent exister, sans collaborateur');
+    assert.equal(gross.amounts[0], 520, 'le brut de janvier atterrit sur le 6411 du centre');
+    assert.equal(gross.amounts[6], 5800, 'et celui de juillet aussi');
+    assert.equal(employer.amounts[0], Math.round(520 * 0.42), 'les charges patronales sur le 6451');
+    assert.ok(!leave || leave.amounts.every(function (v) { return v === 0; }),
+      'aucun congé payé sur un extra : la règle des 10 % ne vise que les collaborateurs');
+
+    // Taux propre à la ligne : saisi en pourcentage, il change les charges
+    // sans toucher au brut.
+    app.setPayrollExtraEmployerRate(extra.id, '50');
+    assert.equal(app.payrollExtraEmployerRate(app.payrollExtraById(extra.id)), 0.5);
+    const afterRate = app.linesOf(company.id).find(function (l) { return l.account === accounts.employer; });
+    assert.equal(afterRate.amounts[0], 260, 'les charges de janvier suivent le nouveau taux (520 × 50 %)');
+    assert.equal(app.linesOf(company.id).find(function (l) { return l.account === accounts.gross; }).amounts[0], 520,
+      'le brut, lui, ne bouge pas');
+
+    // Changer de centre déménage le coût d'un 6411 à l'autre.
+    app.setPayrollExtraCenter(extra.id, 'AG');
+    const agAccounts = app.payrollAccountsForCenter('AG');
+    const agGross = app.linesOf(company.id).find(function (l) { return l.account === agAccounts.gross; });
+    assert.ok(agGross && agGross.amounts[0] === 520, 'le brut suit le centre choisi');
+    const fbGross = app.linesOf(company.id).find(function (l) { return l.account === accounts.gross; });
+    assert.ok(!fbGross, 'et l’ancien centre, qui n’emploie plus personne, perd ses lignes calculées');
+    app.setPayrollExtraCenter(extra.id, 'F&B');
+
+    // Totaux de la société, et par centre (ce que lit `payrollCenterMonths`).
+    const totals = app.payrollExtraTotals(company.id);
+    assert.equal(totals.days[0], 4, 'les journées se totalisent');
+    assert.equal(totals.gross[6], 5800);
+    assert.deepEqual(app.payrollExtraCenters(company.id), ['F&B']);
+    assert.equal(app.payrollExtraTotals(company.id, 'AG').gross[0], 0,
+      'un centre sans extra ne totalise rien');
+
+    // Les KPI de l'onglet comprennent les extras : sans cela, l'onglet et
+    // le P&L annonceraient deux coûts employeur différents pour la même
+    // masse salariale (le préfixe Payroll du moteur couvre 6411/6451).
+    app.__setTab('payroll');
+    app.render();
+    const rendered = document.getElementById('view').innerHTML;
+    assert.ok(rendered.includes('d’extras'),
+      'la tuile « Coût employeur » doit dire la part des extras');
+    assert.ok(rendered.includes('journée') && rendered.includes('d’extra'),
+      'la tuile « Masse brute » doit dire le nombre de journées d’extra');
+  } finally {
+    app.state.lines = saved.lines; app.state.companies = saved.companies;
+    app.state.activeCompany = saved.active; app.state.employees = saved.employees;
+    app.state.payrollExtras = saved.extras;
+    app.resetStateIndexes();
+    app.__setTab(saved.tab);
+    app.render();
+  }
+});
+
+check('Payroll : le tableau des extras montre les deux saisies et ce qui en découle, jamais mélangés', () => {
+  const saved = {
+    lines: app.state.lines.slice(), companies: app.state.companies.slice(),
+    active: app.state.activeCompany, employees: (app.state.employees || []).slice(),
+    extras: (app.state.payrollExtras || []).slice(),
+    locked: JSON.parse(JSON.stringify(app.state.payrollLockedRates || {})),
+  };
+  try {
+    const { company } = payrollFixture();
+    app.state.employees = [];
+    app.state.payrollExtras = [];
+    app.resetStateIndexes();
+
+    // Panneau vide : il explique la maille et propose d'ajouter.
+    const empty = app.payrollExtrasPanel(company);
+    assert.ok(empty.includes("panel-id=\"payroll-extras\"") || empty.includes('payroll-extras'),
+      'la rubrique doit porter l’identifiant « payroll-extras »');
+    assert.ok(empty.includes('data-add-payroll-extra'), 'le bouton d’ajout doit être proposé');
+    assert.ok(empty.includes('journées travaillées'), 'l’état vide doit dire comment se saisit un extra');
+
+    const extra = app.addPayrollExtra();
+    app.setPayrollExtraName(extra.id, 'Extra plonge');
+    app.setPayrollExtraMonth(extra.id, 'days', 0, '2');
+    app.setPayrollExtraMonth(extra.id, 'dailyGross', 0, '110');
+
+    const html = app.payrollExtrasPanel(company);
+    // Les deux séries saisissables, et une par mois.
+    assert.ok(html.includes('data-extra-input="days|' + extra.id + '|0"'),
+      'les journées travaillées de janvier doivent être saisissables');
+    assert.ok(html.includes('data-extra-input="dailyGross|' + extra.id + '|11"'),
+      'le montant de la journée doit être saisissable jusqu’en décembre');
+    assert.equal((html.match(/data-extra-input="days\|/g) || []).length, 12,
+      'une case de journées par mois');
+    assert.equal((html.match(/data-extra-input="dailyGross\|/g) || []).length, 12,
+      'une case de montant par mois');
+    // Les cases héritent de la navigation des autres grilles.
+    assert.ok(html.includes('class="month-input"'),
+      'les cases doivent porter .month-input : tabulation et flèches comme dans un tableur');
+    // Le nom, le centre, le taux et le retrait.
+    assert.ok(html.includes('data-extra-name="' + extra.id + '"'), 'le nom se saisit sur la ligne');
+    assert.ok(html.includes('data-extra-center="' + extra.id + '"'), 'le centre de coûts se choisit sur la ligne');
+    assert.ok(html.includes('data-extra-rate="' + extra.id + '"'), 'le taux de charges patronales se règle sur la ligne');
+    assert.ok(html.includes('data-delete-payroll-extra="' + extra.id + '"'), 'la ligne se retire');
+    // Ce qui découle de la saisie n'est PAS saisissable.
+    assert.ok(html.includes('= Coût') && html.includes('Jours travaillés') && html.includes('Montant / journée'),
+      'les trois rangées doivent être nommées');
+    assert.ok(html.includes(app.money(220)), 'le coût de janvier (2 × 110) doit s’afficher');
+    assert.ok(html.includes('Total extras — brut') && html.includes('Charges patronales') &&
+      html.includes('= Coût employeur'),
+      'le pied de tableau doit donner le brut, les charges et le coût employeur');
+
+    // Taux figé par le contrôle de gestion : la case se grise, et c'est le
+    // taux figé qui s'applique — même règle que la fiche collaborateur.
+    app.setPayrollLockedRate(company.id, 'employerRate', 0.45);
+    const lockedHtml = app.payrollExtrasPanel(company);
+    assert.ok(/data-extra-rate="[^"]*" [^>]*disabled/.test(lockedHtml),
+      'un taux figé doit griser la case du tableau');
+    assert.equal(app.payrollExtraEmployerRate(app.payrollExtraById(extra.id)), 0.45,
+      'le taux figé prime sur celui de la ligne');
+    // Et une tentative d'écriture est refusée plutôt que silencieusement perdue.
+    app.setPayrollExtraEmployerRate(extra.id, '10');
+    assert.equal(app.payrollExtraEmployerRate(app.payrollExtraById(extra.id)), 0.45,
+      'on ne contourne pas un taux figé par le tableau des extras');
+    app.setPayrollLockedRate(company.id, 'employerRate', null);
+  } finally {
+    app.state.lines = saved.lines; app.state.companies = saved.companies;
+    app.state.activeCompany = saved.active; app.state.employees = saved.employees;
+    app.state.payrollExtras = saved.extras;
+    app.state.payrollLockedRates = saved.locked;
+    app.resetStateIndexes();
+    app.render();
+  }
+});
+
+check('Payroll : les extras suivent leur société — migration, duplication, suppression', () => {
+  // Une donnée rattachée à une société doit être déclarée partout : sinon
+  // elle survit à sa suppression, ne suit pas une duplication, ou part au
+  // serveur comme un élément commun (voir COMPANY_KEYED_STATE/COMPANY_ARRAYS).
+  const raw = {
+    companies: [{ id: 'xtr_mig', name: 'Mig Extras', currency: 'EUR', year: 2026, groupId: null }],
+    activeCompany: 'xtr_mig', lines: [],
+    payrollExtras: [{
+      id: 'xtr_1', companyId: 'xtr_mig', name: 'Extra salle', center: 'F&B',
+      // Séries abîmées : trop courtes, avec du texte et un négatif.
+      days: [4, '3', -2, 'abc'],
+      dailyGross: [130],
+      employerRate: 'x',
+    }],
+  };
+  const adopted = app.adoptState(JSON.parse(JSON.stringify(raw)));
+  const migrated = adopted.payrollExtras[0];
+  assert.equal(migrated.days.length, 12, 'les journées sont ramenées à douze valeurs');
+  assert.equal(migrated.dailyGross.length, 12, 'les montants aussi');
+  assert.equal(migrated.days[0], 4);
+  assert.equal(migrated.days[1], 3, 'une valeur numérique en texte est acceptée');
+  assert.equal(migrated.days[2], 0, 'un négatif devient zéro');
+  assert.equal(migrated.days[3], 0, 'un texte illisible devient zéro, jamais NaN');
+  assert.equal(migrated.dailyGross[6], 0, 'une série trop courte est complétée par des zéros');
+  assert.equal(migrated.employerRate, 0.42, 'un taux illisible retombe sur le défaut');
+
+  // Un état sans la clé du tout (toutes les sauvegardes d'avant le 08/10/2026).
+  const bare = app.adoptState({ companies: raw.companies.slice(), activeCompany: 'xtr_mig', lines: [] });
+  assert.deepEqual(bare.payrollExtras, [], 'la clé est créée vide plutôt que de faire échouer le chargement');
+
+  // Déclarée dans le périmètre serveur, au même titre que les collaborateurs.
+  assert.ok(app.SERVER_COMPANY_ARRAYS.includes('payrollExtras'),
+    'les extras doivent être déclarés comme tableau rattaché à une société (sinon traités en élément commun)');
+
+  const saved = {
+    companies: app.state.companies.slice(), active: app.state.activeCompany,
+    lines: app.state.lines.slice(), extras: (app.state.payrollExtras || []).slice(),
+    employees: (app.state.employees || []).slice(),
+  };
+  try {
+    const { company } = payrollFixture();
+    app.state.employees = [];
+    app.state.payrollExtras = [];
+    app.resetStateIndexes();
+    const extra = app.addPayrollExtra();
+    app.setPayrollExtraName(extra.id, 'Extra salle');
+    app.setPayrollExtraMonth(extra.id, 'days', 0, '4');
+    app.setPayrollExtraMonth(extra.id, 'dailyGross', 0, '130');
+
+    // Duplication avec un coefficient : les besoins suivent, le tarif de la
+    // journée est indexé, les journées restent celles de la source.
+    const copy = app.duplicateCompany(company.id, 'Extras Copie', 2027, 10, false);
+    const copied = app.payrollExtrasOf(copy.id);
+    assert.equal(copied.length, 1, 'les extras doivent suivre une duplication de société');
+    assert.notEqual(copied[0].id, extra.id, 'la copie a son propre identifiant');
+    assert.equal(copied[0].name, 'Extra salle', 'le besoin garde son nom');
+    assert.equal(copied[0].days[0], 4, 'les journées sont reprises telles quelles');
+    assert.equal(copied[0].dailyGross[0], 143, 'le tarif de la journée est indexé de 10 % (130 → 143)');
+    assert.equal(app.payrollExtrasOf(company.id).length, 1, 'la source garde les siens');
+
+    // Duplication « nouvel exercice » : la structure seule, à compléter.
+    const blank = app.duplicateCompany(company.id, 'Extras Vierge', 2028, 0, true);
+    const blanked = app.payrollExtrasOf(blank.id);
+    assert.equal(blanked.length, 1, 'le besoin est repris');
+    assert.equal(blanked[0].dailyGross[0], 0, 'mais sans tarif');
+    assert.equal(blanked[0].days[0], 0,
+      'et sans journées : un nombre de journées en face d’un tarif vide serait trompeur');
+
+    // Suppression de la société : ses extras partent avec elle.
+    app.purgeCompanyData(company.id);
+    assert.deepEqual(app.payrollExtrasOf(company.id), [],
+      'les extras d’une société supprimée ne doivent pas rester orphelins dans l’état');
+  } finally {
+    app.state.companies = saved.companies; app.state.activeCompany = saved.active;
+    app.state.lines = saved.lines; app.state.payrollExtras = saved.extras;
+    app.state.employees = saved.employees;
+    app.resetStateIndexes();
+    app.render();
+  }
+});
 
 check('Payroll : décomposition brut / charges patronales / salariales / coût employeur', () => {
   const saved = {
