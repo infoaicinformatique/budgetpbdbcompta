@@ -1445,6 +1445,19 @@
      désormais migration, équipe, pondération, répartition et éditeur. */
   .ca-tab-panels > details.panel { margin-bottom: var(--space-5); }
   .kpis { display: flex; gap: var(--space-3); flex-wrap: wrap; }
+  /* Extras (Payroll) : trois rangées par ligne, et dans la colonne figée
+     le nom, le centre de coûts et le taux de charges en regard des trois.
+     La rangée « = Coût » est calculée : un fond discret la détache des deux
+     rangées de saisie juste au-dessus. */
+  .extras-table .extra-name { width: 100%; font-weight: 600; }
+  .extras-table .extra-rate {
+    display: flex; align-items: center; gap: var(--space-1); margin-top: var(--space-1);
+    font-size: var(--text-xs); white-space: nowrap;
+  }
+  .extras-table .extra-rate input { width: 60px; }
+  .extras-table tr.extra-cost-row td { background: var(--surface-tint-1); }
+  .extras-table tr.extra-cost-row td.sticky-col { background: var(--surface); }
+
   /* Mois d'ouverture de la société (Payroll) : rangée compacte de cases à
      cocher, une par mois, dans la barre d'actions du panneau. */
   .open-months {
@@ -3393,7 +3406,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-05.1';
+const APP_BUILD = '2026-10-08.1';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -4578,6 +4591,7 @@ function defaultState() {
     // Journal des modifications de lignes budgétaires (qui a changé quel
     // montant, quand) — distinct du journal des actions de compte ci-dessus.
     editLog: [],
+    payrollExtras: [],
     // Taux de change manuels (devise -> valeur d'un euro dans cette devise),
     // saisis à la main : l'application est hors ligne, impossible d'aller
     // chercher un taux en direct.
@@ -4823,6 +4837,25 @@ function adoptState(parsed) {
     /* Migration : masse salariale détaillée, absente des sauvegardes
        antérieures. On complète les champs manquants par leurs valeurs par
        défaut plutôt que d'écarter le collaborateur. */
+    /* Migration : extras payés à la journée (08/10/2026), absents des
+       sauvegardes antérieures. Les deux séries sont ramenées à douze
+       valeurs positives : une série trop courte ferait planter l'affichage
+       du tableau, et une valeur illisible remonterait en NaN jusque dans le
+       6411 du centre. */
+    parsed.payrollExtras = Array.isArray(parsed.payrollExtras) ? parsed.payrollExtras : [];
+    for (const extra of parsed.payrollExtras) {
+      if (typeof extra.name !== 'string') extra.name = '';
+      if (!extra.center) extra.center = 'F&B';
+      const rate = Number(extra.employerRate);
+      extra.employerRate = isFinite(rate) && rate > 0 ? rate : PAYROLL_DEFAULT_EMPLOYER_RATE;
+      for (const field of ['days', 'dailyGross']) {
+        const source = Array.isArray(extra[field]) ? extra[field] : [];
+        extra[field] = MONTH_LABELS.map(function (label, m) {
+          const value = Number(source[m]);
+          return isFinite(value) && value > 0 ? value : 0;
+        });
+      }
+    }
     parsed.employees = Array.isArray(parsed.employees) ? parsed.employees : [];
     for (const employee of parsed.employees) {
       if (typeof employee.name !== 'string') employee.name = '';
@@ -6085,6 +6118,7 @@ const HELP_SECTIONS = [
     items: [
       ['+ Ajouter un collaborateur', 'Poste (menu déroulant par département, ou « Autre » pour un poste non listé), type de contrat (CDI, CDD, Alternance, Stage, Intérim, Extra), net mensuel avant impôt (le brut est reconstitué automatiquement pour la masse salariale), taux de charges, centre de coûts, dates d’entrée et de sortie, augmentation et prime planifiées, congés payés.'],
       ['Nombre de postes identiques', 'À la création uniquement : remplir la fiche une fois et indiquer une quantité crée d’un coup plusieurs collaborateurs identiques (poste, salaire, centre), noms numérotés à partir de celui saisi.'],
+      ['+ Ajouter un extra', 'Rubrique « Extras », pour la main-d’œuvre payée à la journée : une ligne par besoin (« Extra salle », « Extra plonge »), son centre de coûts, son taux de charges patronales. Pour chaque mois, deux chiffres — les journées travaillées et le montant payé pour une journée ; le coût suit. Le montant est un brut : il part, charges comprises, sur les 6411/6451 du centre, comme le reste de la masse salariale. Pas de congés payés sur un extra.'],
       ['Dates d’entrée / sortie', 'Le mois concerné est proratisé au nombre de jours de présence.'],
       ['« Voir le calcul »', 'Déplie la décomposition mois par mois : présence, brut proratisé, primes, charges, coût employeur, net.'],
       ['Société ouverte', 'Coche les mois où la société est ouverte : préremplit les dates d’un nouveau contrat.'],
@@ -7316,6 +7350,7 @@ const APP_PAGES = [
   ] },
   { tab: 'payroll', label: 'Payroll', pages: [
     { id: 'payroll-equipe', label: 'Équipe' },
+    { id: 'payroll-extras', label: 'Extras (journées travaillées)' },
     { id: 'payroll-matrice', label: 'Matrice de la masse salariale' },
     { id: 'payroll-conges', label: 'Congés payés' },
     { id: 'payroll-taux-figes', label: 'Taux figés par le contrôle de gestion' },
@@ -9026,7 +9061,7 @@ const SERVER_PRIVATE_KEYS = ['users', 'authLog', 'activeCompany', 'activeEnviron
 const SERVER_RETRY_MS = 10000;
 /* Découpage par société : même liste que COMPANY_ARRAYS / COMPANY_DICTS
    dans data.mjs (les dictionnaires sont ceux de COMPANY_KEYED_STATE). */
-const SERVER_COMPANY_ARRAYS = ['lines', 'versions', 'employees', 'caLines', 'objectives', 'editLog'];
+const SERVER_COMPANY_ARRAYS = ['lines', 'versions', 'employees', 'payrollExtras', 'caLines', 'objectives', 'editLog'];
 
 /**
  * Ce qu'un envoi a modifié depuis le précédent : sociétés (ajoutées,
@@ -9084,7 +9119,7 @@ function emptyServerState(raw) {
   const base = defaultState();
   base.companies = [];
   base.activeCompany = null;
-  for (const key of ['lines', 'versions', 'employees', 'caLines', 'objectives', 'editLog', 'caEvents']) base[key] = [];
+  for (const key of ['lines', 'versions', 'employees', 'payrollExtras', 'caLines', 'objectives', 'editLog', 'caEvents']) base[key] = [];
   for (const key of COMPANY_KEYED_STATE) base[key] = {};
   for (const key of Object.keys(raw || {})) {
     if (key !== 'companies' && raw[key] !== undefined) base[key] = raw[key];
@@ -20053,6 +20088,243 @@ function duplicateEmployee(id) {
   return copy;
 }
 
+/* ==================================================================
+   EXTRAS — la main-d'œuvre payée à la journée
+
+   Alexis, 08/10/2026 : « sur le payroll il faut qu'on développe un moyen
+   pour saisir les extras par jour travaillé et que l'on puisse entrer les
+   montants payés, de manière à ce que tout soit simple et intuitif ».
+
+   Un extra n'a pas de salaire mensuel : il vient une soirée, une journée,
+   et on le paie à la journée. La fiche collaborateur (net mensuel, dates
+   d'entrée et de sortie, augmentation, prime) ne lui convient pas — le
+   type de contrat « Extra » existait depuis le 06/08/2026, mais il
+   obligeait à inventer un salaire mensuel pour un besoin qui se compte en
+   journées.
+
+   Saisie retenue avec Alexis (deux questions posées avant d'écrire ce
+   code) : une ligne NOMMÉE par besoin d'extra (« Extra salle », « Extra
+   plonge »), rattachée à un centre de coûts, et pour chaque mois deux
+   chiffres — le nombre de journées travaillées et le montant payé pour une
+   journée. Le coût du mois en découle (`jours × montant`). C'est la maille
+   à laquelle on budgète réellement un an à l'avance : on ne sait pas quels
+   samedis de juillet seront chargés, on sait qu'il faudra quarante
+   journées d'extra.
+
+   Le montant saisi est un BRUT : les charges patronales du centre s'y
+   ajoutent, et l'ensemble atterrit sur les mêmes comptes que la masse
+   salariale (6411 pour le brut, 6451 pour les charges, voir
+   `payrollCenterMonths`). Les extras comptent donc dans la ligne Payroll
+   du P&L et dans le Ratio — le préfixe `payroll` du moteur couvre
+   6411/6412/645 — et dans le « Coût employeur » de cet onglet.
+
+   PAS de congés payés sur un extra (compte 6412) : la règle des 10 % du
+   brut payé a été dictée pour les collaborateurs (17/09/2026), et
+   l'étendre d'office aux extras gonflerait leur budget de 10 % sans que
+   personne ne l'ait demandé. À ajouter si Alexis le demande : une ligne
+   dans `payrollCenterMonths`, rien de plus.
+   ================================================================== */
+
+/** Extras d'une société, dans l'ordre de création. */
+function payrollExtrasOf(companyId) {
+  return (state.payrollExtras || []).filter(function (x) { return x.companyId === companyId; });
+}
+
+function payrollExtraById(id) {
+  return (state.payrollExtras || []).find(function (x) { return x.id === id; }) || null;
+}
+
+/**
+ * Nouvelle ligne d'extra. Le taux de charges patronales reprend celui que
+ * le contrôle de gestion a figé pour la société s'il en a figé un (même
+ * règle que `newEmployee`) ; sinon le taux par défaut, modifiable ligne à
+ * ligne. Le centre est le premier que la personne connectée a le droit de
+ * voir — créer une ligne dans un centre qu'on ne voit pas la ferait
+ * disparaître aussitôt.
+ */
+function newPayrollExtra(companyId) {
+  const locked = payrollLockedRateValue(companyId, 'employerRate');
+  const visible = visibleCostCenters();
+  const center = visible.some(function (c) { return c.id === 'F&B'; })
+    ? 'F&B'
+    : (visible[0] ? visible[0].id : 'F&B');
+  return {
+    id: uid('xtr'),
+    companyId: companyId,
+    name: '',
+    center: center,
+    employerRate: locked !== null ? locked : PAYROLL_DEFAULT_EMPLOYER_RATE,
+    days: emptyMonths(),
+    dailyGross: emptyMonths(),
+  };
+}
+
+/** Libellé d'une ligne d'extra : son nom, ou un repli explicite plutôt qu'une ligne anonyme. */
+function payrollExtraLabel(extra) {
+  return String((extra && extra.name) || '').trim() || 'Extra sans nom';
+}
+
+/** Taux de charges patronales appliqué à une ligne : celui figé par les CDG prime sur le sien. */
+function payrollExtraEmployerRate(extra) {
+  if (!extra) return 0;
+  const locked = payrollLockedRateValue(extra.companyId, 'employerRate');
+  if (locked !== null) return locked;
+  const rate = Number(extra.employerRate);
+  return isFinite(rate) && rate > 0 ? rate : 0;
+}
+
+/** Brut payé d'un mois : journées travaillées × montant de la journée. */
+function payrollExtraMonthGross(extra, month) {
+  if (!extra) return 0;
+  const days = Number((extra.days || [])[month]) || 0;
+  const daily = Number((extra.dailyGross || [])[month]) || 0;
+  if (days <= 0 || daily <= 0) return 0;
+  return days * daily;
+}
+
+/**
+ * Les trois séries mensuelles d'une ligne d'extra : brut payé, charges
+ * patronales, coût employeur. Mêmes noms que `employeeMonth` pour que les
+ * deux se lisent de la même façon.
+ */
+function payrollExtraMonths(extra) {
+  const rate = payrollExtraEmployerRate(extra);
+  const gross = emptyMonths();
+  const employerCharges = emptyMonths();
+  const employerCost = emptyMonths();
+  for (let month = 0; month < MONTHS; month++) {
+    gross[month] = payrollExtraMonthGross(extra, month);
+    employerCharges[month] = gross[month] * rate;
+    employerCost[month] = gross[month] + employerCharges[month];
+  }
+  return { gross: gross, employerCharges: employerCharges, employerCost: employerCost };
+}
+
+/**
+ * Totaux mensuels des extras d'une société. `center` restreint à un centre
+ * de coûts (c'est ainsi que `payrollCenterMonths` les lit) ; sans lui, tous
+ * centres confondus. `days` sert à l'affichage et au total de l'année.
+ */
+function payrollExtraTotals(companyId, center) {
+  const out = {
+    days: emptyMonths(), gross: emptyMonths(),
+    employerCharges: emptyMonths(), employerCost: emptyMonths(),
+  };
+  for (const extra of payrollExtrasOf(companyId)) {
+    if (center && extra.center !== center) continue;
+    const months = payrollExtraMonths(extra);
+    for (let month = 0; month < MONTHS; month++) {
+      out.days[month] += Number((extra.days || [])[month]) || 0;
+      out.gross[month] += months.gross[month];
+      out.employerCharges[month] += months.employerCharges[month];
+      out.employerCost[month] += months.employerCost[month];
+    }
+  }
+  return out;
+}
+
+/**
+ * Enregistre une ligne d'extra et réaligne la Saisie, en UN seul geste
+ * annulable. Toutes les mutations d'extra passent par ici : la frappe d'une
+ * journée, d'un montant, d'un nom, d'un centre ou d'un taux change le
+ * 6411/6451 du centre, et l'oublier laisserait un P&L faux jusqu'au
+ * prochain clic sur « Forcer le re-calcul » (le piège déjà corrigé pour les
+ * collaborateurs, voir `saveEmployeeFromForm`).
+ */
+function commitPayrollExtraChange(companyId, mutate) {
+  captureUndoStep();
+  mutate();
+  syncPayrollLines(companyId);
+  recomputeRateLinkedLines(companyId);
+  save();
+  render();
+}
+
+function addPayrollExtra() {
+  const company = activeCompany();
+  if (!company) return null;
+  const extra = newPayrollExtra(company.id);
+  commitPayrollExtraChange(company.id, function () {
+    state.payrollExtras = state.payrollExtras || [];
+    state.payrollExtras.push(extra);
+  });
+  return extra;
+}
+
+function deletePayrollExtra(id) {
+  const extra = payrollExtraById(id);
+  if (!extra) return;
+  const yearGross = payrollExtraMonths(extra).gross.reduce(function (sum, v) { return sum + v; }, 0);
+  if (!confirmed({
+    key: 'payroll-extra-delete-' + id,
+    title: 'Supprimer « ' + payrollExtraLabel(extra) + ' » ?',
+    body: 'Ses journées et ses montants seront retirés de la masse salariale' +
+      (yearGross ? ' (' + money(yearGross) + ' € de brut sur l’année)' : '') + '.',
+    confirmLabel: 'Supprimer',
+    danger: true,
+  }, function () { deletePayrollExtra(id); })) return;
+  commitPayrollExtraChange(extra.companyId, function () {
+    state.payrollExtras = (state.payrollExtras || []).filter(function (x) { return x.id !== id; });
+  });
+}
+
+/**
+ * Écrit une case du tableau des extras. `field` vaut 'days' (journées
+ * travaillées, entier) ou 'dailyGross' (montant payé pour une journée).
+ * Une valeur négative ou illisible vaut zéro : le mois n'est alors pas
+ * compté, plutôt que de propager un NaN jusque dans le 6411.
+ */
+function setPayrollExtraMonth(id, field, month, value) {
+  const extra = payrollExtraById(id);
+  if (!extra) return;
+  if (field !== 'days' && field !== 'dailyGross') return;
+  if (!(month >= 0 && month < MONTHS)) return;
+  const parsed = Number(String(value).replace(',', '.').replace(/\s/g, ''));
+  const kept = isFinite(parsed) && parsed > 0 ? (field === 'days' ? Math.round(parsed) : parsed) : 0;
+  commitPayrollExtraChange(extra.companyId, function () {
+    if (!Array.isArray(extra[field]) || extra[field].length !== MONTHS) extra[field] = emptyMonths();
+    extra[field][month] = kept;
+  });
+}
+
+/** Renomme une ligne d'extra. Pas de réalignement de la Saisie : un nom ne change aucun montant. */
+function setPayrollExtraName(id, name) {
+  const extra = payrollExtraById(id);
+  if (!extra) return;
+  captureUndoStep();
+  extra.name = String(name || '').trim();
+  save();
+  render();
+}
+
+/** Change le centre de coûts d'une ligne : son coût déménage d'un 6411 à l'autre. */
+function setPayrollExtraCenter(id, center) {
+  const extra = payrollExtraById(id);
+  if (!extra) return;
+  if (!COST_CENTERS.some(function (c) { return c.id === center; })) return;
+  commitPayrollExtraChange(extra.companyId, function () { extra.center = center; });
+}
+
+/**
+ * Change le taux de charges patronales d'une ligne, saisi en pourcentage.
+ * Refusé quand le contrôle de gestion a figé le taux de la société : la
+ * case est alors désactivée dans le tableau, et `payrollExtraEmployerRate`
+ * lit de toute façon le taux figé.
+ */
+function setPayrollExtraEmployerRate(id, percent) {
+  const extra = payrollExtraById(id);
+  if (!extra) return;
+  if (payrollLockedRateValue(extra.companyId, 'employerRate') !== null) return;
+  const parsed = Number(String(percent).replace(',', '.').replace(/\s/g, ''));
+  const kept = isFinite(parsed) && parsed > 0 ? parsed / 100 : 0;
+  commitPayrollExtraChange(extra.companyId, function () { extra.employerRate = kept; });
+}
+
+/** Centres de coûts employant au moins un extra. */
+function payrollExtraCenters(companyId) {
+  return [...new Set(payrollExtrasOf(companyId).map(function (x) { return x.center; }))];
+}
+
 /* ---------------- Report vers la Saisie ------------------------------- */
 
 /**
@@ -20120,6 +20392,15 @@ function payrollCenterMonths(companyId, center, kind) {
       months[month] += kind === 'employer' ? detail.employerCharges : detail.paidGross;
     }
   }
+  // Les extras rejoignent les mêmes comptes que la masse salariale : leur
+  // brut sur le 6411 du centre, leurs charges patronales sur son 6451
+  // (Alexis, 08/10/2026 — voir la section EXTRAS). Pas de 6412 : la règle
+  // des 10 % de congés payés n'a été dictée que pour les collaborateurs,
+  // et `kind === 'leave'` est déjà sorti de cette fonction plus haut.
+  const extras = payrollExtraTotals(companyId, center);
+  for (let month = 0; month < MONTHS; month++) {
+    months[month] += kind === 'employer' ? extras.employerCharges[month] : extras.gross[month];
+  }
   return months.map(function (value) { return Math.round(value); });
 }
 
@@ -20137,7 +20418,13 @@ function syncPayrollLines(companyId) {
   const company = companyById(companyId);
   if (!company) return { created: 0, updated: 0, removed: 0 };
 
-  const centersUsed = [...new Set(employeesOf(companyId).map(function (e) { return e.center; }))];
+  // Un centre qui n'emploie personne mais fait venir des extras a lui
+  // aussi ses lignes 6411/6451 à tenir : sans cette union, leur coût
+  // n'atterrirait nulle part dans la Saisie.
+  const centersUsed = [...new Set(
+    employeesOf(companyId).map(function (e) { return e.center; })
+      .concat(payrollExtraCenters(companyId)),
+  )];
   const wanted = [];
   for (const center of centersUsed) {
     const accounts = payrollAccountsForCenter(center);
@@ -20627,8 +20914,18 @@ function viewPayroll() {
   const company = activeCompany();
   const matrix = payrollMatrix(company.id);
 
-  const yearCost = matrix.rows.reduce(function (s, r) { return s + r.yearCost; }, 0);
-  const yearGross = matrix.rows.reduce(function (s, r) { return s + r.yearGross; }, 0);
+  // Les extras entrent dans le coût employeur et la masse brute : leur
+  // brut et leurs charges atterrissent sur les mêmes 6411/6451, donc dans
+  // la ligne Payroll du P&L. Les laisser dehors ferait dire deux chiffres
+  // différents à deux écrans pour la même chose. Ils ne pèsent en revanche
+  // pas sur l'effectif moyen : un ETP se compte en contrats, pas en
+  // journées d'extra.
+  const extraTotals = payrollExtraTotals(company.id);
+  const extraYearGross = extraTotals.gross.reduce(function (s, v) { return s + v; }, 0);
+  const extraYearCost = extraTotals.employerCost.reduce(function (s, v) { return s + v; }, 0);
+  const extraYearDays = extraTotals.days.reduce(function (s, v) { return s + v; }, 0);
+  const yearCost = matrix.rows.reduce(function (s, r) { return s + r.yearCost; }, 0) + extraYearCost;
+  const yearGross = matrix.rows.reduce(function (s, r) { return s + r.yearGross; }, 0) + extraYearGross;
   const yearProvision = matrix.rows.reduce(function (s, r) { return s + r.yearLeave; }, 0);
   // Reprises des mois de fermeture, en valeur absolue : elles s'affichent
   // comme un montant « relâché », pas comme un nombre négatif.
@@ -20642,8 +20939,12 @@ function viewPayroll() {
 
   const strip = '<div class="kpis" style="margin-bottom:14px">' +
     '<div class="kpi main"><div class="label">Coût employeur année</div><div class="value">' +
-    money(yearCost) + '</div><div class="muted" style="font-size:11px">brut + charges patronales</div></div>' +
-    '<div class="kpi"><div class="label">Masse brute</div><div class="value">' + money(yearGross) + '</div></div>' +
+    money(yearCost) + '</div><div class="muted" style="font-size:11px">brut + charges patronales' +
+    (extraYearCost ? ', dont ' + money(extraYearCost) + ' d’extras' : '') + '</div></div>' +
+    '<div class="kpi"><div class="label">Masse brute</div><div class="value">' + money(yearGross) + '</div>' +
+    (extraYearDays ? '<div class="muted" style="font-size:11px">dont ' +
+      nfMoney.format(extraYearDays) + ' journée' + (extraYearDays > 1 ? 's' : '') + ' d’extra</div>' : '') +
+    '</div>' +
     '<div class="kpi"><div class="label">Effectif moyen</div><div class="value">' +
     formatEtp(averageHeadcount) + '</div>' +
     '<div class="muted" style="font-size:11px">équivalent temps plein</div></div>' +
@@ -20681,12 +20982,15 @@ function viewPayroll() {
       'salariales, coût employeur, congés payés. Chaque chiffre est décomposé, rien n’est une boîte noire.',
     bar: openMonthsHtml +
       '<button class="action ghost" data-add-employee="1">+ Ajouter un collaborateur</button>' +
-      (matrix.rows.length ? '<button class="action ghost" data-sync-payroll="1" ' +
+      ((matrix.rows.length || extraYearGross) ? '<button class="action ghost" data-sync-payroll="1" ' +
         'title="Les lignes 6411, 6451 et 6412 se mettent déjà à jour automatiquement à chaque salaire enregistré : ' +
         'ce bouton force juste un re-calcul immédiat, par exemple après un changement de plan comptable.">' +
         'Forcer le re-calcul dans la Saisie</button>' : ''),
     body: strip +
       payrollTeamPanel(company, matrix) +
+      // Les extras juste après l'Équipe : c'est du personnel aussi, et
+      // leur coût rejoint les mêmes comptes (voir la section EXTRAS).
+      payrollExtrasPanel(company) +
       payrollMatrixPanel(company, matrix) +
       payrollLeavePanel(company, matrix) +
       payrollLockPanel(company) +
@@ -20893,6 +21197,150 @@ function employeeDetailHtml(company, matrix) {
     moneyRow('− Charges salariales', function (m) { return m.employeeCharges; }) +
     moneyRow('= Net avant impôt', function (m) { return m.netBeforeTax; }) +
     '</tbody></table></div></div>';
+}
+
+/**
+ * Rubrique « Extras » : une ligne nommée par besoin, et pour chaque mois
+ * les journées travaillées et le montant payé pour une journée — voir la
+ * section EXTRAS pour le pourquoi de cette maille.
+ *
+ * Trois rangées par ligne, sur le modèle de la matrice CA : ce qu'on
+ * saisit (journées, montant de la journée) puis ce qui en découle (le
+ * coût), jamais mélangés. Le nom, le centre de coûts et le taux de charges
+ * tiennent dans la colonne figée, en regard des trois rangées.
+ *
+ * Même périmètre que les autres rubriques de l'onglet : un extra rattaché
+ * à un centre hors droits n'apparaît pas, et les totaux portent sur ce qui
+ * est affiché — un total qui compterait des lignes invisibles ne se
+ * vérifierait pas à l'écran.
+ */
+function payrollExtrasPanel(company) {
+  const user = authEnabled() ? currentUser() : null;
+  const extras = payrollExtrasOf(company.id)
+    .filter(function (extra) { return isCenterAllowed(user, extra.center); });
+  const addButton = '<button class="action ghost" data-add-payroll-extra="1">+ Ajouter un extra</button>';
+
+  if (!extras.length) {
+    return panel('payroll-extras', 'Extras',
+      emptyState('Aucun extra budgété. Une ligne par besoin (« Extra salle », « Extra plonge »), ' +
+        'et pour chaque mois le nombre de journées travaillées et le montant payé pour une journée : ' +
+        'le coût et les charges patronales suivent.', addButton),
+      { open: true, meta: '0 extra' });
+  }
+
+  const headerMonths = MONTH_LABELS.map(function (label) {
+    return '<th class="num">' + label + '</th>';
+  }).join('');
+
+  // Totaux de ce qui est affiché, pour que le pied de tableau se recoupe
+  // avec les lignes du dessus.
+  const totals = {
+    days: emptyMonths(), gross: emptyMonths(),
+    employerCharges: emptyMonths(), employerCost: emptyMonths(),
+  };
+  const locked = payrollLockedRateValue(company.id, 'employerRate') !== null;
+
+  const rows = extras.map(function (extra) {
+    const months = payrollExtraMonths(extra);
+    const days = MONTH_LABELS.map(function (label, m) { return Number((extra.days || [])[m]) || 0; });
+    for (let m = 0; m < MONTHS; m++) {
+      totals.days[m] += days[m];
+      totals.gross[m] += months.gross[m];
+      totals.employerCharges[m] += months.employerCharges[m];
+      totals.employerCost[m] += months.employerCost[m];
+    }
+    const yearDays = days.reduce(function (sum, v) { return sum + v; }, 0);
+    const yearGross = months.gross.reduce(function (sum, v) { return sum + v; }, 0);
+
+    // Le centre proposé : ceux qu'on a le droit de voir, plus le sien —
+    // sans quoi changer de centre ferait disparaître la ligne de l'écran
+    // sans possibilité de revenir en arrière.
+    const centerOptions = COST_CENTERS
+      .filter(function (c) { return c.id === extra.center || isCenterAllowed(user, c.id); })
+      .map(function (c) {
+        return '<option value="' + c.id + '"' + (extra.center === c.id ? ' selected' : '') + '>' +
+          c.code + '. ' + escapeHtml(c.label) + '</option>';
+      }).join('');
+
+    const rate = payrollExtraEmployerRate(extra);
+    const identity = '<td class="sticky-col" rowspan="3" style="vertical-align:top">' +
+      '<input class="extra-name" data-extra-name="' + extra.id + '" ' +
+      'value="' + escapeHtml(extra.name || '') + '" placeholder="Nom de l’extra (ex. Extra salle)" />' +
+      '<select data-extra-center="' + extra.id + '" style="margin-top:4px;width:100%">' +
+      centerOptions + '</select>' +
+      '<label class="extra-rate muted">Charges patronales' +
+      '<input type="number" min="0" max="200" step="0.1" data-extra-rate="' + extra.id + '" ' +
+      'value="' + formatRateValue(Math.round(rate * 1000) / 10) + '"' +
+      (locked ? ' disabled title="Taux figé par le contrôle de gestion"' : '') + ' /> %' +
+      (locked ? ' <span title="Taux figé par le contrôle de gestion">🔒</span>' : '') +
+      '</label></td>';
+    const actions = '<td rowspan="3" style="vertical-align:top"><div class="row-actions">' +
+      '<button class="mini mini-danger" data-delete-payroll-extra="' + extra.id + '">retirer</button>' +
+      '</div></td>';
+
+    const dayCells = days.map(function (value, m) {
+      return '<td class="num"><input type="number" min="0" step="1" class="month-input" ' +
+        'data-extra-input="days|' + extra.id + '|' + m + '" ' +
+        'value="' + (value ? escapeHtml(String(value)) : '') + '" /></td>';
+    }).join('');
+    const amountCells = MONTH_LABELS.map(function (label, m) {
+      const value = Number((extra.dailyGross || [])[m]) || 0;
+      return '<td class="num"><input type="number" min="0" step="1" class="month-input" ' +
+        'data-extra-input="dailyGross|' + extra.id + '|' + m + '" ' +
+        'value="' + (value ? escapeHtml(String(value)) : '') + '" /></td>';
+    }).join('');
+    const costCells = months.gross.map(function (value) {
+      return '<td class="num' + (value ? '' : ' muted') + '">' + (value ? money(value) : '—') + '</td>';
+    }).join('');
+
+    return '<tr>' + identity +
+      '<td>Jours travaillés</td>' + dayCells +
+      '<td class="num total">' + nfMoney.format(yearDays) + '</td>' + actions + '</tr>' +
+      '<tr><td>Montant / journée</td>' + amountCells +
+      // Moyenne pondérée par les journées, pas moyenne des montants : un
+      // mois à quarante journées ne doit pas peser comme un mois à deux.
+      '<td class="num total">' + (yearDays ? money(yearGross / yearDays) + ' €' : '—') + '</td></tr>' +
+      '<tr class="extra-cost-row"><td><strong>= Coût</strong></td>' + costCells +
+      '<td class="num total"><strong>' + money(yearGross) + ' €</strong></td></tr>';
+  }).join('');
+
+  const totalRow = function (label, series, strong) {
+    const yearValue = series.reduce(function (sum, v) { return sum + v; }, 0);
+    const cells = series.map(function (value) {
+      return '<td class="num">' + (strong ? '<strong>' : '') + (value ? money(value) : '—') +
+        (strong ? '</strong>' : '') + '</td>';
+    }).join('');
+    return '<tr class="matrix-total"><td class="sticky-col"><strong>' + escapeHtml(label) + '</strong></td>' +
+      '<td></td>' + cells + '<td class="num total"><strong>' + money(yearValue) + ' €</strong></td>' +
+      '<td></td></tr>';
+  };
+  const yearDaysTotal = totals.days.reduce(function (sum, v) { return sum + v; }, 0);
+  const daysTotalRow = '<tr class="matrix-total"><td class="sticky-col"><strong>Total journées</strong></td>' +
+    '<td></td>' + totals.days.map(function (value) {
+      return '<td class="num">' + (value ? nfMoney.format(value) : '—') + '</td>';
+    }).join('') +
+    '<td class="num total"><strong>' + nfMoney.format(yearDaysTotal) + '</strong></td><td></td></tr>';
+
+  const yearCost = totals.employerCost.reduce(function (sum, v) { return sum + v; }, 0);
+
+  return panel('payroll-extras', 'Extras',
+    '<p class="muted" style="margin:0 0 10px;font-size:13px">' +
+    'Une ligne par besoin d’extra, avec son centre de coûts. Pour chaque mois : le nombre de ' +
+    '<strong>journées travaillées</strong> et le <strong>montant payé pour une journée</strong> — le coût se ' +
+    'calcule tout seul. Le montant est un brut : les charges patronales du taux affiché s’y ajoutent, et ' +
+    'l’ensemble rejoint les comptes 6411 et 6451 du centre, comme le reste de la masse salariale. ' +
+    'Tabulation et flèches pour passer d’une case à l’autre, comme dans un tableur.</p>' +
+    '<div class="row" style="gap:8px;margin-bottom:10px">' + addButton + '</div>' +
+    '<div class="table-wrap"><table class="matrix-table extras-table"><thead><tr>' +
+    '<th class="sticky-col" style="width:' + colWidths.payrollCollaborateur + 'px">Extra</th>' +
+    '<th style="min-width:140px"></th>' + headerMonths + '<th class="num">Année</th><th></th>' +
+    '</tr></thead><tbody>' + rows + daysTotalRow +
+    totalRow('Total extras — brut', totals.gross, false) +
+    totalRow('Charges patronales', totals.employerCharges, false) +
+    totalRow('= Coût employeur', totals.employerCost, true) +
+    '</tbody></table></div>',
+    { open: true, meta: extras.length + (extras.length === 1 ? ' extra' : ' extras') +
+      (yearCost ? ' — ' + money(yearCost) + ' € de coût employeur' : '') });
 }
 
 function payrollMatrixPanel(company, matrix) {
@@ -21185,13 +21633,21 @@ function payrollFormulaPanel() {
     '<tr><td><strong>Ratio</strong></td>' +
     '<td class="muted">coût employeur de l’exercice ÷ chiffre d’affaires budgété</td></tr>' +
     '<tr><td><strong>Effectif moyen</strong></td>' +
-    '<td class="muted">somme des taux de présence mensuels ÷ 12 (équivalent temps plein)</td></tr>' +
+    '<td class="muted">somme des taux de présence mensuels ÷ 12 (équivalent temps plein). Les extras ' +
+    'n’y entrent pas : un équivalent temps plein se compte en contrats, pas en journées.</td></tr>' +
+    '<tr class="section"><td><strong>Coût d’un extra</strong></td>' +
+    '<td class="muted"><strong>journées travaillées du mois × montant payé pour une journée</strong>, puis ' +
+    '+ charges patronales au taux de la ligne. Le montant saisi est un brut. Pas de congés payés sur un ' +
+    'extra : la règle du dixième vise les collaborateurs. Son coût part sur les comptes 6411 + 6451 de son ' +
+    'centre, comme le reste de la masse salariale — il compte donc dans le Payroll du P&amp;L et dans le ' +
+    'Ratio ci-dessus.</td></tr>' +
     '<tr><td><strong>Taux figé</strong></td>' +
     '<td class="muted">un taux figé par le contrôle de gestion remplace celui de la fiche, pour tous les ' +
     'collaborateurs de la société — voir le panneau « Taux figés » juste au-dessus</td></tr>' +
     '</tbody></table>' +
     '<p class="muted" style="margin:12px 0 0;font-size:13px">' +
-    'Chaque salaire enregistré ici impacte automatiquement, pour son centre, trois lignes calculées de la ' +
+    'Chaque salaire — et chaque journée d’extra — enregistré ici impacte automatiquement, pour son centre, ' +
+    'les lignes calculées de la ' +
     'Saisie : la rémunération sur le compte 6411, les charges patronales sur son 6451, les congés payés ' +
     'sur son 6412 — diminués de la relâche des mois de fermeture. Ces lignes ne se saisissent plus à la ' +
     'main : elles suivent cet onglet. « Reporter dans la ' +
@@ -21387,6 +21843,7 @@ function purgeCompanyData(companyId) {
     if (state[key] && typeof state[key] === 'object') delete state[key][companyId];
   }
   state.employees = (state.employees || []).filter(function (e) { return e.companyId !== companyId; });
+  state.payrollExtras = (state.payrollExtras || []).filter(function (x) { return x.companyId !== companyId; });
   state.caLines = (state.caLines || []).filter(function (c) { return c.companyId !== companyId; });
   state.objectives = (state.objectives || []).filter(function (o) { return o.companyId !== companyId; });
   state.caEvents = (state.caEvents || [])
@@ -21520,6 +21977,21 @@ function duplicateCompany(companyId, name, year, percent, resetAmounts) {
     if (clone.startDate) clone.startDate = shiftDateKey(clone.startDate, delta);
     if (clone.endDate) clone.endDate = shiftDateKey(clone.endDate, delta);
     state.employees.push(clone);
+  }
+
+  // Extras : les besoins, leurs centres et leurs taux suivent la société
+  // copiée ; le montant de la journée passe au coefficient comme les
+  // salaires (`scaleMoney`). En « nouvel exercice » (`resetAmounts`) ce
+  // montant retombe à zéro — c'est ce que `scaleMoney` fait déjà pour le
+  // salaire d'un collaborateur — et les JOURNÉES avec lui : garder un
+  // nombre de journées en face d'un tarif vide donnerait une ligne à moitié
+  // remplie, plus trompeuse qu'une ligne vierge à compléter.
+  state.payrollExtras = state.payrollExtras || [];
+  for (const extra of payrollExtrasOf(companyId)) {
+    const clone = Object.assign(JSON.parse(JSON.stringify(extra)), { id: uid('xtr'), companyId: copy.id });
+    clone.dailyGross = (extra.dailyGross || []).map(function (value) { return scaleMoney(value); });
+    if (resetAmounts) clone.days = emptyMonths();
+    state.payrollExtras.push(clone);
   }
 
   // Lignes de la Saisie. Duplication à partir des lignes brutes : la copie
@@ -27913,6 +28385,11 @@ document.getElementById('view').addEventListener('click', function (event) {
   const duplicateEmployeeButton = target.closest('button[data-duplicate-employee]');
   if (duplicateEmployeeButton) { duplicateEmployee(duplicateEmployeeButton.dataset.duplicateEmployee); return; }
 
+  // Extras : une ligne par besoin, payée à la journée (section EXTRAS).
+  if (target.dataset.addPayrollExtra !== undefined) { addPayrollExtra(); return; }
+  const removeExtra = target.closest('button[data-delete-payroll-extra]');
+  if (removeExtra) { deletePayrollExtra(removeExtra.dataset.deletePayrollExtra); return; }
+
   // Figer / défiger un taux de charges pour une société ou toutes à la fois
   // (CDG uniquement) — réunion supérieurs § 7.1, étendu le 24/09/2026
   // (Alexis : « que je puisse choisir le taux ... pour une seule ou toutes
@@ -29687,6 +30164,30 @@ document.getElementById('view').addEventListener('change', function (event) {
   // suffit : le CA de chaque service, les totaux ligne et colonne et les
   // tuiles de synthèse se recalculent tous à partir des mêmes deux
   // tableaux — aucun état intermédiaire à tenir à jour à la main.
+  // Tableau des extras : journées travaillées et montant de la journée.
+  // Le rendu complet suffit — le coût, les totaux et les lignes 6411/6451
+  // de la Saisie se recalculent tous depuis ces deux séries.
+  if (event.target.dataset.extraInput !== undefined) {
+    const parts = String(event.target.dataset.extraInput).split('|');
+    setPayrollExtraMonth(parts[1], parts[0], Number(parts[2]), event.target.value);
+    return;
+  }
+
+  if (event.target.dataset.extraName !== undefined) {
+    setPayrollExtraName(event.target.dataset.extraName, event.target.value);
+    return;
+  }
+
+  if (event.target.dataset.extraCenter !== undefined) {
+    setPayrollExtraCenter(event.target.dataset.extraCenter, event.target.value);
+    return;
+  }
+
+  if (event.target.dataset.extraRate !== undefined) {
+    setPayrollExtraEmployerRate(event.target.dataset.extraRate, event.target.value);
+    return;
+  }
+
   if (event.target.dataset.matrixInput !== undefined) {
     const parts = String(event.target.dataset.matrixInput).split('|');
     const company = activeCompany();
