@@ -77,96 +77,79 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
-### Annuler / Rétablir : l'historique passe aux écarts (07/10/2026)
+### Les directeurs lisent la ventilation du CA, sans la régler (07/10/2026)
 
-Alexis : « L'option de retour en arrière et de retour en avant ne sont pas
-fonctionnel → le retour en arrière est limité à une seule utilisation ».
+Alexis : « Dans le CA il faut que les directeurs puissent voir comment est
+ventilé le CA, sans pour autant pouvoir modifier les pourcentages ».
 
-**Ce n'était pas un réglage trop serré, mais un mécanisme qui ne tenait pas
-l'échelle.** Chaque étape d'annulation était une **copie complète** de l'état
-sérialisé, et le plafond mémoire `UNDO_MAX_BYTES` (4 Mo) comptait aussi
-l'instantané de référence. Or `/data/budget.json` pèse aujourd'hui **2,2 Mo** :
-
-- référence (2,2 Mo) + une étape (2,2 Mo) = 4,4 Mo, déjà au-delà du plafond ;
-- `trimUndoHistory()` ramenait donc la pile à **une seule** étape — d'où « le
-  retour en arrière est limité à une seule utilisation » ;
-- et comme `undo()` empilait le « rétablir » **puis** appelait
-  `trimUndoHistory()`, la branche `if (redoStack.length) redoStack.shift()`
-  jetait aussitôt l'étape qu'il venait de créer : le « retour en avant » ne
-  pouvait jamais rien rétablir.
-
-Les deux symptômes avaient donc une seule cause. Le mécanisme marchait sur un
-petit budget (c'est pourquoi les contrôles passaient : le jeu d'essai de 1 500
-lignes pèse 265 Ko, soit 14 étapes) et s'effondrait à mesure que le budget
-réel grossissait.
+La rubrique « Ventilation du CA par compte » était fermée aux directeurs
+depuis le 19/08/2026 : ils renseignaient leur CA dans la matrice couverts ×
+ticket moyen sans jamais voir où il partait. **Voir et régler sont deux
+choses différentes** — c'est la distinction que posait déjà la Saisie le
+18/09/2026 (tous les centres visibles, ceux hors périmètre en lecture seule).
 
 Ce qui change :
 
-- l'historique garde **un seul** état sérialisé de référence (`undoSnapshot`,
-  celui qui est à l'écran) et, de part et d'autre, des **écarts** —
-  `makeUndoDelta(from, to)` ne retient que le morceau de texte qui change
-  entre deux sérialisations : `{ head, tail, text }`, à relire comme « garde
-  les `head` premiers caractères, puis `text`, puis les `tail` derniers ».
-  Comparaison sur les **caractères**, pas sur les objets : aucune hypothèse
-  sur la forme de l'état, et l'écart est exact par construction ;
-- `undoHistoryBytes()` ne mesure plus que les écarts. Compter la référence
-  revenait à faire payer à l'historique une copie qui ne grandit pas avec sa
-  profondeur — c'est précisément ce qui cassait l'annulation ;
-- `trimUndoHistory()` conserve toujours **une étape de chaque côté** (`> 1`
-  des deux côtés), et retire d'abord les plus anciennes : pour « annuler » le
-  passé le plus lointain, pour « rétablir » le futur le plus lointain. Dans
-  les deux cas c'est le bout de chaîne qu'on atteint en dernier, donc le seul
-  qu'on puisse retirer sans décaler ce qui reste ;
-- `undoSerialize()` sort de l'historique ce qui ne regarde pas le budget
-  (`UNDO_IGNORED_KEYS`, qui remplace `UNDO_PRESERVED_KEYS` : une seule liste
-  pour les deux usages, puisque ce que l'historique ignore est exactement ce
-  qu'une annulation ne doit pas toucher). **Deux raisons qui tombent sur la
-  même liste** : la sécurité et la traçabilité (comptes et journaux, audit du
-  24/09/2026 — Ctrl+Z annule du budget, pas des droits), et désormais la
-  stabilité de la référence. Le journal des modifications grossit à chaque
-  case saisie, l'horodatage change à chaque sauvegarde, et `render()` recale
-  la société et l'environnement affichés (`enforceCompanyPermission`) : ces
-  valeurs varient **sans** qu'on ait rien annulé. Les laisser dans la
-  sérialisation aurait décalé la référence des écarts, et créé des étapes
-  d'annulation qui ne changent rien à l'écran ;
-- `rebaseUndoHistory(attendu)` recale la référence sur ce que l'application
-  contient **vraiment** après avoir installé une étape, et vide les deux piles
-  si elle ne correspond pas. Les écarts s'appuyant les uns sur les autres, une
-  référence décalée ferait réapparaître des chiffres faux : un historique
-  tronqué se voit (les boutons se grisent), un historique décalé non.
+- `canEditCaVentilation()` — même forme que `canEditObjectives()` et
+  `canValidateCompanyBudget()` : seul le contrôle de gestion pose les
+  pourcentages. Le directeur subit la ventilation de son CA, il ne la décide
+  pas ;
+- `caVentilationPanel()` se rend en **lecture seule** quand on n'a pas ce
+  droit : les pourcentages s'affichent en clair (`percentCell`) au lieu de
+  cases de saisie, la colonne d'actions disparaît en-tête comprise
+  (`actionsHeader`/`actionsCell`, et `accountSpan` pour les lignes pleine
+  largeur, sinon le tableau se décalerait), et le bouton « Appliquer aux
+  comptes » n'est pas rendu. **Tout le reste est montré à l'identique** :
+  montants mois par mois, totaux de contrôle, et les alertes de ventilation
+  incomplète — c'est précisément « comment est ventilé le CA » ;
+- la consigne du panneau change de voix. « Vous choisissez d'abord la part
+  qui revient à Food… » s'adresse à qui règle ; en lecture seule elle devient
+  une explication (« Voici comment votre chiffre d'affaires est réparti […]
+  ces pourcentages sont posés par le contrôle de gestion : vous les lisez
+  ici, vous ne les modifiez pas »). Écrire « vous choisissez » à quelqu'un
+  qui ne peut rien choisir lui ferait chercher des cases qui ne sont pas là.
+  Les deux états vides changent de voix pour la même raison : on n'envoie pas
+  un directeur « ajouter des comptes suivis », il n'en a pas la main ;
+- **gardes côté action**, en plus de l'interface — même principe que
+  `canEditLineStructure` : les trois branches de gestionnaire
+  (`caCategoryVentilation`, `caVentilation`, `applyCaVentilation`) refusent le
+  geste. Un pourcentage posé par qui n'en a pas le droit réécrirait le budget
+  de tous les comptes de sa catégorie ;
+- `DIRECTEUR_DEFAULT_PAGES.ca` passe de `['ca-couverts']` à
+  `['ca-couverts', 'ca-ventilation']`. Les comptes suivis, la pondération
+  jour/saison et la migration des lignes produits restent fermés.
 
-**Mémoire.** Elle baisse en même temps que la profondeur remonte : sur le
-budget de production, l'ancien mécanisme retenait 4,4 Mo pour **une** étape ;
-le nouveau retient 2,2 Mo (la référence, inévitable) plus quelques centaines
-d'octets pour les **quarante** étapes promises. Un montant corrigé ne change
-que quelques caractères dans 2,2 Mo de JSON — c'est ce morceau-là qu'il faut
-garder.
+**Ce n'est qu'un point de départ, et c'est voulu.** `DIRECTEUR_DEFAULT_PAGES`
+ne vaut que pour un directeur fraîchement créé : les fiches existantes gardent
+les rubriques qu'elles portent. Ce que chacun voit se règle dans Paramètres ›
+Droits d'accès, et nulle part ailleurs — un administrateur y ouvre (ou
+referme) la ventilation personne par personne. Au 07/10/2026, les onze
+directeurs de production ont tous des rubriques explicites dans
+`/data/droits.json` (huit ont l'onglet CA, aucun n'a `ca-ventilation`) : la
+case reste donc à cocher pour eux, et c'est à Alexis de choisir lesquels.
 
-Contrôles ajoutés et repris (`check-budget-app.mjs`, +2, un réécrit) :
+Contrôle ajouté (`check-budget-app.mjs`, +1) :
 
-- « annuler et refaire restent utilisables autant de fois qu'il y a eu de
-  modifications, même sur un budget de production » : 9 000 lignes (l'ordre de
-  grandeur du budget réel), douze modifications, douze étapes, puis douze
-  annulations qui reviennent valeur par valeur, puis douze rétablissements qui
-  repartent valeur par valeur, et aucune étape perdue en route. **Rejoué avec
-  l'ancienne économie (une copie complète par étape, la référence comptée dans
-  le plafond, le trim qui vide le « rétablir »), ce contrôle échoue sur
-  `1 !== 12`** — exactement ce que décrivait Alexis ;
-- le contrôle mémoire existant exigeait « au moins une étape » : il passait
-  donc avec le bug. Il exige maintenant les **quarante** étapes sur un budget
-  volumineux, et que les quarante écarts pèsent **moins qu'une seule copie** de
-  l'état (rejoué à l'ancienne : `14 !== 40`) ;
-- « l'écart entre deux états est exact » : dix cas de `makeUndoDelta` /
-  `applyUndoDelta` (identique, un caractère au milieu, plus long, plus court,
-  changement au tout début et à la toute fin, tout change, vers et depuis une
-  chaîne vide, répétitions trompeuses), le coût d'un chiffre corrigé dans un
-  gros état (moins de vingt caractères), et le fait que journal, horodatage et
-  société affichée n'entrent pas dans l'historique alors qu'un montant, lui, y
-  entre.
+- « un directeur LIT la ventilation de son chiffre d'affaires, sans pouvoir
+  toucher aux pourcentages » : la rubrique ouverte à un directeur et les deux
+  autres toujours fermées ; le panneau vu par un contrôleur (ses trois sortes
+  de contrôles présentes) ; le même panneau vu par un directeur — les
+  pourcentages en clair (70 % / 30 %), les comptes nommés, les lignes de
+  contrôle, le montant ventilé du mois (3 500 € pour 70 % de 5 000 €), et
+  **aucun** `<input`, aucune des quatre commandes d'écriture, ni la consigne
+  du contrôleur ; la largeur des lignes pleine largeur (15 colonnes en lecture
+  seule, 16 avec la colonne d'actions) ; et la présence des trois gardes dans
+  les gestionnaires.
 
-Le contrôle de sécurité du 24/09/2026 (« Ctrl+Z ne rend jamais un droit retiré
-ni n'efface le journal ») passe sans modification : la liste a changé de nom et
-s'est allongée, pas de rôle. `APP_BUILD` passe à `2026-10-07.3`.
+Le panneau est appelé directement plutôt que lu dans le rendu complet :
+`applyPagePermissions()` élague le vrai DOM, que le harnais ne simule pas
+(`querySelectorAll` y rend un tableau vide). La visibilité se vérifie donc par
+`canAccessPage`, le contenu par le panneau lui-même.
+
+Le contrôle échoue si l'on retire la correction, dans les trois sens : panneau
+toujours modifiable (`70 %` introuvable, les cases ayant repris la place du
+texte), rubrique refermée par défaut, ou garde de gestionnaire retirée.
+`APP_BUILD` passe à `2026-10-07.4`.
 
 ### La colonne C de la matrice d'import devient le nom de la dépense (05/10/2026)
 
@@ -11270,7 +11253,7 @@ const app = await importApp(
     '  clearSignInAttempts, randomBytes, randomHex, exportedPayloadIsEncrypted };\n' +
     'export { setUserScope, allowedCompanyIds, allowedCostCenterIds, isCompanyAllowed,\n' +
     '  visibleCompanies, enforceCompanyPermission, rawLinesOf,\n' +
-    '  isCenterAllowed, visibleCostCenters, canEditLineStructure,\n' +
+    '  isCenterAllowed, visibleCostCenters, canEditLineStructure, canEditCaVentilation,\n' +
     '  scopeCenterRowsHtml, applyRoleDefaultCentersToEditor, DIRECTEUR_DEFAULT_COST_CENTERS,\n' +
     '  companyIdsInSuperGroupRaw, companyIdsInEnvironments, userEnvironmentIds, environmentById,\n' +
     '  availableEnvironments, canSeeAllEnvironments, activeEnvironmentId, setActiveEnvironment,\n' +
@@ -21487,6 +21470,144 @@ await checkAsync('Autorisations : seul le statut administrateur ouvre l’onglet
   }
 });
 
+await checkAsync('CA : un directeur LIT la ventilation de son chiffre d’affaires, sans pouvoir toucher aux pourcentages', async () => {
+  // Alexis, 07/10/2026 : « dans le CA il faut que les directeurs puissent
+  // voir comment est ventilé le CA, sans pour autant pouvoir modifier les
+  // pourcentages ».
+  //
+  // Le panneau est appelé directement plutôt que lu dans le rendu complet :
+  // `applyPagePermissions()` élague le vrai DOM, que le harness ne simule
+  // pas (`querySelectorAll` y rend un tableau vide). La VISIBILITÉ se
+  // vérifie donc par `canAccessPage`, et le CONTENU par le panneau lui-même.
+  const saved = {
+    users: (app.state.users || []).slice(), authLog: (app.state.authLog || []).slice(),
+    companies: app.state.companies.slice(), active: app.state.activeCompany,
+    lines: app.state.lines.slice(), caLines: (app.state.caLines || []).slice(),
+    matrix: app.state.serviceMatrix,
+    ventilation: JSON.parse(JSON.stringify(app.state.caVentilation || {})),
+    categoryVentilation: JSON.parse(JSON.stringify(app.state.caCategoryVentilation || {})),
+    tab: app.__getTab(),
+  };
+  try {
+    authFixture();
+    const company = { id: 'vent_ro_c', name: 'Ventilation Lecture', currency: 'EUR', year: 2026, groupId: null };
+    app.state.companies = [company];
+    app.state.activeCompany = company.id;
+    app.state.lines = [];
+    app.state.caLines = [];
+    app.state.serviceMatrix = {};
+    app.state.caVentilation = {};
+    app.state.caCategoryVentilation = {};
+    app.resetStateIndexes();
+
+    // Un CA à ventiler (5 000 € en janvier), deux comptes de produits, et
+    // des pourcentages posés : 70 % Food, 30 % Beverage.
+    app.setServiceMatrixValue(company.id, 'covers', 'lunch', '2026-01-05', 100);
+    app.setServiceMatrixValue(company.id, 'ticket', 'lunch', '2026-01-05', 50);
+    const food = app.addCaLine(company.id, '70101100', 'Nourriture');
+    app.setCaCategory(food.id, 'food');
+    const bev = app.addCaLine(company.id, '70102100', 'Boissons');
+    app.setCaCategory(bev.id, 'beverage');
+    app.setCaCategoryVentilationPercent(company.id, 'food', 70);
+    app.setCaCategoryVentilationPercent(company.id, 'beverage', 30);
+    app.setCaVentilationPercent(company.id, food.account, 100);
+    app.setCaVentilationPercent(company.id, bev.account, 100);
+
+    await app.createUser({ username: 'vent_cdg', role: 'controleur', password: 'MotDePasse1!xyz', isAdmin: true });
+    const directeur = await app.createUser({ username: 'vent_dir', role: 'directeur', password: 'MotDePasse1!xyz' });
+    app.setUserScope(directeur.id, null, ['F&B']);
+
+    // La rubrique est OUVERTE au directeur, les deux autres réglages non.
+    assert.ok(app.canAccessPage(directeur, 'ca', 'ca-ventilation'),
+      'la ventilation doit être visible par un directeur');
+    for (const page of ['ca-comptes', 'ca-ponderation']) {
+      assert.ok(!app.canAccessPage(directeur, 'ca', page),
+        '« ' + page + ' » reste hors du périmètre d’un directeur');
+    }
+
+    // --- Le contrôle de gestion : tout est réglable. -------------------
+    await app.signIn('vent_cdg', 'MotDePasse1!xyz');
+    app.__setTab('ca');
+    const cdgPanel = app.caVentilationPanel(company);
+    assert.equal(app.canEditCaVentilation(), true, 'le contrôle de gestion règle la ventilation');
+    assert.ok(cdgPanel.includes('data-ca-category-ventilation="food"'),
+      'le contrôleur doit avoir une case pour la part de catégorie');
+    assert.ok(cdgPanel.includes('data-ca-ventilation="' + food.account + '"'),
+      'et une case pour la part du compte dans sa catégorie');
+    assert.ok(cdgPanel.includes('data-apply-ca-ventilation='),
+      'et le bouton « Appliquer aux comptes »');
+    assert.ok(cdgPanel.includes('data-delete-ca-account="' + food.id + '"'),
+      'et le bouton « retirer » de chaque compte');
+
+    // --- Le directeur : la même rubrique, en lecture. -----------------
+    app.signOut();
+    await app.signIn('vent_dir', 'MotDePasse1!xyz');
+    app.__setTab('ca');
+    const dirPanel = app.caVentilationPanel(company);
+    assert.equal(app.canEditCaVentilation(), false, 'un directeur ne règle pas la ventilation');
+
+    // Elle montre bien la répartition — c'est tout l'objet de la demande :
+    // pourcentages en clair, comptes nommés, montants mois par mois,
+    // lignes de contrôle.
+    assert.ok(dirPanel.includes('70 %') && dirPanel.includes('30 %'),
+      'les parts de catégorie doivent se lire en clair (70 % / 30 %)');
+    assert.ok(dirPanel.includes('Nourriture') && dirPanel.includes('Boissons'),
+      'les comptes entre lesquels le CA est réparti doivent être nommés');
+    assert.ok(dirPanel.includes('Total catégories') && dirPanel.includes('Total ventilé'),
+      'les lignes de contrôle restent affichées : elles disent si tout le CA est réparti');
+    assert.ok(dirPanel.includes(app.money(3500)),
+      'le montant ventilé du mois doit s’afficher (70 % de 5 000 € = 3 500 €)');
+
+    // Mais rien n'y est modifiable.
+    assert.ok(!dirPanel.includes('<input'),
+      'aucune case de saisie dans la ventilation vue par un directeur');
+    assert.ok(!dirPanel.includes('data-ca-category-ventilation='),
+      'aucune case de part de catégorie pour un directeur');
+    assert.ok(!dirPanel.includes('data-ca-ventilation='),
+      'aucune case de part de compte pour un directeur');
+    assert.ok(!dirPanel.includes('data-apply-ca-ventilation='),
+      'pas de bouton « Appliquer aux comptes » pour un directeur');
+    assert.ok(!dirPanel.includes('data-delete-ca-account='),
+      'pas de bouton « retirer » : un directeur ne retire pas un compte suivi');
+    // La consigne ne doit pas lui parler de cases qui n'existent pas.
+    assert.ok(!dirPanel.includes('Vous choisissez d’abord la part'),
+      'la consigne du contrôleur ne doit pas s’afficher à un directeur');
+    assert.ok(dirPanel.includes('vous ne les modifiez pas'),
+      'le directeur doit lire qui pose ces pourcentages');
+
+    // Les deux tableaux gardent une largeur cohérente : la colonne
+    // d'actions disparaît avec les boutons, en-tête comprise (sinon les
+    // lignes de titre de catégorie, en `colspan`, décaleraient le tableau).
+    const dirSpans = (dirPanel.match(/colspan="(\d+)"/g) || []);
+    assert.ok(dirSpans.length > 0, 'le panneau doit comporter des lignes de titre en colspan');
+    assert.ok(dirSpans.every((c) => c === 'colspan="15"'),
+      'en lecture seule, les lignes pleine largeur couvrent 15 colonnes (compte + part + 12 mois + année), trouvé : ' +
+      dirSpans.join(', '));
+    assert.ok((cdgPanel.match(/colspan="16"/g) || []).length > 0,
+      'avec la colonne d’actions, elles en couvrent 16');
+
+    // Garde côté action, en plus de l'interface : le geste est refusé même
+    // atteint autrement (même principe que `canEditLineStructure`).
+    for (const branch of ['caCategoryVentilation', 'caVentilation', 'applyCaVentilation']) {
+      const at = appSource.indexOf('dataset.' + branch + ' !== undefined');
+      assert.ok(at > 0, 'branche « ' + branch + ' » introuvable dans les gestionnaires');
+      assert.ok(appSource.slice(at, at + 700).includes('canEditCaVentilation()'),
+        'la branche « ' + branch + ' » doit refuser le geste sans le droit de régler la ventilation');
+    }
+  } finally {
+    app.signOut();
+    app.state.users = saved.users; app.state.authLog = saved.authLog;
+    app.state.companies = saved.companies; app.state.activeCompany = saved.active;
+    app.state.lines = saved.lines; app.state.caLines = saved.caLines;
+    app.state.serviceMatrix = saved.matrix;
+    app.state.caVentilation = saved.ventilation;
+    app.state.caCategoryVentilation = saved.categoryVentilation;
+    app.resetStateIndexes();
+    app.__setTab(saved.tab);
+    app.render();
+  }
+});
+
 await checkAsync('Autorisations : la matrice ouvre onglet par onglet et rubrique par rubrique', async () => {
   const saved = { users: (app.state.users || []).slice(), authLog: (app.state.authLog || []).slice() };
   try {
@@ -21501,10 +21622,15 @@ await checkAsync('Autorisations : la matrice ouvre onglet par onglet et rubrique
       'un onglet hors périmètre reste fermé par défaut');
 
     // Périmètre arrêté le 19/08/2026 : le directeur voit son CA mais pas
-    // les réglages de l'onglet qui relèvent du contrôle de gestion.
+    // les réglages de l'onglet qui relèvent du contrôle de gestion. Depuis
+    // le 07/10/2026 la VENTILATION fait exception : il la voit, en lecture
+    // seule (Alexis : « qu'ils puissent voir comment est ventilé le CA,
+    // sans pour autant pouvoir modifier les pourcentages »).
     assert.ok(app.canAccessPage(directeur, 'ca', 'ca-couverts'),
       'la matrice couverts × ticket moyen est à lui');
-    for (const page of ['ca-comptes', 'ca-ponderation', 'ca-ventilation']) {
+    assert.ok(app.canAccessPage(directeur, 'ca', 'ca-ventilation'),
+      'la ventilation du CA est désormais ouverte par défaut à un directeur, en lecture seule');
+    for (const page of ['ca-comptes', 'ca-ponderation', 'ca-migration']) {
       assert.ok(!app.canAccessPage(directeur, 'ca', page),
         `« ${page} » relève du contrôle de gestion, pas du directeur`);
     }

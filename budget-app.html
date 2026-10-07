@@ -3407,7 +3407,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-07.3';
+const APP_BUILD = '2026-10-07.4';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -7693,13 +7693,22 @@ const DIRECTEUR_DEFAULT_COST_CENTERS = ['F&B'];
  * toutes ses rubriques.
  *
  * L'onglet CA en est le seul cas aujourd'hui : le directeur y renseigne
- * son chiffre d'affaires (matrice couverts × ticket moyen) mais ne touche
- * ni aux comptes suivis, ni à la pondération jour/saison, ni à la
- * ventilation par compte — des réglages qui relèvent du contrôle de
- * gestion.
+ * son chiffre d'affaires (matrice couverts × ticket moyen) et LIT la
+ * ventilation de ce CA entre les comptes — Alexis, 07/10/2026 : « dans le
+ * CA il faut que les directeurs puissent voir comment est ventilé le CA,
+ * sans pour autant pouvoir modifier les pourcentages ». La rubrique est
+ * rendue en lecture seule pour lui (voir `canEditCaVentilation`), d'où
+ * l'ouverture par défaut : la voir et la régler sont deux choses
+ * différentes. Il ne touche en revanche ni aux comptes suivis, ni à la
+ * pondération jour/saison, ni à la migration des lignes produits.
+ *
+ * Ce n'est qu'un point de DÉPART : les directeurs déjà en place gardent
+ * les rubriques inscrites dans leur fiche, et un administrateur ouvre (ou
+ * referme) celle-ci personne par personne dans Paramètres › Droits
+ * d'accès — ce que chacun voit se règle là, et nulle part ailleurs.
  */
 const DIRECTEUR_DEFAULT_PAGES = {
-  ca: ['ca-couverts'],
+  ca: ['ca-couverts', 'ca-ventilation'],
 };
 
 function roleLabel(roleId) {
@@ -18839,7 +18848,52 @@ function caDetailHtml(company, caLine) {
  *      relatif au montant que SA catégorie a reçu à l'étape 1 (pas au CA
  *      total).
  */
+/**
+ * Qui POSE les pourcentages de ventilation ? Le contrôle de gestion, et lui
+ * seul — Alexis, 07/10/2026 : « dans le CA il faut que les directeurs
+ * puissent voir comment est ventilé le CA, sans pour autant pouvoir modifier
+ * les pourcentages ».
+ *
+ * Même forme que `canEditObjectives()` / `canValidateCompanyBudget()` : le
+ * directeur subit la ventilation de son CA, il ne la décide pas. Il la LIT
+ * en revanche en entier, à condition que la rubrique `ca-ventilation` lui
+ * soit ouverte dans Paramètres › Droits d'accès — ce qu'une personne voit se
+ * règle là, et nulle part ailleurs. Voir `DIRECTEUR_DEFAULT_PAGES`, qui
+ * l'ouvre aux directeurs créés désormais.
+ */
+function canEditCaVentilation() {
+  if (!authEnabled()) return true;
+  const user = currentUser();
+  return Boolean(user) && user.role === 'controleur';
+}
+
 function caVentilationPanel(company) {
+  // Lecture seule pour un directeur : les pourcentages s'affichent en
+  // clair plutôt que dans des cases, la colonne d'actions et le bouton
+  // « Appliquer aux comptes » disparaissent. Tout le reste — montants mois
+  // par mois, totaux de contrôle, alertes de ventilation incomplète — est
+  // montré à l'identique : c'est précisément « comment est ventilé le CA ».
+  const canEdit = canEditCaVentilation();
+  /** Une cellule « Part » : une case à saisir, ou le pourcentage en clair. */
+  const percentCell = function (attribute, key, percent) {
+    if (!canEdit) {
+      return '<td style="width:110px" class="' + (percent ? 'num' : 'num muted') + '">' +
+        (percent ? formatRateValue(Math.round(percent * 100) / 100) + ' %' : '—') + '</td>';
+    }
+    return '<td style="width:110px"><input type="number" min="0" max="100" step="1" style="width:72px" ' +
+      attribute + '="' + escapeHtml(key) + '" value="' + (percent || '') +
+      '" placeholder="0" /> %</td>';
+  };
+  /** La colonne d'actions (« retirer ») n'existe que pour qui peut agir. */
+  const actionsHeader = canEdit ? '<th></th>' : '';
+  const actionsCell = function (caLineId) {
+    if (!canEdit) return '';
+    return '<td><div class="row-actions">' +
+      '<button class="mini mini-danger" data-delete-ca-account="' + caLineId + '">retirer</button>' +
+      '</div></td>';
+  };
+  /** Largeur du tableau des comptes : compte + part + douze mois + année (+ actions). */
+  const accountSpan = MONTHS + 3 + (canEdit ? 1 : 0);
   const revenue = matrixMonthlyRevenue(company);
   const yearRevenue = revenue.reduce(function (s, v) { return s + v; }, 0);
   const allLines = caLinesOf(company.id);
@@ -18853,10 +18907,16 @@ function caVentilationPanel(company) {
   // d'afficher un tableau de zéros qui laisserait croire à un bug.
   if (!yearRevenue) {
     return panel('ca-ventilation', 'Ventilation du CA par compte',
-      emptyState('Le directeur n’a pas encore renseigné sa matrice couverts × ticket moyen pour cet exercice. ' +
-        'La ventilation s’applique sur le chiffre d’affaires qu’elle produit, mois par mois — ' +
-        'elle attend donc cette saisie.'),
-      { open: true, meta: 'en attente du directeur' });
+      emptyState(canEdit
+        ? 'Le directeur n’a pas encore renseigné sa matrice couverts × ticket moyen pour cet exercice. ' +
+          'La ventilation s’applique sur le chiffre d’affaires qu’elle produit, mois par mois — ' +
+          'elle attend donc cette saisie.'
+        // Le directeur, lui, est la personne qui doit remplir cette matrice :
+        // on le lui dit à la première personne plutôt que de parler de lui.
+        : 'La ventilation répartit le chiffre d’affaires de votre matrice couverts × ticket moyen, ' +
+          'qui n’est pas encore renseignée pour cet exercice. Remplissez-la ci-dessus : la répartition ' +
+          'apparaîtra ici.'),
+      { open: true, meta: canEdit ? 'en attente du directeur' : 'en attente de la matrice' });
   }
   if (!lines.length) {
     // Alexis, 02/09/2026 : « fait en sorte que je puisse ajouter des
@@ -18866,8 +18926,13 @@ function caVentilationPanel(company) {
     const message = allLines.length
       ? 'Tous les comptes suivis sont classés « Hors exploitation » (voir « Comptes suivis ») : ' +
         'ils se saisissent en montant direct, mois par mois, et ne se ventilent pas sur le CA de la matrice.'
-      : 'Aucun compte de produits suivi : ajoutez-en depuis « Comptes suivis » ci-dessous ' +
-        'pour pouvoir répartir le chiffre d’affaires de la matrice entre eux.';
+      : (canEdit
+        ? 'Aucun compte de produits suivi : ajoutez-en depuis « Comptes suivis » ci-dessous ' +
+          'pour pouvoir répartir le chiffre d’affaires de la matrice entre eux.'
+        // En lecture seule, inutile d'envoyer un directeur ajouter des
+        // comptes : il n'en a pas la main. On dit ce qui manque, et à qui.
+        : 'Le contrôle de gestion n’a pas encore désigné les comptes de produits entre lesquels répartir ' +
+          'votre chiffre d’affaires : il n’y a donc rien à afficher ici pour l’instant.');
     return panel('ca-ventilation', 'Ventilation du CA par compte',
       emptyState(message),
       { open: true, meta: money(yearRevenue) + ' € à ventiler' });
@@ -18895,9 +18960,7 @@ function caVentilationPanel(company) {
       return '<td class="num' + (share ? '' : ' muted') + '">' + (share ? money(share) : '—') + '</td>';
     }).join('');
     return '<tr><td class="sticky-col"><strong>' + escapeHtml(label) + '</strong></td>' +
-      '<td style="width:110px"><input type="number" min="0" max="100" step="1" style="width:72px" ' +
-      'data-ca-category-ventilation="' + id + '" value="' + (percent || '') +
-      '" placeholder="0" /> %</td>' + cells +
+      percentCell('data-ca-category-ventilation', id, percent) + cells +
       '<td class="num"><strong>' + money((yearRevenue * percent) / 100) + '</strong></td></tr>';
   }).join('');
 
@@ -18932,7 +18995,7 @@ function caVentilationPanel(company) {
     const categoryYearAmount = (yearRevenue * categoryPct) / 100;
     const categoryLines = lines.filter(function (c) { return caCategoryOf(c) === categoryId; });
 
-    const header = '<tr><td colspan="' + (MONTHS + 4) + '" style="padding-top:14px;' +
+    const header = '<tr><td colspan="' + accountSpan + '" style="padding-top:14px;' +
       'font-weight:600;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.03em">' +
       escapeHtml(categoryLabel) + (categoryPct ? ' — ' + money(categoryYearAmount) + ' € à ventiler entre les comptes' : '') +
       '</td></tr>';
@@ -18941,7 +19004,7 @@ function caVentilationPanel(company) {
       // Un % posé sur la catégorie mais aucun compte pour le recevoir :
       // signalé plutôt que silencieusement perdu.
       if (!categoryPct) return '';
-      return header + '<tr><td colspan="' + (MONTHS + 4) + '"><p class="vp-alert" style="margin:6px 0 0;font-size:13px">⚠ ' +
+      return header + '<tr><td colspan="' + accountSpan + '"><p class="vp-alert" style="margin:6px 0 0;font-size:13px">⚠ ' +
         formatRateValue(categoryPct) + ' % du chiffre d’affaires sont affectés à ' + escapeHtml(categoryLabel) +
         ', mais aucun compte ' + escapeHtml(categoryLabel) + ' n’est suivi.</p></td></tr>';
     }
@@ -18952,18 +19015,15 @@ function caVentilationPanel(company) {
         const share = (amount * percent) / 100;
         return '<td class="num' + (share ? '' : ' muted') + '">' + (share ? money(share) : '—') + '</td>';
       }).join('');
+      // Le bouton « retirer » reprend celui du panneau « Comptes suivis »
+      // (même comportement, même confirmation) : retirer un compte d'ici ne
+      // doit pas obliger à descendre jusqu'à l'autre panneau. Absent en
+      // lecture seule — un directeur ne retire pas un compte suivi.
       return '<tr><td class="sticky-col"><strong>' + escapeHtml(caLine.name || caLine.account) + '</strong>' +
         '<div class="muted" style="font-size:12px">' + caLine.account + '</div></td>' +
-        '<td style="width:110px"><input type="number" min="0" max="100" step="1" style="width:72px" ' +
-        'data-ca-ventilation="' + escapeHtml(caLine.account) + '" value="' + (percent || '') +
-        '" placeholder="0" /> %</td>' + cells +
+        percentCell('data-ca-ventilation', caLine.account, percent) + cells +
         '<td class="num"><strong>' + money((categoryYearAmount * percent) / 100) + '</strong></td>' +
-        // Même bouton, même comportement (avec confirmation) que le panneau
-        // « Comptes suivis » — retirer un compte d'ici ne doit pas obliger à
-        // descendre jusqu'à l'autre panneau pour le faire.
-        '<td><div class="row-actions">' +
-        '<button class="mini mini-danger" data-delete-ca-account="' + caLine.id + '">retirer</button>' +
-        '</div></td></tr>';
+        actionsCell(caLine.id) + '</tr>';
     }).join('');
 
     // Ligne de contrôle DE LA CATÉGORIE : la somme des pourcentages de ses
@@ -18979,7 +19039,7 @@ function caVentilationPanel(company) {
       '<strong>Total ventilé ' + escapeHtml(categoryLabel) + '</strong></td>' +
       '<td><strong>' + formatRateValue(Math.round(accountTotal * 100) / 100) + ' %</strong></td>' +
       accountTotalCells + '<td class="num"><strong>' + money((categoryYearAmount * accountTotal) / 100) +
-      '</strong></td><td></td></tr>';
+      '</strong></td>' + (canEdit ? '<td></td>' : '') + '</tr>';
 
     if (categoryPct && Math.abs(accountRemaining) >= 0.005) {
       accountNotices.push(accountRemaining > 0
@@ -19009,7 +19069,7 @@ function caVentilationPanel(company) {
   const eventYearRevenue = eventRevenue.reduce(function (s, v) { return s + v; }, 0);
   let eventSection = '';
   if (eventLines.length || eventYearRevenue) {
-    const eventHeader = '<tr><td colspan="' + (MONTHS + 4) + '" style="padding-top:14px;' +
+    const eventHeader = '<tr><td colspan="' + accountSpan + '" style="padding-top:14px;' +
       'font-weight:600;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.03em">' +
       'Event' + (eventYearRevenue ? ' — ' + money(eventYearRevenue) + ' € (service Event de la matrice, sans pourcentage)' : '') +
       '</td></tr>';
@@ -19017,7 +19077,7 @@ function caVentilationPanel(company) {
       // Le service Event produit du CA, mais aucun compte n'est encore
       // classé Event pour le recevoir — signalé plutôt que silencieusement
       // perdu, comme pour Food/Beverage.
-      eventSection = eventHeader + '<tr><td colspan="' + (MONTHS + 4) + '"><p class="vp-alert" style="margin:6px 0 0;font-size:13px">⚠ ' +
+      eventSection = eventHeader + '<tr><td colspan="' + accountSpan + '"><p class="vp-alert" style="margin:6px 0 0;font-size:13px">⚠ ' +
         'Le service Event de la matrice produit ' + money(eventYearRevenue) + ' € sur l’année, mais aucun compte ' +
         'n’est classé Event (voir « Comptes suivis »).</p></td></tr>';
     } else if (eventLines.length === 1) {
@@ -19030,9 +19090,7 @@ function caVentilationPanel(company) {
         '<td style="width:110px" class="muted" title="Seul compte Event : il reçoit tout le CA du service, sans réglage">' +
         '100 % 🔒</td>' + cells +
         '<td class="num"><strong>' + money(eventYearRevenue) + '</strong></td>' +
-        '<td><div class="row-actions">' +
-        '<button class="mini mini-danger" data-delete-ca-account="' + caLine.id + '">retirer</button>' +
-        '</div></td></tr>';
+        actionsCell(caLine.id) + '</tr>';
     } else {
       const eventGroupRows = eventLines.map(function (caLine) {
         const percent = caVentilationPercent(company.id, caLine.account);
@@ -19042,13 +19100,9 @@ function caVentilationPanel(company) {
         }).join('');
         return '<tr><td class="sticky-col"><strong>' + escapeHtml(caLine.name || caLine.account) + '</strong>' +
           '<div class="muted" style="font-size:12px">' + caLine.account + '</div></td>' +
-          '<td style="width:110px"><input type="number" min="0" max="100" step="1" style="width:72px" ' +
-          'data-ca-ventilation="' + escapeHtml(caLine.account) + '" value="' + (percent || '') +
-          '" placeholder="0" /> %</td>' + cells +
+          percentCell('data-ca-ventilation', caLine.account, percent) + cells +
           '<td class="num"><strong>' + money((eventYearRevenue * percent) / 100) + '</strong></td>' +
-          '<td><div class="row-actions">' +
-          '<button class="mini mini-danger" data-delete-ca-account="' + caLine.id + '">retirer</button>' +
-          '</div></td></tr>';
+          actionsCell(caLine.id) + '</tr>';
       }).join('');
       const eventAccountTotal = caAccountVentilationTotal(company.id, 'event');
       const eventRemaining = 100 - eventAccountTotal;
@@ -19060,7 +19114,7 @@ function caVentilationPanel(company) {
         '<strong>Total ventilé Event</strong></td>' +
         '<td><strong>' + formatRateValue(Math.round(eventAccountTotal * 100) / 100) + ' %</strong></td>' +
         eventTotalCells + '<td class="num"><strong>' + money((eventYearRevenue * eventAccountTotal) / 100) +
-        '</strong></td><td></td></tr>';
+        '</strong></td>' + (canEdit ? '<td></td>' : '') + '</tr>';
       let eventNotice = '';
       if (Math.abs(eventRemaining) >= 0.005) {
         eventNotice = eventRemaining > 0
@@ -19076,28 +19130,43 @@ function caVentilationPanel(company) {
     }
   }
 
+  // La consigne s'adresse à qui règle les pourcentages ; en lecture seule
+  // elle devient une EXPLICATION de ce qui est affiché. Écrire « vous
+  // choisissez » à un directeur qui ne peut rien choisir lui ferait chercher
+  // des cases de saisie qui ne sont pas là.
+  const intro = canEdit
+    ? 'Le directeur décide du chiffre d’affaires mois par mois dans sa matrice couverts × ticket moyen. ' +
+      'Vous choisissez d’abord la part de ce CA qui revient à Food et à Beverage, puis, à l’intérieur de chaque ' +
+      'catégorie, la part qui revient à chacun de ses comptes de produits (classés dans « Comptes suivis »). ' +
+      'Event est différent : le CA de son service dans la matrice revient en totalité à la catégorie, ' +
+      'automatiquement — pas de pourcentage à poser, sauf si plusieurs comptes se partagent cette catégorie, ' +
+      'auquel cas vous répartissez ce montant entre eux comme pour Food/Beverage. « Appliquer » écrit ces ' +
+      'montants dans les comptes suivis, répartis sur les jours de chaque mois. Les comptes ' +
+      '« Hors exploitation » n’apparaissent pas ici : ils se saisissent en montant direct, mois par mois, dans ' +
+      '« Comptes suivis ».'
+    : 'Voici comment votre chiffre d’affaires est réparti. Le CA que vous renseignez dans la matrice couverts × ' +
+      'ticket moyen est d’abord partagé entre Food et Beverage, puis, à l’intérieur de chaque catégorie, entre ' +
+      'les comptes de produits. Le CA du service Event revient en totalité à la catégorie Event. Ces ' +
+      'pourcentages sont posés par le contrôle de gestion : vous les lisez ici, vous ne les modifiez pas. Les ' +
+      'comptes « Hors exploitation » n’y figurent pas — ils se saisissent en montant direct.';
+
   return panel('ca-ventilation', 'Ventilation du CA par compte',
-    '<p class="muted" style="margin:0 0 12px;font-size:13px">Le directeur décide du chiffre d’affaires mois par mois ' +
-    'dans sa matrice couverts × ticket moyen. Vous choisissez d’abord la part de ce CA qui revient à Food et à ' +
-    'Beverage, puis, à l’intérieur de chaque catégorie, la part qui revient à chacun de ses comptes de produits ' +
-    '(classés dans « Comptes suivis »). Event est différent : le CA de son service dans la matrice revient en ' +
-    'totalité à la catégorie, automatiquement — pas de pourcentage à poser, sauf si plusieurs comptes se partagent ' +
-    'cette catégorie, auquel cas vous répartissez ce montant entre eux comme pour Food/Beverage. « Appliquer » écrit ' +
-    'ces montants dans les comptes suivis, répartis sur les jours de chaque mois. Les comptes « Hors exploitation » ' +
-    'n’apparaissent pas ici : ils se saisissent en montant direct, mois par mois, dans « Comptes suivis ».</p>' +
+    '<p class="muted" style="margin:0 0 12px;font-size:13px">' + intro + '</p>' +
     '<div class="table-wrap"><table><thead><tr>' +
     '<th class="sticky-col" style="width:' + colWidths.caCompte + 'px">Catégorie</th><th>Part du CA</th>' +
     headerMonths + '<th class="num">Année</th></tr></thead>' +
     '<tbody>' + categoryRows + categoryControlRow + '</tbody></table></div>' + categoryNotice +
     '<div class="table-wrap" style="margin-top:18px"><table><thead><tr>' +
     '<th class="sticky-col" style="width:' + colWidths.caCompte + 'px">Compte</th><th>Part de la catégorie</th>' +
-    headerMonths + '<th class="num">Année</th><th></th></tr></thead>' +
+    headerMonths + '<th class="num">Année</th>' + actionsHeader + '</tr></thead>' +
     '<tbody>' + rows + eventSection + '</tbody></table></div>' + accountNotices.join('') +
-    '<div class="row" style="gap:8px;margin-top:12px">' +
-    '<button class="action" data-apply-ca-ventilation="' + escapeHtml(company.id) + '"' +
-    ((categoryTotalPercent || eventYearRevenue) ? '' : ' disabled') +
-    ' title="Écrit ces montants dans les comptes de produits suivis">Appliquer aux comptes</button>' +
-    '</div>',
+    (canEdit
+      ? '<div class="row" style="gap:8px;margin-top:12px">' +
+        '<button class="action" data-apply-ca-ventilation="' + escapeHtml(company.id) + '"' +
+        ((categoryTotalPercent || eventYearRevenue) ? '' : ' disabled') +
+        ' title="Écrit ces montants dans les comptes de produits suivis">Appliquer aux comptes</button>' +
+        '</div>'
+      : ''),
     // Alexis, 02/09/2026 : « fait en sorte que je puisse ajouter des
     // comptes dans Comptes suivis et non la ventilation » — le bouton
     // d'ajout, qui vivait ici (voir l'historique), vit désormais
@@ -28431,6 +28500,9 @@ document.getElementById('view').addEventListener('click', function (event) {
   // et annulable (Ctrl+Z) — voir `applyCaVentilation`.
   if (target.dataset.applyCaVentilation !== undefined) {
     const companyId = target.dataset.applyCaVentilation;
+    // « Appliquer » écrit dans les comptes de produits : c'est la main du
+    // contrôle de gestion. Le bouton n'est pas rendu en lecture seule.
+    if (!canEditCaVentilation()) return;
     captureUndoStep();
     // La ventilation réécrit le budget de plusieurs comptes CA d'un coup :
     // chacun est consigné avec son avant/après annuel.
@@ -30134,6 +30206,11 @@ document.getElementById('view').addEventListener('change', function (event) {
   if (event.target.dataset.caCategoryVentilation !== undefined) {
     const company = activeCompany();
     if (!company) return;
+    // Un directeur LIT la ventilation sans la régler : les cases ne sont
+    // même pas rendues pour lui (`caVentilationPanel`), mais le geste est
+    // refusé ici aussi — un pourcentage posé par qui n'en a pas le droit
+    // réécrirait le budget de tous les comptes de la catégorie.
+    if (!canEditCaVentilation()) return;
     setCaCategoryVentilationPercent(company.id, event.target.dataset.caCategoryVentilation, event.target.value);
     render();
     return;
@@ -30146,6 +30223,7 @@ document.getElementById('view').addEventListener('change', function (event) {
   if (event.target.dataset.caVentilation !== undefined) {
     const company = activeCompany();
     if (!company) return;
+    if (!canEditCaVentilation()) return;
     setCaVentilationPercent(company.id, event.target.dataset.caVentilation, event.target.value);
     render();
     return;

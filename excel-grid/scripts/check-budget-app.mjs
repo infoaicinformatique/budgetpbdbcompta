@@ -498,7 +498,7 @@ const app = await importApp(
     '  clearSignInAttempts, randomBytes, randomHex, exportedPayloadIsEncrypted };\n' +
     'export { setUserScope, allowedCompanyIds, allowedCostCenterIds, isCompanyAllowed,\n' +
     '  visibleCompanies, enforceCompanyPermission, rawLinesOf,\n' +
-    '  isCenterAllowed, visibleCostCenters, canEditLineStructure,\n' +
+    '  isCenterAllowed, visibleCostCenters, canEditLineStructure, canEditCaVentilation,\n' +
     '  scopeCenterRowsHtml, applyRoleDefaultCentersToEditor, DIRECTEUR_DEFAULT_COST_CENTERS,\n' +
     '  companyIdsInSuperGroupRaw, companyIdsInEnvironments, userEnvironmentIds, environmentById,\n' +
     '  availableEnvironments, canSeeAllEnvironments, activeEnvironmentId, setActiveEnvironment,\n' +
@@ -10715,6 +10715,144 @@ await checkAsync('Autorisations : seul le statut administrateur ouvre l’onglet
   }
 });
 
+await checkAsync('CA : un directeur LIT la ventilation de son chiffre d’affaires, sans pouvoir toucher aux pourcentages', async () => {
+  // Alexis, 07/10/2026 : « dans le CA il faut que les directeurs puissent
+  // voir comment est ventilé le CA, sans pour autant pouvoir modifier les
+  // pourcentages ».
+  //
+  // Le panneau est appelé directement plutôt que lu dans le rendu complet :
+  // `applyPagePermissions()` élague le vrai DOM, que le harness ne simule
+  // pas (`querySelectorAll` y rend un tableau vide). La VISIBILITÉ se
+  // vérifie donc par `canAccessPage`, et le CONTENU par le panneau lui-même.
+  const saved = {
+    users: (app.state.users || []).slice(), authLog: (app.state.authLog || []).slice(),
+    companies: app.state.companies.slice(), active: app.state.activeCompany,
+    lines: app.state.lines.slice(), caLines: (app.state.caLines || []).slice(),
+    matrix: app.state.serviceMatrix,
+    ventilation: JSON.parse(JSON.stringify(app.state.caVentilation || {})),
+    categoryVentilation: JSON.parse(JSON.stringify(app.state.caCategoryVentilation || {})),
+    tab: app.__getTab(),
+  };
+  try {
+    authFixture();
+    const company = { id: 'vent_ro_c', name: 'Ventilation Lecture', currency: 'EUR', year: 2026, groupId: null };
+    app.state.companies = [company];
+    app.state.activeCompany = company.id;
+    app.state.lines = [];
+    app.state.caLines = [];
+    app.state.serviceMatrix = {};
+    app.state.caVentilation = {};
+    app.state.caCategoryVentilation = {};
+    app.resetStateIndexes();
+
+    // Un CA à ventiler (5 000 € en janvier), deux comptes de produits, et
+    // des pourcentages posés : 70 % Food, 30 % Beverage.
+    app.setServiceMatrixValue(company.id, 'covers', 'lunch', '2026-01-05', 100);
+    app.setServiceMatrixValue(company.id, 'ticket', 'lunch', '2026-01-05', 50);
+    const food = app.addCaLine(company.id, '70101100', 'Nourriture');
+    app.setCaCategory(food.id, 'food');
+    const bev = app.addCaLine(company.id, '70102100', 'Boissons');
+    app.setCaCategory(bev.id, 'beverage');
+    app.setCaCategoryVentilationPercent(company.id, 'food', 70);
+    app.setCaCategoryVentilationPercent(company.id, 'beverage', 30);
+    app.setCaVentilationPercent(company.id, food.account, 100);
+    app.setCaVentilationPercent(company.id, bev.account, 100);
+
+    await app.createUser({ username: 'vent_cdg', role: 'controleur', password: 'MotDePasse1!xyz', isAdmin: true });
+    const directeur = await app.createUser({ username: 'vent_dir', role: 'directeur', password: 'MotDePasse1!xyz' });
+    app.setUserScope(directeur.id, null, ['F&B']);
+
+    // La rubrique est OUVERTE au directeur, les deux autres réglages non.
+    assert.ok(app.canAccessPage(directeur, 'ca', 'ca-ventilation'),
+      'la ventilation doit être visible par un directeur');
+    for (const page of ['ca-comptes', 'ca-ponderation']) {
+      assert.ok(!app.canAccessPage(directeur, 'ca', page),
+        '« ' + page + ' » reste hors du périmètre d’un directeur');
+    }
+
+    // --- Le contrôle de gestion : tout est réglable. -------------------
+    await app.signIn('vent_cdg', 'MotDePasse1!xyz');
+    app.__setTab('ca');
+    const cdgPanel = app.caVentilationPanel(company);
+    assert.equal(app.canEditCaVentilation(), true, 'le contrôle de gestion règle la ventilation');
+    assert.ok(cdgPanel.includes('data-ca-category-ventilation="food"'),
+      'le contrôleur doit avoir une case pour la part de catégorie');
+    assert.ok(cdgPanel.includes('data-ca-ventilation="' + food.account + '"'),
+      'et une case pour la part du compte dans sa catégorie');
+    assert.ok(cdgPanel.includes('data-apply-ca-ventilation='),
+      'et le bouton « Appliquer aux comptes »');
+    assert.ok(cdgPanel.includes('data-delete-ca-account="' + food.id + '"'),
+      'et le bouton « retirer » de chaque compte');
+
+    // --- Le directeur : la même rubrique, en lecture. -----------------
+    app.signOut();
+    await app.signIn('vent_dir', 'MotDePasse1!xyz');
+    app.__setTab('ca');
+    const dirPanel = app.caVentilationPanel(company);
+    assert.equal(app.canEditCaVentilation(), false, 'un directeur ne règle pas la ventilation');
+
+    // Elle montre bien la répartition — c'est tout l'objet de la demande :
+    // pourcentages en clair, comptes nommés, montants mois par mois,
+    // lignes de contrôle.
+    assert.ok(dirPanel.includes('70 %') && dirPanel.includes('30 %'),
+      'les parts de catégorie doivent se lire en clair (70 % / 30 %)');
+    assert.ok(dirPanel.includes('Nourriture') && dirPanel.includes('Boissons'),
+      'les comptes entre lesquels le CA est réparti doivent être nommés');
+    assert.ok(dirPanel.includes('Total catégories') && dirPanel.includes('Total ventilé'),
+      'les lignes de contrôle restent affichées : elles disent si tout le CA est réparti');
+    assert.ok(dirPanel.includes(app.money(3500)),
+      'le montant ventilé du mois doit s’afficher (70 % de 5 000 € = 3 500 €)');
+
+    // Mais rien n'y est modifiable.
+    assert.ok(!dirPanel.includes('<input'),
+      'aucune case de saisie dans la ventilation vue par un directeur');
+    assert.ok(!dirPanel.includes('data-ca-category-ventilation='),
+      'aucune case de part de catégorie pour un directeur');
+    assert.ok(!dirPanel.includes('data-ca-ventilation='),
+      'aucune case de part de compte pour un directeur');
+    assert.ok(!dirPanel.includes('data-apply-ca-ventilation='),
+      'pas de bouton « Appliquer aux comptes » pour un directeur');
+    assert.ok(!dirPanel.includes('data-delete-ca-account='),
+      'pas de bouton « retirer » : un directeur ne retire pas un compte suivi');
+    // La consigne ne doit pas lui parler de cases qui n'existent pas.
+    assert.ok(!dirPanel.includes('Vous choisissez d’abord la part'),
+      'la consigne du contrôleur ne doit pas s’afficher à un directeur');
+    assert.ok(dirPanel.includes('vous ne les modifiez pas'),
+      'le directeur doit lire qui pose ces pourcentages');
+
+    // Les deux tableaux gardent une largeur cohérente : la colonne
+    // d'actions disparaît avec les boutons, en-tête comprise (sinon les
+    // lignes de titre de catégorie, en `colspan`, décaleraient le tableau).
+    const dirSpans = (dirPanel.match(/colspan="(\d+)"/g) || []);
+    assert.ok(dirSpans.length > 0, 'le panneau doit comporter des lignes de titre en colspan');
+    assert.ok(dirSpans.every((c) => c === 'colspan="15"'),
+      'en lecture seule, les lignes pleine largeur couvrent 15 colonnes (compte + part + 12 mois + année), trouvé : ' +
+      dirSpans.join(', '));
+    assert.ok((cdgPanel.match(/colspan="16"/g) || []).length > 0,
+      'avec la colonne d’actions, elles en couvrent 16');
+
+    // Garde côté action, en plus de l'interface : le geste est refusé même
+    // atteint autrement (même principe que `canEditLineStructure`).
+    for (const branch of ['caCategoryVentilation', 'caVentilation', 'applyCaVentilation']) {
+      const at = appSource.indexOf('dataset.' + branch + ' !== undefined');
+      assert.ok(at > 0, 'branche « ' + branch + ' » introuvable dans les gestionnaires');
+      assert.ok(appSource.slice(at, at + 700).includes('canEditCaVentilation()'),
+        'la branche « ' + branch + ' » doit refuser le geste sans le droit de régler la ventilation');
+    }
+  } finally {
+    app.signOut();
+    app.state.users = saved.users; app.state.authLog = saved.authLog;
+    app.state.companies = saved.companies; app.state.activeCompany = saved.active;
+    app.state.lines = saved.lines; app.state.caLines = saved.caLines;
+    app.state.serviceMatrix = saved.matrix;
+    app.state.caVentilation = saved.ventilation;
+    app.state.caCategoryVentilation = saved.categoryVentilation;
+    app.resetStateIndexes();
+    app.__setTab(saved.tab);
+    app.render();
+  }
+});
+
 await checkAsync('Autorisations : la matrice ouvre onglet par onglet et rubrique par rubrique', async () => {
   const saved = { users: (app.state.users || []).slice(), authLog: (app.state.authLog || []).slice() };
   try {
@@ -10729,10 +10867,15 @@ await checkAsync('Autorisations : la matrice ouvre onglet par onglet et rubrique
       'un onglet hors périmètre reste fermé par défaut');
 
     // Périmètre arrêté le 19/08/2026 : le directeur voit son CA mais pas
-    // les réglages de l'onglet qui relèvent du contrôle de gestion.
+    // les réglages de l'onglet qui relèvent du contrôle de gestion. Depuis
+    // le 07/10/2026 la VENTILATION fait exception : il la voit, en lecture
+    // seule (Alexis : « qu'ils puissent voir comment est ventilé le CA,
+    // sans pour autant pouvoir modifier les pourcentages »).
     assert.ok(app.canAccessPage(directeur, 'ca', 'ca-couverts'),
       'la matrice couverts × ticket moyen est à lui');
-    for (const page of ['ca-comptes', 'ca-ponderation', 'ca-ventilation']) {
+    assert.ok(app.canAccessPage(directeur, 'ca', 'ca-ventilation'),
+      'la ventilation du CA est désormais ouverte par défaut à un directeur, en lecture seule');
+    for (const page of ['ca-comptes', 'ca-ponderation', 'ca-migration']) {
       assert.ok(!app.canAccessPage(directeur, 'ca', page),
         `« ${page} » relève du contrôle de gestion, pas du directeur`);
     }
