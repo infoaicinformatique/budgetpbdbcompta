@@ -77,6 +77,38 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Saisie : supprimer une ligne multiplicateur, contrôleur comme directeur (08/10/2026)
+
+Demande : « peux-tu me donner la possibilité de supprimer la ligne avec le
+multiplicateur pour le contrôleur et le directeur ? »
+
+Constat : le contrôle de gestion pouvait déjà la supprimer, mais
+« supprimer » était rangé dans le menu « ⋯ » de la ligne — on ne le trouvait
+pas. Le directeur, lui, ne pouvait pas : `canDeleteLine` écartait toute
+ligne calculée.
+
+- `canDeleteLine` : un directeur peut supprimer une ligne **multiplicateur**
+  (`rateLink`) d'un centre de son périmètre, quels que soient ses montants
+  (ils sont calculés) — sauf si elle sert elle-même de référence à un autre
+  multiplicateur (la retirer changerait une autre ligne). Les autres lignes
+  calculées (poste salarial, reports Payroll et CA) restent au contrôle de
+  gestion. Pendant de la création ouverte la même journée (entrée
+  suivante).
+- Sur une ligne multiplicateur, « supprimer » passe **au premier niveau**, à
+  côté de « modifier le multiplicateur », pour les deux rôles (et n'est plus
+  en double dans « ⋯ »). Les autres lignes gardent leur menu.
+- La confirmation mentionne le multiplicateur ; le refus explique la règle
+  au directeur.
+
+`APP_BUILD` : `2026-10-08.14`.
+
+Contrôles : contrôleur — « supprimer » visible directement sur la ligne
+multiplicateur ; directeur F&B — multiplicateur de son centre supprimable
+(montants non nuls), bouton au premier niveau, refus pour un multiplicateur
+AG, pour un multiplicateur servant de référence, pour un poste salarial ;
+le multiplicateur en bout de chaîne se supprime. Vérifiés en échec sans
+chacune des deux corrections (droit du directeur, bouton au premier niveau).
+
 ### Saisie : les directeurs créent aussi des multiplicateurs dans leurs centres (08/10/2026)
 
 Demande : « le bouton + multiplicateur doit également être présent dans
@@ -17081,6 +17113,19 @@ check('saveRateLink crée une nouvelle dépense calculée sur la ligne de réfé
     assert.ok(created, 'la nouvelle ligne calculée est introuvable');
     assert.deepEqual(created.rateLink, { rate: 0.08, sourceLineId: 'save_rl_source' });
     assert.equal(created.amounts[0], 80, '0,08 × 1000 devrait valoir 80');
+    // Contrôle de gestion : « supprimer » au premier niveau sur la ligne
+    // multiplicateur, à côté de « modifier le multiplicateur » (08/10/2026).
+    assert.equal(app.canDeleteLine(created), true, 'le contrôle de gestion supprime un multiplicateur');
+    {
+      app.__setTab('saisie');
+      app.__setCenter(ts.findAccount(target.account).center);
+      app.render();
+      const view = document.getElementById('view').innerHTML;
+      const row = view.slice(view.indexOf('data-edit-ratelink="' + created.id + '"'),
+        view.indexOf('data-row-menu="' + created.id + '"'));
+      assert.ok(row.includes('data-delete="' + created.id + '"'),
+        '« supprimer » doit être visible directement sur la ligne multiplicateur du contrôle de gestion');
+    }
 
     // Modification depuis le formulaire : nouveau compte de référence,
     // nouvelle ligne de référence exacte, nouveau multiplicateur.
@@ -23847,8 +23892,34 @@ await checkAsync('Autorisations : périmètre centre de coûts — Saisie et Pay
       amounts: months(0), rateLink: { rate: 0.1, sourceLineId: added.id } };
     app.state.lines.push(reference);
     assert.equal(app.canDeleteLine(added), false, 'une ligne qui sert de référence à un multiplicateur reste');
-    assert.equal(app.canDeleteLine(reference), false, 'une ligne calculée ne se supprime pas');
-    app.state.lines = app.state.lines.filter((l) => l !== added && l !== emptyAg && l !== reference);
+    // Multiplicateur (08/10/2026) : un directeur peut supprimer une ligne
+    // multiplicateur de son centre, montants compris (ils sont calculés)…
+    reference.amounts = months(40);
+    assert.equal(app.canDeleteLine(reference), true, 'un directeur supprime un multiplicateur de son centre');
+    // … et « supprimer » est au premier niveau, à côté de « modifier le
+    // multiplicateur », pas caché dans « ⋯ ».
+    app.toggleRowMenu(null);
+    app.__setCenter('F&B');
+    app.render();
+    rendered = document.getElementById('view').innerHTML;
+    const refRow = rendered.slice(rendered.indexOf('data-edit-ratelink="centerui_ref"'),
+      rendered.indexOf('data-row-menu="centerui_ref"'));
+    assert.ok(refRow.includes('data-delete="centerui_ref"'),
+      '« supprimer » doit être visible directement sur la ligne multiplicateur');
+    // Mais pas un multiplicateur hors périmètre, ni un multiplicateur qui
+    // sert lui-même de référence, ni une autre ligne calculée (poste).
+    const rateAg = { id: 'centerui_rate_ag', companyId: company.id, account: '60610700', name: 'Taux AG',
+      amounts: months(10), rateLink: { rate: 0.1, sourceLineId: 'centerui_l2' } };
+    const chained = { id: 'centerui_chain', companyId: company.id, account: '60101100', name: 'Chaîné',
+      amounts: months(4), rateLink: { rate: 0.1, sourceLineId: 'centerui_ref' } };
+    const posteLine = { id: 'centerui_poste', companyId: company.id, account: '60101100', name: 'Poste',
+      amounts: months(100), payrollLink: { fte: 1 } };
+    app.state.lines.push(rateAg, chained, posteLine);
+    assert.equal(app.canDeleteLine(rateAg), false, 'un multiplicateur hors périmètre reste intouchable');
+    assert.equal(app.canDeleteLine(reference), false, 'un multiplicateur qui sert de référence à un autre reste');
+    assert.equal(app.canDeleteLine(chained), true, 'le multiplicateur en bout de chaîne se supprime');
+    assert.equal(app.canDeleteLine(posteLine), false, 'un poste salarial reste au contrôle de gestion');
+    app.state.lines = app.state.lines.filter((l) => ![added, emptyAg, reference, rateAg, chained, posteLine].includes(l));
     app.toggleRowMenu(null);
     app.__setCenter('F&B');
 
