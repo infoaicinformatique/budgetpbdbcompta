@@ -77,6 +77,47 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### En-tête : « Environnement — Société » même quand la société est seule (08/10/2026)
+
+Demande : « si dans l'environnement il n'y a qu'une entité, il est important
+d'afficher de la même manière que les autres […] dans Nammos il n'y a que la
+société Nammos, affiche donc en haut du site : Nammos — Nammos ».
+
+`renderEnvironmentButton()` n'ajoutait le nom de la société que s'il y avait
+plusieurs sociétés à choisir dans l'environnement affiché
+(`pickableCompanies().length >= 2`) : une société seule n'affichait que
+« Nammos ». Le libellé porte désormais toujours la société active
+(« Nammos — Nammos », « Tous les environnements — X »). La règle de
+visibilité du bouton ne change pas (masqué seulement quand il n'y a
+strictement rien à choisir, décision d'Alexis).
+
+`APP_BUILD` : `2026-10-08.9`.
+
+Contrôle : deux environnements dont un (« Nammos ») ne contient qu'une
+société : le bouton doit lire « Nammos — Nammos » (vérifié : échoue avec
+l'ancienne condition, qui affichait « Nammos »). Le contrôle restaure
+maintenant l'état dans un `finally`.
+
+### Ordre des sociétés : aussi dans la recherche rapide (Ctrl+K) (08/10/2026)
+
+Demande : « applique aussi l'ordre des sociétés à la barre du haut ».
+
+Constat : la barre du haut n'a **pas de liste de sociétés** — son bouton
+(environnement — société) rouvre l'accueil, dont les cartes suivent déjà
+l'ordre choisi depuis l'entrée précédente. Le récapitulatif de cette entrée
+parlait à tort d'une « liste des sociétés de la barre du haut ». La seule
+autre liste de sociétés qu'on ouvre de n'importe où est la recherche rapide
+(Ctrl+K, `commandPaletteResults`), qui suivait l'ordre de création ; sans
+recherche, elle n'en montre que cinq. Elle trie désormais par
+`sortCompaniesByUserOrder` : les cinq affichées sont les cinq premières de
+la personne.
+
+`APP_BUILD` : `2026-10-08.8`.
+
+Contrôle : dans le test de l'ordre des sociétés de l'accueil, la palette
+doit rendre les sociétés dans l'ordre choisi (vérifié : échoue si l'on
+retire le tri).
+
 ### Paramètres › Préférences d'affichage : taille du texte, densité, animations et seize palettes, par personne (08/10/2026)
 
 Demandes : « une partie dans les préférences qui gère les paramètres visuels
@@ -18995,9 +19036,40 @@ check('en-tête : ni liste de sociétés ni filtre de groupe — le changement p
   assert.strictEqual(button.hidden, false, 'le bouton doit rester visible : il y a un choix de société à faire');
   assert.ok(button.innerHTML.includes('Filiale A'), 'il doit annoncer la société active');
 
+  // Une société seule dans son environnement s'affiche de la même manière
+  // que les autres : « Nammos — Nammos », pas « Nammos » tout court
+  // (08/10/2026).
+  const savedSuperGroups = app.state.superGroups;
+  const savedEnvironment = app.state.activeEnvironmentId;
+  try {
+    app.state.superGroups = [{ id: 'solo_env', name: 'Nammos', period: '2027' }];
+    app.state.groups = [{ id: 'solo_grp', name: 'Nammos', period: '2027', superGroupId: 'solo_env' },
+      { id: 'autre_grp', name: 'Autre', period: '2027', superGroupId: 'autre_env' }];
+    app.state.superGroups.push({ id: 'autre_env', name: 'Palm Beach', period: '2027' });
+    app.state.companies = [
+      { id: 'solo_co', name: 'Nammos', currency: 'EUR', year: 2027, groupId: 'solo_grp' },
+      { id: 'autre_co', name: 'Medusa', currency: 'EUR', year: 2027, groupId: 'autre_grp' },
+    ];
+    app.state.activeEnvironmentId = 'solo_env';
+    app.state.activeCompany = 'solo_co';
+    app.resetStateIndexes();
+    app.render();
+    assert.strictEqual(button.hidden, false, 'deux environnements : le bouton reste visible');
+    assert.ok(button.innerHTML.includes('Nammos — Nammos'),
+      'la société seule de son environnement doit être nommée : « Nammos — Nammos » (lu : « ' + button.innerHTML + ' »)');
+  } finally {
+    app.state.superGroups = savedSuperGroups;
+    app.state.activeEnvironmentId = savedEnvironment;
+    app.state.companies = original.companies;
+    app.state.activeCompany = original.activeCompany;
+    app.state.groups = original.groups;
+    app.resetStateIndexes();
+  }
+
   app.state.companies = original.companies;
   app.state.activeCompany = original.activeCompany;
   app.state.groups = original.groups;
+  app.resetStateIndexes();
 });
 
 /* --- 5. Étanchéité : rien ne doit pouvoir sortir ---------------------- */
@@ -29607,6 +29679,13 @@ await checkAsync('Accueil : chacun range ses sociétés dans l’ordre qu’il v
     // Vers la droite : A déposé sur B passe derrière B.
     app.moveCompanyInUserOrder(app.welcomeCompanyIdsShown(), 'multi_a', 'multi_b');
     assert.deepEqual(order(app.welcomeCompanyCardsHtml()), ['multi_c', 'multi_b', 'multi_a']);
+
+    // Même ordre dans la recherche rapide (Ctrl+K), seule autre liste de
+    // sociétés ouverte depuis n'importe quel écran : sans recherche, elle
+    // n'en montre que cinq, autant que ce soient les premières de la personne.
+    const paletteCompanies = app.commandPaletteResults('').filter((r) => r.kind === 'company').map((r) => r.id);
+    assert.deepEqual(paletteCompanies.filter((id) => id.startsWith('multi_')), ['multi_c', 'multi_b', 'multi_a'],
+      'la palette suit l’ordre choisi sur l’accueil');
 
     // Un autre compte garde son propre ordre : rien de partagé.
     const mine = app.userPreferencesKey();

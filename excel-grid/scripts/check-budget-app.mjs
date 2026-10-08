@@ -7553,9 +7553,40 @@ check('en-tête : ni liste de sociétés ni filtre de groupe — le changement p
   assert.strictEqual(button.hidden, false, 'le bouton doit rester visible : il y a un choix de société à faire');
   assert.ok(button.innerHTML.includes('Filiale A'), 'il doit annoncer la société active');
 
+  // Une société seule dans son environnement s'affiche de la même manière
+  // que les autres : « Nammos — Nammos », pas « Nammos » tout court
+  // (08/10/2026).
+  const savedSuperGroups = app.state.superGroups;
+  const savedEnvironment = app.state.activeEnvironmentId;
+  try {
+    app.state.superGroups = [{ id: 'solo_env', name: 'Nammos', period: '2027' }];
+    app.state.groups = [{ id: 'solo_grp', name: 'Nammos', period: '2027', superGroupId: 'solo_env' },
+      { id: 'autre_grp', name: 'Autre', period: '2027', superGroupId: 'autre_env' }];
+    app.state.superGroups.push({ id: 'autre_env', name: 'Palm Beach', period: '2027' });
+    app.state.companies = [
+      { id: 'solo_co', name: 'Nammos', currency: 'EUR', year: 2027, groupId: 'solo_grp' },
+      { id: 'autre_co', name: 'Medusa', currency: 'EUR', year: 2027, groupId: 'autre_grp' },
+    ];
+    app.state.activeEnvironmentId = 'solo_env';
+    app.state.activeCompany = 'solo_co';
+    app.resetStateIndexes();
+    app.render();
+    assert.strictEqual(button.hidden, false, 'deux environnements : le bouton reste visible');
+    assert.ok(button.innerHTML.includes('Nammos — Nammos'),
+      'la société seule de son environnement doit être nommée : « Nammos — Nammos » (lu : « ' + button.innerHTML + ' »)');
+  } finally {
+    app.state.superGroups = savedSuperGroups;
+    app.state.activeEnvironmentId = savedEnvironment;
+    app.state.companies = original.companies;
+    app.state.activeCompany = original.activeCompany;
+    app.state.groups = original.groups;
+    app.resetStateIndexes();
+  }
+
   app.state.companies = original.companies;
   app.state.activeCompany = original.activeCompany;
   app.state.groups = original.groups;
+  app.resetStateIndexes();
 });
 
 /* --- 5. Étanchéité : rien ne doit pouvoir sortir ---------------------- */
@@ -18165,6 +18196,13 @@ await checkAsync('Accueil : chacun range ses sociétés dans l’ordre qu’il v
     // Vers la droite : A déposé sur B passe derrière B.
     app.moveCompanyInUserOrder(app.welcomeCompanyIdsShown(), 'multi_a', 'multi_b');
     assert.deepEqual(order(app.welcomeCompanyCardsHtml()), ['multi_c', 'multi_b', 'multi_a']);
+
+    // Même ordre dans la recherche rapide (Ctrl+K), seule autre liste de
+    // sociétés ouverte depuis n'importe quel écran : sans recherche, elle
+    // n'en montre que cinq, autant que ce soient les premières de la personne.
+    const paletteCompanies = app.commandPaletteResults('').filter((r) => r.kind === 'company').map((r) => r.id);
+    assert.deepEqual(paletteCompanies.filter((id) => id.startsWith('multi_')), ['multi_c', 'multi_b', 'multi_a'],
+      'la palette suit l’ordre choisi sur l’accueil');
 
     // Un autre compte garde son propre ordre : rien de partagé.
     const mine = app.userPreferencesKey();
