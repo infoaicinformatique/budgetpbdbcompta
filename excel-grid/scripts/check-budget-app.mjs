@@ -461,7 +461,7 @@ const app = await importApp(
     '  migrateProduitLinesToCa, openCaEditor, closeCaEditor, toggleCaDetail, setCaEditMonth, toggleCaMonth,\n' +
     '  saveCaAccountFromForm, deleteCaAccount, caEditorHtml, caDetailHtml, caTeamPanel,\n' +
     '  caMigratePanel, viewCa, goToCaLine, goToPayrollCenter,\n' +
-    '  matrixMonthlyRevenue, caEventServiceRevenue, caVentilationOf, caVentilationPercent, setCaVentilationPercent,\n' +
+    '  matrixMonthlyRevenue, caEventServiceRevenue, caFoodBeverageRevenue, caVentilationOf, caVentilationPercent, setCaVentilationPercent,\n' +
     '  caAccountVentilationTotal, applyCaVentilation, caVentilationPanel,\n' +
     '  caCategoryVentilationOf, caCategoryVentilationPercent, setCaCategoryVentilationPercent,\n' +
     '  caCategoryVentilationTotal,\n' +
@@ -6614,6 +6614,80 @@ check('Catégorie Event du CA : 100 % automatique depuis le service Event de la 
     // n'importe quelle autre rubrique de CA.
     assert.ok(app.customRatioMetrics().some((m) => m.id === 'rev-event'),
       'Event Revenue doit être proposé comme rubrique de ratio personnalisé');
+  } finally {
+    app.state.companies = saved.companies; app.state.lines = saved.lines;
+    app.state.caLines = saved.caLines; app.state.activeCompany = saved.active;
+    app.state.serviceMatrix = saved.matrix; app.state.caVentilation = saved.ventilation;
+    app.state.caCategoryVentilation = saved.categoryVentilation;
+    app.state.dailyBudgetRevenue = saved.daily;
+    app.resetStateIndexes();
+    app.__setTab(saved.tab);
+    app.render();
+  }
+});
+
+check('CA Event isolé de la ventilation Food/Beverage : pas compté deux fois', () => {
+  // Alexis, 08/10/2026 : « le CA Event est compté 2 fois — il est inclus
+  // dans le CA total qui est ventilé entre food et bev, et après il est
+  // repris [dans Event] […] Le CA Event doit être isolé de la ventilation
+  // F&B et uniquement enregistré dans « Event » ». Son exemple : 10 000 €
+  // d'Event, Food 25 % / Beverage 75 % — 2 500 € partaient en Food et
+  // 7 500 € en Beverage EN PLUS des 10 000 € du compte Event.
+  const saved = {
+    companies: app.state.companies.slice(), lines: app.state.lines.slice(),
+    caLines: (app.state.caLines || []).slice(), active: app.state.activeCompany,
+    matrix: JSON.parse(JSON.stringify(app.state.serviceMatrix || {})),
+    ventilation: JSON.parse(JSON.stringify(app.state.caVentilation || {})),
+    categoryVentilation: JSON.parse(JSON.stringify(app.state.caCategoryVentilation || {})),
+    daily: JSON.parse(JSON.stringify(app.state.dailyBudgetRevenue || {})),
+    tab: app.__getTab(),
+  };
+  try {
+    const company = { id: 'evtfnb_c', name: 'Event hors F&B', currency: 'EUR', year: 2026, groupId: null };
+    app.state.companies = [company];
+    app.state.activeCompany = company.id;
+    app.state.lines = [];
+    app.state.caLines = [];
+    app.state.caVentilation = {};
+    app.state.caCategoryVentilation = {};
+    app.state.dailyBudgetRevenue = {};
+
+    // Janvier : 300 000 € au couvert (midi) et 10 000 € d'Event.
+    app.setServiceMatrixValue(company.id, 'covers', 'lunch', '2026-01-05', '1000');
+    app.setServiceMatrixValue(company.id, 'ticket', 'lunch', '2026-01-05', '300');
+    app.setServiceMatrixValue(company.id, 'amount', 'event', '2026-01-05', '10000');
+    assert.equal(Math.round(app.matrixMonthlyRevenue(company)[0]), 310000, 'le CA total de la matrice comprend l’Event');
+    assert.equal(Math.round(app.caFoodBeverageRevenue(company)[0]), 300000,
+      'la base de la ventilation Food/Beverage doit exclure le CA Event');
+
+    const food = app.addCaLine(company.id, '70106100', 'Food');
+    const bev = app.addCaLine(company.id, '70103200', 'Beverage');
+    app.setCaCategory(bev.id, 'beverage');
+    const evt = app.addCaLine(company.id, '70880200', 'Event');
+    app.setCaCategory(evt.id, 'event');
+    app.setCaCategoryVentilationPercent(company.id, 'food', 25);
+    app.setCaCategoryVentilationPercent(company.id, 'beverage', 75);
+    app.setCaVentilationPercent(company.id, food.account, 100);
+    app.setCaVentilationPercent(company.id, bev.account, 100);
+    assert.equal(app.applyCaVentilation(company.id), 3);
+
+    const jan = (account) => Math.round(app.caMonthlyTotals(company.id, account, 2026)[0]);
+    assert.equal(jan(food.account), 75000, 'Food : 25 % de 300 000 €, pas de 310 000 €');
+    assert.equal(jan(bev.account), 225000, 'Beverage : 75 % de 300 000 €, pas de 310 000 €');
+    assert.equal(jan(evt.account), 10000, 'Event : les 10 000 € du service, une seule fois');
+    assert.equal(jan(food.account) + jan(bev.account) + jan(evt.account), 310000,
+      'Food + Beverage + Event doivent retomber exactement sur le CA total de la matrice');
+
+    // Les lignes liées au CA d'une catégorie (taux sur Food/Beverage) suivent la même base.
+    assert.equal(Math.round(app.rateLinkRevenueCategoryMonths(company.id, [], ['food', 'beverage', 'event'])[0]), 310000,
+      'un taux lié à Food + Beverage + Event ne doit pas compter l’Event deux fois');
+
+    // Le panneau affiche la base hors Event au niveau catégorie.
+    app.__setTab('ca');
+    app.render();
+    const html = document.getElementById('view').innerHTML;
+    assert.ok(html.includes('Part du CA hors Event'), 'l’en-tête du niveau catégorie doit dire « hors Event »');
+    assert.ok(!html.includes(app.money(77500)), 'Food ne doit plus afficher 25 % du CA Event compris (77 500)');
   } finally {
     app.state.companies = saved.companies; app.state.lines = saved.lines;
     app.state.caLines = saved.caLines; app.state.activeCompany = saved.active;
