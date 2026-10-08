@@ -534,7 +534,7 @@ const app = await importApp(
     '  welcomeCompanyIdsShown, userPreferencesKey, loadServerPreferences, userPreferences,\n' +
     '  DISPLAY_OPTIONS, setUserDisplayPreference, resetUserDisplayPreferences, applyDisplayPreferences,\n' +
     '  displayPreferencesPanel, normalizeUserPreferencesMap, DISPLAY_PALETTES, displayPaletteProperties,\n' +
-    '  mixHex };\n' +
+    '  mixHex, contrastWithWhite, paletteEnvironmentColor, paletteEnvironmentShades };\n' +
     'export function __setServerPreferences(v) { serverPreferences = v; }\n' +
     'export function __getServerPreferences() { return serverPreferences; }\n' +
     'export function __swapServerRequest(fn) { const previous = serverRequest; serverRequest = fn; return previous; }\n' +
@@ -18361,6 +18361,10 @@ await checkAsync('Paramètres › Préférences d’affichage : propres à chaqu
       assert.equal(root.style.getPropertyValue ? root.style.getPropertyValue('--navy') : '#1b3a5c', '#1b3a5c',
         'la palette pose sa couleur principale sur <html>');
       assert.equal(root.getAttribute('data-palette'), 'bleu-marine');
+      // Environnement en tête de liste : la couleur principale de la palette.
+      app.state.superGroups = [{ id: 'pal_env', name: 'Env palette', navyColor: '#772266' }]
+        .concat(app.state.superGroups.filter((sg) => sg.id !== 'pal_env'));
+      app.resetStateIndexes();
       assert.equal(app.environmentColorHex('pal_env'), '#1b3a5c', 'une palette personnelle remplace la couleur de l’environnement');
       assert.ok(/class="palette-swatch selected"[^>]*data-display-palette="bleu-marine"/.test(app.displayPreferencesPanel()),
         'la palette choisie est marquée');
@@ -18372,6 +18376,49 @@ await checkAsync('Paramètres › Préférences d’affichage : propres à chaqu
       app.resetStateIndexes();
     }
     assert.equal(app.mixHex('#000000', '#ffffff', 0.5), '#808080');
+
+    // Une couleur distincte par environnement avec les palettes (08/10/2026) :
+    // chaque environnement prend sa propre teinte, tirée de la palette,
+    // toujours lisible sous du texte blanc, stable (place dans la liste) ;
+    // l'en-tête prend celle de l'environnement affiché.
+    const savedSG = app.state.superGroups;
+    const savedEnvId = app.state.activeEnvironmentId;
+    try {
+      app.state.superGroups = Array.from({ length: 12 }, (_, i) => ({ id: 'shade_' + i, name: 'Env ' + i }));
+      app.resetStateIndexes();
+      for (const palette of app.DISPLAY_OPTIONS.palette.slice(1)) {
+        app.setUserDisplayPreference('palette', palette);
+        const colors = app.state.superGroups.map((sg) => app.environmentColorHex(sg.id));
+        assert.equal(colors[0], app.DISPLAY_PALETTES[palette].primary, palette + ' : le premier environnement a la couleur principale');
+        assert.equal(new Set(colors).size, 12, palette + ' : douze environnements, douze teintes distinctes');
+        const shades = app.paletteEnvironmentShades(palette);
+        for (let i = 0; i < shades.length; i++) {
+          for (let j = i + 1; j < shades.length; j++) {
+            const [x, y] = [shades[i], shades[j]].map((h) => parseInt(h.slice(1), 16));
+            const dist = Math.hypot(...[16, 8, 0].map((s) => ((x >> s) & 255) - ((y >> s) & 255)));
+            assert.ok(dist >= 38, palette + ' : ' + shades[i] + ' et ' + shades[j] + ' sont trop proches');
+          }
+        }
+        for (const c of colors) {
+          assert.ok(app.contrastWithWhite(c) >= 4.5, palette + ' : la teinte ' + c + ' doit rester lisible sous du texte blanc');
+        }
+        assert.equal(app.environmentColorHex('shade_3'), colors[3], palette + ' : la teinte d’un environnement est stable');
+      }
+      app.setUserDisplayPreference('palette', 'bleu-erp');
+      app.state.activeEnvironmentId = 'shade_1';
+      app.applyDisplayPreferences();
+      if (root.style.getPropertyValue) {
+        assert.equal(root.style.getPropertyValue('--navy'), app.environmentColorHex('shade_1'),
+          'l’en-tête prend la teinte de l’environnement affiché');
+      }
+      app.setUserDisplayPreference('palette', 'charte');
+      assert.equal(app.environmentColorHex('shade_1'), app.DEFAULT_NAVY_COLOR, 'la charte rend la couleur propre de l’environnement');
+    } finally {
+      app.state.superGroups = savedSG;
+      app.state.activeEnvironmentId = savedEnvId;
+      app.resetStateIndexes();
+      app.applyDisplayPreferences();
+    }
 
     // Mode serveur : un réglage part seul sur le profil, sans écraser l'ordre.
     const calls = [];
