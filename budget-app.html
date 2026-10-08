@@ -3498,7 +3498,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-08.20';
+const APP_BUILD = '2026-10-08.21';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -21622,6 +21622,8 @@ function addPayrollExtra() {
   const company = activeCompany();
   if (!company) return null;
   const extra = newPayrollExtra(company.id);
+  // Déplié d'emblée : ses journées et son montant restent à saisir.
+  payrollExpandedExtraIds.add(extra.id);
   commitPayrollExtraChange(company.id, function () {
     state.payrollExtras = state.payrollExtras || [];
     state.payrollExtras.push(extra);
@@ -21893,6 +21895,17 @@ let payrollExpandedId = null;
  * « Coût employeur » reste visible, les quatre autres se déplient au besoin.
  */
 let payrollMatrixDetailOpen = false;
+/**
+ * Extras dont le calcul est déplié (journées, montant par journée, coût),
+ * comme « voir le calcul » d'un collaborateur de l'Équipe — Alexis,
+ * 08/10/2026 : « sur l'onglet Extras, s'il est possible de masquer le
+ * détail du calcul comme pour les autres postes ». Replié, un extra tient
+ * sur une ligne : son coût employeur mois par mois. Un extra qu'on vient
+ * d'ajouter s'ouvre déplié, puisqu'il reste à le remplir.
+ */
+const payrollExpandedExtraIds = new Set();
+/** Pied du tableau des extras : journées, brut et charges repliés, comme la matrice. */
+let payrollExtrasDetailOpen = false;
 
 function openEmployeeEditor(id) {
   payrollEditingId = id || 'new';
@@ -21912,6 +21925,17 @@ function toggleEmployeeDetail(id) {
 
 function togglePayrollMatrixDetail() {
   payrollMatrixDetailOpen = !payrollMatrixDetailOpen;
+  render();
+}
+
+function togglePayrollExtraDetail(id) {
+  if (payrollExpandedExtraIds.has(id)) payrollExpandedExtraIds.delete(id);
+  else payrollExpandedExtraIds.add(id);
+  render();
+}
+
+function togglePayrollExtrasDetail() {
+  payrollExtrasDetailOpen = !payrollExtrasDetailOpen;
   render();
 }
 
@@ -22665,9 +22689,29 @@ function payrollExtrasPanel(company) {
       (locked ? ' disabled title="Taux figé par le contrôle de gestion"' : '') + ' /> %' +
       (locked ? ' <span title="Taux figé par le contrôle de gestion">🔒</span>' : '') +
       '</label></td>';
-    const actions = '<td rowspan="3" style="vertical-align:top"><div class="row-actions">' +
+    const expanded = payrollExpandedExtraIds.has(extra.id);
+    const actions = '<td rowspan="' + (expanded ? 3 : 1) + '" style="vertical-align:top"><div class="row-actions">' +
+      '<button class="mini" data-detail-payroll-extra="' + extra.id + '">' +
+      (expanded ? 'masquer le calcul' : 'voir le calcul') + '</button>' +
       '<button class="mini mini-danger" data-delete-payroll-extra="' + extra.id + '">retirer</button>' +
       '</div></td>';
+
+    // Replié : une seule ligne, le coût employeur (brut + charges) mois par
+    // mois — le chiffre qui part en masse salariale, comme la colonne
+    // « Coût employeur » de l'Équipe. Le nom, le centre et le taux se
+    // lisent, ils se modifient en dépliant le calcul.
+    if (!expanded) {
+      const yearCost = months.employerCost.reduce(function (sum, v) { return sum + v; }, 0);
+      return '<tr class="extra-summary-row"><td class="sticky-col">' +
+        '<strong>' + escapeHtml(payrollExtraLabel(extra)) + '</strong>' +
+        '<div class="muted" style="font-size:12px">' + escapeHtml(costCenter(extra.center).label) +
+        ' · charges ' + formatRateValue(Math.round(rate * 1000) / 10) + ' %</div></td>' +
+        '<td>Coût employeur</td>' +
+        months.employerCost.map(function (value) {
+          return '<td class="num' + (value ? '' : ' muted') + '">' + (value ? money(value) : '—') + '</td>';
+        }).join('') +
+        '<td class="num total"><strong>' + money(yearCost) + ' €</strong></td>' + actions + '</tr>';
+    }
 
     const dayCells = days.map(function (value, m) {
       return '<td class="num"><input type="number" min="0" step="1" class="month-input" ' +
@@ -22725,11 +22769,19 @@ function payrollExtrasPanel(company) {
     '<div class="table-wrap"><table class="matrix-table extras-table"><thead><tr>' +
     '<th class="sticky-col" style="width:' + colWidths.payrollCollaborateur + 'px">Extra</th>' +
     '<th style="min-width:140px"></th>' + headerMonths + '<th class="num">Année</th><th></th>' +
-    '</tr></thead><tbody>' + rows + daysTotalRow +
-    totalRow('Total extras — brut', totals.gross, false) +
-    totalRow('Charges patronales', totals.employerCharges, false) +
+    '</tr></thead><tbody>' + rows +
+    // Détail du pied (journées, brut, charges) replié par défaut, comme
+    // la matrice de la masse salariale : seul le coût employeur reste.
+    (payrollExtrasDetailOpen
+      ? daysTotalRow +
+        totalRow('Total extras — brut', totals.gross, false) +
+        totalRow('Charges patronales', totals.employerCharges, false)
+      : '') +
     totalRow('= Coût employeur', totals.employerCost, true) +
-    '</tbody></table></div>',
+    '</tbody></table></div>' +
+    '<button class="mini" data-toggle-payroll-extras-detail="1" style="margin-top:8px">' +
+    (payrollExtrasDetailOpen ? 'masquer le détail (journées, brut, charges)' : 'voir le détail (journées, brut, charges)') +
+    '</button>',
     { open: true, meta: extras.length + (extras.length === 1 ? ' extra' : ' extras') +
       (yearCost ? ' — ' + money(yearCost) + ' € de coût employeur' : '') });
 }
@@ -29930,6 +29982,9 @@ document.getElementById('view').addEventListener('click', function (event) {
   if (target.dataset.addPayrollExtra !== undefined) { addPayrollExtra(); return; }
   const removeExtra = target.closest('button[data-delete-payroll-extra]');
   if (removeExtra) { deletePayrollExtra(removeExtra.dataset.deletePayrollExtra); return; }
+  const detailExtra = target.closest('button[data-detail-payroll-extra]');
+  if (detailExtra) { togglePayrollExtraDetail(detailExtra.dataset.detailPayrollExtra); return; }
+  if (target.dataset.togglePayrollExtrasDetail !== undefined) { togglePayrollExtrasDetail(); return; }
 
   // Figer / défiger un taux de charges pour une société ou toutes à la fois
   // (CDG uniquement) — réunion supérieurs § 7.1, étendu le 24/09/2026

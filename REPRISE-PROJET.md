@@ -77,6 +77,34 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Payroll › Extras : masquer le calcul, comme pour les autres postes (08/10/2026)
+
+Demande : « Dans le Payroll, sur l'onglet Extras, s'il est possible de
+masquer le détail du calcul comme pour les autres postes. »
+
+- Chaque extra a un bouton « voir le calcul / masquer le calcul », comme un
+  collaborateur de l'Équipe (`payrollExpandedExtraIds`,
+  `togglePayrollExtraDetail`). Replié, il tient sur une ligne : son nom,
+  son centre et son taux de charges en lecture, puis son **coût employeur**
+  mois par mois (brut + charges, le chiffre qui part en masse salariale).
+  Déplié : les trois rangées habituelles (journées, montant par journée,
+  coût), où se modifient aussi nom, centre et taux.
+- Replié par défaut ; un extra qu'on vient d'ajouter s'ouvre déplié,
+  puisqu'il reste à le remplir. État d'affichage seulement (non enregistré,
+  comme `payrollExpandedId`).
+- Pied du tableau : « Total journées », « Total extras — brut » et
+  « Charges patronales » repliés derrière « voir le détail (journées, brut,
+  charges) », comme la matrice de la masse salariale
+  (`payrollExtrasDetailOpen`) ; « = Coût employeur » reste toujours affiché.
+
+`APP_BUILD` : `2026-10-08.21`.
+
+Contrôles : nouveau « Payroll : le calcul d'un extra se masque » (nouvel
+extra déplié, replié sans cases ni rangées de calcul mais avec son coût
+employeur, bouton, pied replié, réouverture) ; le contrôle existant du
+tableau des extras vérifie le pied une fois le détail déplié. Vérifié en
+échec sans le repli.
+
 ### P&L : ticket moyen de l'année pondéré, plus la somme des mois (08/10/2026)
 
 Constaté en ajoutant le ticket moyen à l'export Excel (entrée suivante),
@@ -12216,6 +12244,7 @@ const app = await importApp(
     '  payrollExtraEmployerRate, payrollExtraMonthGross, payrollExtraMonths, payrollExtraTotals,\n' +
     '  payrollExtraCenters, addPayrollExtra, deletePayrollExtra, setPayrollExtraMonth,\n' +
     '  setPayrollExtraName, setPayrollExtraCenter, setPayrollExtraEmployerRate, payrollExtrasPanel,\n' +
+    '  togglePayrollExtraDetail, togglePayrollExtrasDetail,\n' +
     '  monthlyLeaveCharge, companyLeaveRelease, setCompanyLeaveRelease, leaveReleaseIsManual,\n' +
     '  PAYROLL_LOCKABLE_RATES,\n' +
     '  employeeRateFieldHtml, payrollLockPanel, employeeEditorHtml,\n' +
@@ -21293,9 +21322,15 @@ check('Payroll : le tableau des extras montre les deux saisies et ce qui en déc
     assert.ok(html.includes('= Coût') && html.includes('Jours travaillés') && html.includes('Montant / journée'),
       'les trois rangées doivent être nommées');
     assert.ok(html.includes(app.money(220)), 'le coût de janvier (2 × 110) doit s’afficher');
-    assert.ok(html.includes('Total extras — brut') && html.includes('Charges patronales') &&
-      html.includes('= Coût employeur'),
-      'le pied de tableau doit donner le brut, les charges et le coût employeur');
+    // Pied de tableau : le coût employeur toujours, le brut et les charges
+    // une fois le détail déplié (replié par défaut depuis le 08/10/2026).
+    assert.ok(html.includes('= Coût employeur'), 'le pied de tableau doit donner le coût employeur');
+    app.togglePayrollExtrasDetail();
+    const footerHtml = app.payrollExtrasPanel(company);
+    app.togglePayrollExtrasDetail();
+    assert.ok(footerHtml.includes('Total extras — brut') && footerHtml.includes('Charges patronales') &&
+      footerHtml.includes('Total journées'),
+      'détail déplié : le pied de tableau donne les journées, le brut et les charges');
 
     // Taux figé par le contrôle de gestion : la case se grise, et c'est le
     // taux figé qui s'applique — même règle que la fiche collaborateur.
@@ -21315,6 +21350,63 @@ check('Payroll : le tableau des extras montre les deux saisies et ce qui en déc
     app.state.activeCompany = saved.active; app.state.employees = saved.employees;
     app.state.payrollExtras = saved.extras;
     app.state.payrollLockedRates = saved.locked;
+    app.resetStateIndexes();
+    app.render();
+  }
+});
+
+check('Payroll : le calcul d’un extra se masque, comme celui d’un collaborateur', () => {
+  // Alexis, 08/10/2026 : « dans le Payroll, sur l'onglet Extras, s'il est
+  // possible de masquer le détail du calcul comme pour les autres postes ».
+  const saved = {
+    lines: app.state.lines.slice(), companies: app.state.companies.slice(),
+    active: app.state.activeCompany, employees: (app.state.employees || []).slice(),
+    extras: (app.state.payrollExtras || []).slice(),
+  };
+  try {
+    const { company } = payrollFixture();
+    app.state.employees = [];
+    app.state.payrollExtras = [];
+    app.resetStateIndexes();
+
+    // Un extra qu'on vient d'ajouter s'ouvre déplié : il reste à le remplir.
+    const extra = app.addPayrollExtra();
+    app.setPayrollExtraName(extra.id, 'Extra salle');
+    app.setPayrollExtraMonth(extra.id, 'days', 0, '6');
+    app.setPayrollExtraMonth(extra.id, 'dailyGross', 0, '100');
+    const open = app.payrollExtrasPanel(company);
+    assert.ok(open.includes('data-extra-input="days|' + extra.id + '|0"'), 'nouvel extra : calcul déplié');
+    assert.ok(open.includes('data-detail-payroll-extra="' + extra.id + '">masquer le calcul<'),
+      'déplié, le bouton propose de masquer le calcul');
+
+    // Masqué : une seule ligne, le coût employeur (600 € + 42 % = 852 €).
+    app.togglePayrollExtraDetail(extra.id);
+    const closed = app.payrollExtrasPanel(company);
+    assert.ok(!closed.includes('data-extra-input='), 'calcul masqué : plus de cases journées ni montant');
+    assert.ok(!closed.includes('Jours travaillés') && !closed.includes('Montant / journée'),
+      'calcul masqué : les rangées du calcul disparaissent');
+    assert.ok(closed.includes('Extra salle'), 'le nom de l’extra reste lisible');
+    const employerCost = app.payrollExtraMonths(app.payrollExtraById(extra.id)).employerCost[0];
+    assert.ok(employerCost > 600, 'le coût employeur comprend les charges patronales');
+    assert.ok(closed.includes(app.money(employerCost)), 'replié, l’extra montre son coût employeur du mois');
+    assert.ok(closed.includes('data-detail-payroll-extra="' + extra.id + '">voir le calcul<'),
+      'replié, le bouton propose de voir le calcul');
+    assert.ok(closed.includes('data-delete-payroll-extra="' + extra.id + '"'), 'replié, l’extra se retire toujours');
+
+    // Le pied de tableau : coût employeur seul, détail sur demande.
+    assert.ok(closed.includes('= Coût employeur'), 'le coût employeur total reste affiché');
+    assert.ok(!closed.includes('Total extras — brut') && !closed.includes('Total journées'),
+      'détail du pied replié par défaut, comme la matrice de la masse salariale');
+    assert.ok(closed.includes('data-toggle-payroll-extras-detail'), 'le détail du pied se déplie sur demande');
+
+    // Et il se rouvre.
+    app.togglePayrollExtraDetail(extra.id);
+    assert.ok(app.payrollExtrasPanel(company).includes('data-extra-input="dailyGross|' + extra.id + '|0"'),
+      'voir le calcul rouvre les cases');
+  } finally {
+    app.state.lines = saved.lines; app.state.companies = saved.companies;
+    app.state.activeCompany = saved.active; app.state.employees = saved.employees;
+    app.state.payrollExtras = saved.extras;
     app.resetStateIndexes();
     app.render();
   }
