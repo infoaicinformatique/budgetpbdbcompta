@@ -3498,7 +3498,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-08.23';
+const APP_BUILD = '2026-10-08.24';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -17010,6 +17010,27 @@ function caMatrixWorkbookSheets(company) {
     const head1 = r + 1, head2 = r + 2;
     put(r, 0, xc(monthName + ' ' + year, S.mxMonthTitle));
 
+    // Les événements au-dessus des dates, comme dans l'onglet CA — Alexis,
+    // 08/10/2026 : « dans la matrice excel du CA peut-on intégrer les
+    // évènements au dessus des dates comme c'est le cas dans
+    // l'application ? ». Une cellule par événement, fusionnée sur ses
+    // jours, sur la ligne du titre du mois (juste au-dessus des numéros).
+    // L'import ne lit que la colonne A et les lignes qui suivent un en-tête
+    // de jours : cette ligne, dont la colonne A porte « MAI 2027 », y reste
+    // ignorée.
+    const monthKeys = [];
+    for (let d = 1; d <= days; d++) monthKeys.push(dateKey(year, m, d));
+    let segmentStart = 1;
+    caEventSegments(company.id, monthKeys).forEach(function (segment) {
+      if (segment.event) {
+        const first = firstDayCol + segmentStart - 1;
+        put(r, first, xc(segment.event.name, S.mxEvent));
+        for (let k = 1; k < segment.span; k++) put(r, first + k, xc('', S.mxEvent));
+        if (segment.span > 1) merges.push(col(first) + (r + 1) + ':' + col(first + segment.span - 1) + (r + 1));
+      }
+      segmentStart += segment.span;
+    });
+
     // En-tête : le mois sur deux lignes, puis numéro et jour de la semaine.
     put(head1, 0, xc(monthName, S.mxHeadMonth));
     put(head1, 1, xc('', S.mxHeadMonth));
@@ -28065,7 +28086,10 @@ const XLSX_STYLE = {
   mxHeading: 35,
   // Nombre à deux décimales (ticket moyen, effectif en ETP) : ni un
   // montant arrondi à l'euro, ni un pourcentage.
-  decimal: 36
+  decimal: 36,
+  // Bande des événements de la matrice CA : fond or, texte blanc, centré —
+  // comme la bande de l'onglet CA.
+  mxEvent: 37
 };
 
 function stylesXml() {
@@ -28078,7 +28102,7 @@ function stylesXml() {
     '<numFmt numFmtId="167" formatCode="#,##0.00;(#,##0.00);&quot;&quot;"/>' + /* prix moyen : zéro masqué */
     '<numFmt numFmtId="168" formatCode="#,##0;(#,##0);&quot;&quot;"/>' +       /* couverts : zéro masqué */
     '</numFmts>' +
-    '<fonts count="11">' +
+    '<fonts count="12">' +
     '<font><sz val="10"/><name val="Calibri"/></font>' +                            /* 0 normal */
     '<font><b/><sz val="15"/><color rgb="FF3F4A24"/><name val="Calibri"/></font>' + /* 1 titre (vert olive, comme le thème de l’appli) */
     '<font><i/><sz val="9"/><color rgb="FF6B7280"/><name val="Calibri"/></font>' +  /* 2 sous-titre */
@@ -28090,8 +28114,9 @@ function stylesXml() {
     '<font><i/><sz val="9"/><color rgb="FF595959"/><name val="Arial"/></font>' +    /* 8 matrice : consigne */
     '<font><b/><sz val="10"/><name val="Arial"/></font>' +                          /* 9 matrice : service / mois */
     '<font><b/><sz val="11"/><name val="Arial"/></font>' +                          /* 10 matrice : titre de mois */
+    '<font><b/><sz val="10"/><color rgb="FFFFFFFF"/><name val="Arial"/></font>' +   /* 11 matrice : événement (blanc) */
     '</fonts>' +
-    '<fills count="10">' +
+    '<fills count="11">' +
     '<fill><patternFill patternType="none"/></fill>' +
     '<fill><patternFill patternType="gray125"/></fill>' +
     '<fill><patternFill patternType="solid"><fgColor rgb="FF3F4A24"/><bgColor indexed="64"/></patternFill></fill>' + /* 2 olive (fond d’en-tête, aligné sur --navy du thème depuis la tâche #139) */
@@ -28102,6 +28127,7 @@ function stylesXml() {
     '<fill><patternFill patternType="solid"><fgColor rgb="FFD9D9D9"/><bgColor indexed="64"/></patternFill></fill>' + /* 7 gris (service) */
     '<fill><patternFill patternType="solid"><fgColor rgb="FFEFEFEF"/><bgColor indexed="64"/></patternFill></fill>' + /* 8 gris clair (sous-libellé) */
     '<fill><patternFill patternType="solid"><fgColor rgb="FFBFBFBF"/><bgColor indexed="64"/></patternFill></fill>' + /* 9 gris foncé (jour inexistant) */
+    '<fill><patternFill patternType="solid"><fgColor rgb="FFB8963F"/><bgColor indexed="64"/></patternFill></fill>' + /* 10 or (événement, --gold de l’appli) */
     '</fills>' +
     '<borders count="5">' +
     '<border><left/><right/><top/><bottom/><diagonal/></border>' +
@@ -28115,7 +28141,7 @@ function stylesXml() {
     '<top style="thin"><color rgb="FF808080"/></top><bottom style="double"><color rgb="FF000000"/></bottom><diagonal/></border>' + /* 4 matrice : total, double trait bas */
     '</borders>' +
     '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
-    '<cellXfs count="37">' +
+    '<cellXfs count="38">' +
     '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +                                                        /* 0 normal */
     '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +                                         /* 1 titre */
     '<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +                                         /* 2 sous-titre */
@@ -28153,6 +28179,7 @@ function stylesXml() {
     '<xf numFmtId="0" fontId="5" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>' + /* 34 texte */
     '<xf numFmtId="0" fontId="6" fillId="6" borderId="0" xfId="0" applyFont="1" applyFill="1"/>' + /* 35 intertitre */
     '<xf numFmtId="4" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>' + /* 36 décimal (#,##0.00) */
+    '<xf numFmtId="0" fontId="11" fillId="10" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>' + /* 37 bande d’événement */
     '</cellXfs>' +
     '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>' +
     '</styleSheet>';

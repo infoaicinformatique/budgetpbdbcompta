@@ -77,6 +77,31 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Matrice CA Excel : les événements au-dessus des dates (08/10/2026)
+
+Demande : « Dans la matrice excel du CA peut-on intégrer les évènements au
+dessus des dates comme c'est le cas dans l'application ? »
+
+- `caMatrixWorkbookSheets` : sur la ligne du titre de chaque mois (« MAI
+  2027 », juste au-dessus des numéros de jour), une cellule par événement,
+  fusionnée sur ses jours, au nom de l'événement — découpage
+  `caEventSegments`, le même que la bande de l'onglet CA. Nouveau style
+  Excel `mxEvent` (fond or `#B8963F`, texte blanc gras, centré), comme la
+  bande de l'application.
+- L'import (`parseCaMatrixRows`) ne lit que la colonne A et les lignes qui
+  suivent un en-tête de jours : la ligne du titre, dont la colonne A porte
+  « MAI 2027 », reste ignorée — la bande ne peut pas être prise pour une
+  saisie, même pour un événement nommé « MIDI ».
+
+`APP_BUILD` : `2026-10-08.24`.
+
+Contrôle : « Matrice CA Excel : les événements au-dessus des dates » —
+nom au-dessus du premier jour, bande du premier au dernier jour, fusion,
+événement d'un jour sans fusion, pas de bande un mois sans événement ;
+aller-retour export/import identique (12 blocs, aucune case rejetée, mai
+relu à l'identique). Vérifié en échec sans la bande ; classeur ouvert dans
+LibreOffice, rendu conforme.
+
 ### Payroll : les extras retombent dans la matrice de la masse salariale (08/10/2026)
 
 Demande : « Et faire retomber les extras dans la Matrice de la masse
@@ -12485,7 +12510,7 @@ const app = await importApp(
     '  UNDO_IGNORED_KEYS };\n' +
     'export { playModalExit, MODAL_EXIT_MS };\n' +
     'export { markWelcomeChoice };\n' +
-    'export { styledPnlSheet };\n' +
+    'export { styledPnlSheet, XLSX_STYLE, columnName };\n' +
     'export { VALIDATION_STALE_DAYS, canSubmitCompanyValidation, canValidateCompanyBudget,\n' +
     '  submitCompanyForValidation, validateCompanyBudget, revertCompanyValidationToDraft,\n' +
     '  validationBadgeHtml };\n' +
@@ -20811,6 +20836,65 @@ await checkAsync('Matrice officielle : export Excel pré-rempli, puis réimport 
     app.state.serviceMatrix = saved.matrix;
     app.resetStateIndexes();
     app.__setTab(saved.tab);
+    app.render();
+  }
+});
+
+await checkAsync('Matrice CA Excel : les événements au-dessus des dates, comme dans l’onglet CA, sans gêner l’import', async () => {
+  // Alexis, 08/10/2026 : « dans la matrice excel du CA peut-on intégrer
+  // les évènements au dessus des dates comme c'est le cas dans
+  // l'application ? ».
+  const company = { id: 'camx_evt', name: 'Events Test', currency: 'EUR', year: 2027, groupId: null };
+  const saved = {
+    companies: app.state.companies.slice(), active: app.state.activeCompany,
+    matrix: app.state.serviceMatrix, events: (app.state.caEvents || []).slice(),
+  };
+  app.state.companies = [company];
+  app.state.activeCompany = company.id;
+  app.state.serviceMatrix = {};
+  app.state.caEvents = [];
+  dom.blobs.length = 0;
+  try {
+    app.addCaEvent([company.id], 'FIF', '2027-05-11', '2027-05-22');
+    // Un nom piège : « MIDI » en ligne d'événement ne doit pas se lire comme un service.
+    app.addCaEvent([company.id], 'MIDI', '2027-05-25', '2027-05-25');
+    app.setServiceMatrixValue(company.id, 'covers', 'lunch', '2027-05-12', 80);
+    app.setServiceMatrixValue(company.id, 'ticket', 'lunch', '2027-05-12', 50);
+
+    const sheet = app.caMatrixWorkbookSheets(company).find((x) => x.name === 'Matrice CA 2027');
+    const value = (cell) => (cell && typeof cell === 'object' && 'v' in cell ? cell.v : cell);
+    const titleRow = sheet.rows.findIndex((r) => r && value(r[0]) === 'MAI 2027');
+    assert.ok(titleRow >= 0, 'titre du bloc de mai');
+    const dayRow = sheet.rows[titleRow + 1];
+    const colOfDay = (d) => dayRow.findIndex((cell, c) => c >= 2 && value(cell) === d);
+    const band = sheet.rows[titleRow];
+    assert.equal(value(band[colOfDay(11)]), 'FIF', 'le nom de l’événement au-dessus de son premier jour');
+    assert.equal(band[colOfDay(11)].s, app.XLSX_STYLE.mxEvent, 'bande dorée, comme dans l’application');
+    assert.equal(band[colOfDay(22)].s, app.XLSX_STYLE.mxEvent, 'la bande couvre jusqu’au dernier jour');
+    assert.ok(!band[colOfDay(23)] || band[colOfDay(23)].s !== app.XLSX_STYLE.mxEvent, 'et s’arrête après');
+    assert.ok(!band[colOfDay(10)] || band[colOfDay(10)].s !== app.XLSX_STYLE.mxEvent, 'elle ne commence pas avant');
+    const L = (c) => app.columnName(c);
+    assert.ok(sheet.merges.includes(L(colOfDay(11)) + (titleRow + 1) + ':' + L(colOfDay(22)) + (titleRow + 1)),
+      'une seule cellule fusionnée sur les douze jours de l’événement');
+    assert.equal(value(band[colOfDay(25)]), 'MIDI', 'un événement d’un jour : une cellule, sans fusion');
+    // Les autres mois n'ont pas de bande.
+    const juneTitle = sheet.rows.findIndex((r) => r && value(r[0]) === 'JUIN 2027');
+    assert.ok(!sheet.rows[juneTitle].some((cell, c) => c >= 2 && cell && cell.s === app.XLSX_STYLE.mxEvent),
+      'pas d’événement en juin, pas de bande');
+
+    // Aller-retour : le classeur exporté se réimporte à l'identique.
+    app.downloadCaMatrix();
+    const buffer = Buffer.from(await dom.blobs[0].arrayBuffer());
+    const rows = (await app.readWorkbookFromFile(new File([buffer], 'm.xlsx'))).get('Matrice CA 2027');
+    const parsed = app.parseCaMatrixRows(rows, 2027);
+    assert.equal(parsed.headers, 12, 'les douze blocs de mois restent reconnus');
+    assert.equal(parsed.rejected, 0, 'aucune case illisible : la bande n’est pas lue comme une saisie');
+    assert.deepEqual(parsed.months[4].values, { 'ticket|lunch|12': 50, 'covers|lunch|12': 80 },
+      'mai se relit exactement : la bande (et l’événement « MIDI ») ne se mélangent pas aux saisies');
+  } finally {
+    app.state.companies = saved.companies; app.state.activeCompany = saved.active;
+    app.state.serviceMatrix = saved.matrix; app.state.caEvents = saved.events;
+    app.resetStateIndexes();
     app.render();
   }
 });
