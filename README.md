@@ -22,8 +22,9 @@ tout le reste (document de reprise, Excel, scripts) renvoie 404.
 Variables (voir `.env.example`) : `HOST`, `PORT`, `PUBLIC_HOST`,
 `BASIC_AUTH_USER` / `BASIC_AUTH_PASSWORD` (compte local de secours,
 **retiré en production**), `LDAP_*` (annuaire, voir « Authentification LDAP »),
-`TRUST_PROXY`, `RIGHTS_ADMINS`, et les deux fichiers du volume :
-`RIGHTS_FILE` (droits) et `DATA_FILE` (sociétés et budgets).
+`TRUST_PROXY`, `RIGHTS_ADMINS`, et les trois fichiers du volume :
+`RIGHTS_FILE` (droits), `DATA_FILE` (sociétés et budgets) et
+`PREFERENCES_FILE` (préférences d'affichage de chaque personne).
 Une protection est recommandée : l'application embarque le plan comptable et
 les budgets.
 
@@ -211,6 +212,19 @@ budgets, collaborateurs, CA, objectifs… sont lus et écrits sur le serveur
   désignent déjà. La copie locale est ensuite effacée.
 - **Hors serveur** (fichier ouvert en local, http simple) : l'application
   garde son ancien fonctionnement, tout dans le navigateur.
+- **Ordre des sociétés de l'accueil** (08/10/2026, `preferences.mjs`) :
+  chacun range ses cartes de sociétés par glisser-déposer (ou Alt+← / Alt+→).
+  L'ordre est enregistré aussitôt sur son profil, `PREFERENCES_FILE`
+  (Docker : `/data/preferences.json`, même volume), par `GET`/`PUT
+  /api/preferences` : sans identifiant dans le chemin, chacun ne lit et
+  n'écrit que le sien. Ce n'est qu'un affichage, il ne donne accès à rien.
+  Hors serveur, il est gardé dans le navigateur, par compte local.
+- **Préférences d'affichage** (08/10/2026, même fichier et même adresse) :
+  Paramètres › Préférences d'affichage, propres à chacun — taille du texte,
+  densité des tableaux, animations et palette de couleurs (quinze archétypes
+  de logiciels de gestion plus la charte Palm Beach, par défaut). Appliquées
+  tout de suite, enregistrées sur le profil ; un `PUT` n'envoie que le
+  réglage changé. Pas de thème sombre (retiré à la demande d'Alexis).
 
 Sauvegarde : `sudo docker exec budgetpbdbcompta cat /data/budget.json > budget-$(date +%F).json`.
 Revenir à une version : copier un fichier de `/data/historique/` sur

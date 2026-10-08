@@ -41,8 +41,10 @@ export const COMPANY_DICTS = [
 ];
 
 /* Jamais enregistré ni renvoyé : comptes et journal de sécurité propres au
-   mode local, et choix d'affichage propres à chaque poste. */
-export const PRIVATE_KEYS = ['users', 'authLog', 'activeCompany', 'activeEnvironmentId', 'activeScenario', 'lastSavedAt'];
+   mode local, et choix d'affichage propres à chaque poste. `userPreferences`
+   (ordre des sociétés de l'accueil et réglages visuels, par compte local) :
+   en mode serveur, elles vivent sur le profil de la personne (preferences.mjs). */
+export const PRIVATE_KEYS = ['users', 'authLog', 'activeCompany', 'activeEnvironmentId', 'activeScenario', 'lastSavedAt', 'userPreferences'];
 
 const SPECIAL_KEYS = new Set(['companies', 'caEvents', ...COMPANY_ARRAYS, ...COMPANY_DICTS, ...PRIVATE_KEYS]);
 
