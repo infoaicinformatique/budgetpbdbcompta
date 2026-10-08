@@ -529,6 +529,12 @@ const app = await importApp(
     'export function __getServerData() { return serverData; }\n' +
     'export function __clearSaveTimer() { if (saveTimer !== null) { clearTimeout(saveTimer); saveTimer = null; } }\n' +
     'export function __clearServerSession() { serverSession = null; serverDirectory = null; }\n' +
+    // Ordre des sociétés de l'accueil (08/10/2026).
+    'export { userCompanyOrder, sortCompaniesByUserOrder, moveCompanyInUserOrder, setUserCompanyOrder,\n' +
+    '  welcomeCompanyIdsShown, companyOrderKey, loadServerPreferences };\n' +
+    'export function __setServerPreferences(v) { serverPreferences = v; }\n' +
+    'export function __getServerPreferences() { return serverPreferences; }\n' +
+    'export function __swapServerRequest(fn) { const previous = serverRequest; serverRequest = fn; return previous; }\n' +
     'export function __setServerDataForTest(v) { serverData = v; }\n' +
     'export function __setServerDirectory(v) { serverDirectory = v; }\n' +
     'export function __setAuthPermissionsIdForTest(v) { authPermissionsId = v; }\n' +
@@ -1187,11 +1193,12 @@ check('Données tenues par le serveur : ce qui part, état vide, choix du poste'
   const savedState = app.state;
   try {
     const payload = app.serverStatePayload({ companies: [{ id: 'a' }], users: [{ passwordHash: 'x' }], authLog: [1],
-      activeCompany: 'a', activeEnvironmentId: 'e', activeScenario: 's', lastSavedAt: 'hier', scenarios: [] });
+      activeCompany: 'a', activeEnvironmentId: 'e', activeScenario: 's', lastSavedAt: 'hier', scenarios: [],
+      companyOrders: { u1: ['a'] } });
     assert.deepEqual(Object.keys(payload).sort(), ['companies', 'scenarios'],
       'ni comptes locaux, ni journal de sécurité, ni choix d’affichage ne partent au serveur');
     assert.deepEqual(app.SERVER_PRIVATE_KEYS.slice().sort(),
-      ['activeCompany', 'activeEnvironmentId', 'activeScenario', 'authLog', 'lastSavedAt', 'users'],
+      ['activeCompany', 'activeEnvironmentId', 'activeScenario', 'authLog', 'companyOrders', 'lastSavedAt', 'users'],
       'même liste que PRIVATE_KEYS dans data.mjs');
 
     // Périmètre vide : aucune société inventée (adoptState mettrait celles d'origine).
@@ -7600,11 +7607,12 @@ check('la politique de sécurité interdit les connexions sortantes', () => {
   }
 });
 
-await checkAsync('les seules sorties réseau restantes visent /api/droits et /api/donnees', async () => {
+await checkAsync('les seules sorties réseau restantes visent /api/droits, /api/donnees et /api/preferences', async () => {
   assert.equal(typeof app.serverRequest, 'function', 'serverRequest doit exister là où fetch existe');
   for (const path of ['https://example.invalid/api/droits', '//example.invalid/api/droits', '/api/budgets',
     '/api/droits/../budgets', '/api/droits/a/b', '/', '/api/donnees/x', '/api/donnees/revision/x',
-    '/api/donneesx', 'https://example.invalid/api/donnees']) {
+    '/api/donneesx', 'https://example.invalid/api/donnees',
+    '/api/preferences/x', '/api/preferencesx', 'https://example.invalid/api/preferences']) {
     await assert.rejects(app.serverRequest('GET', path), /interdite/, 'chemin refusé attendu : ' + path);
   }
 });
@@ -18125,6 +18133,77 @@ check('Accueil : la carte « Tous les environnements » a un thème blanc adouci
       'Multi Société C (sans environnement) devrait retomber sur le vert olive par défaut'
     );
   } finally {
+    app.resetWelcomeCompanyStep();
+    restoreEnvironmentFixture(saved);
+  }
+});
+
+await checkAsync('Accueil : chacun range ses sociétés dans l’ordre qu’il veut, enregistré sur son compte (08/10/2026)', async () => {
+  const saved = environmentFixture();
+  const savedOrders = app.state.companyOrders;
+  const order = (htmlCards) => [...htmlCards.matchAll(/data-welcome-company="([^"]+)"/g)].map((m) => m[1]);
+  try {
+    app.state.companyOrders = {};
+    app.__setWelcomeCompanyStep(null);
+    // Sans ordre choisi : par nom, comme avant.
+    assert.deepEqual(order(app.welcomeCompanyCardsHtml()), ['multi_a', 'multi_b', 'multi_c'],
+      'sans ordre choisi, les cartes restent rangées par nom');
+    assert.ok(/data-welcome-company="multi_a" draggable="true"/.test(app.welcomeCompanyCardsHtml()),
+      'les cartes de sociétés doivent se glisser-déposer');
+
+    // Mode local : déposer C sur A le met en tête, et l'ordre est rangé
+    // sous la clé du compte connecté, dans l'état local.
+    assert.equal(app.moveCompanyInUserOrder(app.welcomeCompanyIdsShown(), 'multi_c', 'multi_a'), true);
+    assert.deepEqual(order(app.welcomeCompanyCardsHtml()), ['multi_c', 'multi_a', 'multi_b'],
+      'la carte déposée prend la place de celle qui la reçoit');
+    assert.deepEqual(app.state.companyOrders[app.companyOrderKey()], ['multi_c', 'multi_a', 'multi_b'],
+      'l’ordre est enregistré pour ce compte');
+    // Vers la droite : A déposé sur B passe derrière B.
+    app.moveCompanyInUserOrder(app.welcomeCompanyIdsShown(), 'multi_a', 'multi_b');
+    assert.deepEqual(order(app.welcomeCompanyCardsHtml()), ['multi_c', 'multi_b', 'multi_a']);
+
+    // Un autre compte garde son propre ordre : rien de partagé.
+    const mine = app.companyOrderKey();
+    app.state.companyOrders = { [mine]: ['multi_b'], autre_compte: ['multi_c', 'multi_a', 'multi_b'] };
+    assert.deepEqual(order(app.welcomeCompanyCardsHtml()), ['multi_b', 'multi_a', 'multi_c'],
+      'seul l’ordre du compte connecté compte ; une société non rangée suit, par nom');
+
+    // Les sociétés absentes de l'écran gardent leur place derrière celles
+    // qu'on range (autre environnement), et une société inconnue n'y fait rien.
+    app.state.companyOrders = { [mine]: ['fantome', 'multi_b', 'multi_a', 'multi_c'] };
+    app.moveCompanyInUserOrder(['multi_b', 'multi_a'], 'multi_a', 'multi_b');
+    assert.deepEqual(app.state.companyOrders[mine], ['multi_a', 'multi_b', 'fantome', 'multi_c']);
+
+    // L'ordre reste un affichage : jamais envoyé au serveur avec les budgets.
+    assert.ok(!('companyOrders' in app.serverStatePayload(app.state)),
+      'l’ordre local ne part jamais avec les données partagées');
+
+    // Mode serveur : l'ordre vit sur le profil (PUT /api/preferences), pas
+    // dans l'état local.
+    const calls = [];
+    const previous = app.__swapServerRequest(function (method, path, body) {
+      calls.push({ method, path, body });
+      return Promise.resolve(method === 'GET' ? { companyOrder: ['multi_b', 'multi_c'] } : body);
+    });
+    try {
+      app.adoptServerSession({ method: 'ldap', account: 'ctrl', rights: { role: 'controleur', isAdmin: false, permissions: null } }, null);
+      app.state.companyOrders = {};
+      await app.loadServerPreferences();
+      assert.deepEqual(calls[0], { method: 'GET', path: '/api/preferences', body: undefined }, 'lu sur le profil au démarrage');
+      assert.deepEqual(order(app.welcomeCompanyCardsHtml()), ['multi_b', 'multi_c', 'multi_a'],
+        'l’ordre du profil s’applique dès l’arrivée');
+      app.moveCompanyInUserOrder(app.welcomeCompanyIdsShown(), 'multi_a', 'multi_b');
+      const put = calls.find((c) => c.method === 'PUT');
+      assert.ok(put && put.path === '/api/preferences', 'le nouvel ordre part aussitôt sur le profil');
+      assert.deepEqual(put.body, { companyOrder: ['multi_a', 'multi_b', 'multi_c'] });
+      assert.deepEqual(app.state.companyOrders, {}, 'rien n’est écrit dans l’état local en mode serveur');
+    } finally {
+      app.__swapServerRequest(previous);
+      app.__clearServerSession();
+      app.__setServerPreferences(null);
+    }
+  } finally {
+    app.state.companyOrders = savedOrders;
     app.resetWelcomeCompanyStep();
     restoreEnvironmentFixture(saved);
   }

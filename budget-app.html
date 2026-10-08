@@ -2587,6 +2587,12 @@
     border-color: var(--gold);
     box-shadow: 0 0 0 3px rgba(184,150,63,.55), 0 14px 30px rgba(0,0,0,.22);
   }
+  /* Rangement des cartes de sociétés (glisser-déposer, 08/10/2026) : la
+     carte saisie s'estompe, celle qui recevra le dépôt s'entoure d'un trait
+     pointillé. */
+  .welcome-env-card[draggable="true"] { cursor: grab; }
+  .welcome-env-card.dragging { opacity: .45; cursor: grabbing; }
+  .welcome-env-card.drop-target { outline: 3px dashed var(--gold); outline-offset: 4px; }
   .welcome-env-card.current::after {
     content: 'en cours';
     position: absolute; top: -12px; left: 50%; transform: translateX(-50%);
@@ -3313,7 +3319,7 @@ let serverData = null;
   const nativeFetch = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null;
   if (nativeFetch) {
     serverRequest = function (method, path, body) {
-      if (!/^\/api\/(droits(\/[A-Za-z0-9._@%-]+)?|donnees(\/(revision|main))?)$/.test(String(path))) {
+      if (!/^\/api\/(droits(\/[A-Za-z0-9._@%-]+)?|donnees(\/(revision|main))?|preferences)$/.test(String(path))) {
         return Promise.reject(new Error('Sortie réseau interdite (' + path + ').'));
       }
       const options = { method: method, credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers: {} };
@@ -3435,7 +3441,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-08.5';
+const APP_BUILD = '2026-10-08.6';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -4625,6 +4631,11 @@ function defaultState() {
     // saisis à la main : l'application est hors ligne, impossible d'aller
     // chercher un taux en direct.
     exchangeRates: {},
+    // Ordre des sociétés sur l'écran d'accueil, choisi par chaque compte
+    // local (glisser-déposer des cartes) : { [clé du compte]: [ids] }.
+    // Hors mode serveur seulement — en mode serveur, l'ordre vit sur le
+    // profil de la personne (`/api/preferences`), voir `userCompanyOrder`.
+    companyOrders: {},
     seeds: {}
   })));
   // « LPM test » reste la société active par défaut, même si d'autres
@@ -4871,6 +4882,17 @@ function adoptState(parsed) {
        valeurs positives : une série trop courte ferait planter l'affichage
        du tableau, et une valeur illisible remonterait en NaN jusque dans le
        6411 du centre. */
+    // Ordre des sociétés de l'accueil (08/10/2026) : absent des états
+    // antérieurs, et rien qu'un ordre d'affichage — une forme illisible
+    // retombe sur « aucun ordre choisi », jamais sur une erreur.
+    const orders = parsed.companyOrders && typeof parsed.companyOrders === 'object' && !Array.isArray(parsed.companyOrders)
+      ? parsed.companyOrders : {};
+    parsed.companyOrders = {};
+    for (const key of Object.keys(orders)) {
+      if (Array.isArray(orders[key])) {
+        parsed.companyOrders[key] = orders[key].filter(function (id) { return typeof id === 'string'; });
+      }
+    }
     parsed.payrollExtras = Array.isArray(parsed.payrollExtras) ? parsed.payrollExtras : [];
     for (const extra of parsed.payrollExtras) {
       if (typeof extra.name !== 'string') extra.name = '';
@@ -6589,11 +6611,106 @@ function welcomeEnvironmentCardsHtml() {
  * Alexis : « fait en sorte que ce soit agréable et compréhensible
  * visuellement ».
  */
+/* ------------------------------------------------------------------
+   Ordre des sociétés de l'accueil, propre à chaque personne
+
+   Demande du 08/10/2026 : « laisser l'utilisateur classer les entités dans
+   l'ordre qu'il veut. Depuis la page d'accueil l'utilisateur peut
+   positionner ses entités comme il le souhaite. Ça sauvegarde
+   automatiquement sur son profil compte. »
+
+   Les cartes de sociétés se glissent-déposent (ou Alt+← / Alt+→ sur la
+   carte qui a le focus). L'ordre est enregistré tout de suite :
+   - en mode serveur, sur le profil de la personne (`/api/preferences`,
+     preferences.mjs) — il la suit d'un poste à l'autre ;
+   - sinon, dans l'état local, par compte (`state.companyOrders`).
+   Ce n'est qu'un ordre d'affichage : la liste reste bornée par les droits,
+   une société absente de l'ordre se range après les autres, par nom.
+   ------------------------------------------------------------------ */
+
+/* Préférences lues sur le serveur au démarrage ; `null` hors mode serveur. */
+let serverPreferences = null;
+/* Carte en cours de glissement sur l'accueil (id de société). */
+let welcomeDragCompanyId = null;
+
+/** Clé du compte local dans `state.companyOrders` (`''` sans compte). */
+function companyOrderKey() {
+  const user = authEnabled() ? currentUser() : null;
+  return user ? String(user.id || user.username || '') : '';
+}
+
+/** Ordre choisi par la personne connectée (ids de sociétés), éventuellement vide. */
+function userCompanyOrder() {
+  if (serverSession) return serverPreferences && Array.isArray(serverPreferences.companyOrder) ? serverPreferences.companyOrder : [];
+  const orders = state.companyOrders || {};
+  return Array.isArray(orders[companyOrderKey()]) ? orders[companyOrderKey()] : [];
+}
+
+/** Trie des sociétés selon l'ordre de la personne ; les autres suivent, par nom. */
+function sortCompaniesByUserOrder(companies) {
+  const position = new Map(userCompanyOrder().map(function (id, i) { return [id, i]; }));
+  return companies.slice().sort(function (a, b) {
+    const pa = position.has(a.id) ? position.get(a.id) : Infinity;
+    const pb = position.has(b.id) ? position.get(b.id) : Infinity;
+    if (pa !== pb) return pa < pb ? -1 : 1;
+    return alphaCompare(a.name, b.name);
+  });
+}
+
+/** Lit mes préférences sur le serveur (démarrage). Une panne laisse l'ordre par nom. */
+async function loadServerPreferences() {
+  if (!serverSession || !serverRequest) return;
+  try {
+    const data = await serverRequest('GET', '/api/preferences');
+    serverPreferences = { companyOrder: Array.isArray(data && data.companyOrder) ? data.companyOrder : [] };
+  } catch (e) {
+    serverPreferences = { companyOrder: [] };
+  }
+}
+
+/** Enregistre un nouvel ordre sur le profil de la personne. */
+function setUserCompanyOrder(order) {
+  if (serverSession) {
+    serverPreferences = { companyOrder: order };
+    if (!serverRequest) return Promise.resolve();
+    return serverRequest('PUT', '/api/preferences', { companyOrder: order }).catch(function (e) {
+      showToast('Ordre des sociétés non enregistré : ' + (e.message || e), true);
+    });
+  }
+  if (!state.companyOrders || typeof state.companyOrders !== 'object') state.companyOrders = {};
+  state.companyOrders[companyOrderKey()] = order;
+  save();
+  return Promise.resolve();
+}
+
+/**
+ * Déplace `movedId` à la place de `targetId` parmi les cartes affichées
+ * (`shownIds`, dans leur ordre à l'écran), puis enregistre l'ordre complet.
+ * Les sociétés d'autres environnements, absentes de l'écran, gardent leur
+ * place relative derrière celles qu'on vient de ranger.
+ */
+function moveCompanyInUserOrder(shownIds, movedId, targetId) {
+  const from = shownIds.indexOf(movedId);
+  const to = shownIds.indexOf(targetId);
+  if (from === -1 || to === -1 || from === to) return false;
+  const next = shownIds.slice();
+  next.splice(from, 1);
+  next.splice(to, 0, movedId);
+  const shown = new Set(next);
+  const rest = userCompanyOrder().filter(function (id) { return !shown.has(id); });
+  setUserCompanyOrder(next.concat(rest));
+  return true;
+}
+
+/** Ids des cartes de sociétés de l'accueil, dans l'ordre affiché. */
+function welcomeCompanyIdsShown() {
+  return sortCompaniesByUserOrder(companiesForWelcomeStep(welcomeCompanyStepEnvId))
+    .map(function (c) { return c.id; });
+}
+
 function welcomeCompanyCardsHtml() {
   if (!welcomeCompanyStepActive) return '';
-  const companies = companiesForWelcomeStep(welcomeCompanyStepEnvId)
-    .slice()
-    .sort(function (a, b) { return alphaCompare(a.name, b.name); });
+  const companies = sortCompaniesByUserOrder(companiesForWelcomeStep(welcomeCompanyStepEnvId));
   // La liste a pu se vider entre-temps (dernière société masquée depuis
   // Affichage pendant que l'accueil était ouvert, cas limite) : on retombe
   // simplement sur l'écran d'environnements plutôt que d'afficher une
@@ -6618,7 +6735,9 @@ function welcomeCompanyCardsHtml() {
     // différence, chaque société y retrouvant sa propre couleur.
     const color = environmentColorHex(environmentIdForCompany(c)) || DEFAULT_NAVY_COLOR;
     return '<button type="button" class="welcome-env-card' + tier + (current === c.id ? ' current' : '') +
-      '" data-welcome-company="' + c.id + '" style="background-color:' + color + '">' +
+      (welcomeDragCompanyId === c.id ? ' dragging' : '') +
+      '" data-welcome-company="' + c.id + '" draggable="true" ' +
+      'title="Glisser pour changer l’ordre (ou Alt+← / Alt+→)" style="background-color:' + color + '">' +
       (c.logo ? '<img class="logo" src="' + c.logo + '" alt="" />' : '') +
       '<span class="name">' + escapeHtml(c.name) + '</span>' +
       '<span class="count">Exercice ' + escapeHtml(String(c.year)) + '</span>' +
@@ -6681,7 +6800,7 @@ function welcomeModalHtml() {
         (welcomeCompanyStepEnvLabel ? ' de « ' + escapeHtml(welcomeCompanyStepEnvLabel) + ' »' : '') +
         ' voulez-vous ouvrir ?</p>' +
         companyCards +
-        '<p class="hint">Vous pourrez en changer à tout moment depuis la barre du haut</p>'
+        '<p class="hint">Glissez les cartes pour les ranger dans l’ordre de votre choix — il est enregistré sur votre compte</p>'
       : (environmentCards
         // Un choix à faire : le rappel des chiffres est porté par les cartes
         // elles-mêmes, inutile de le répéter au-dessus.
@@ -9290,7 +9409,7 @@ function startServerRightsRefresh() {
 /* Ce qui ne part jamais au serveur : comptes et journal propres au mode
    local, choix d'affichage propres au poste. Même liste que PRIVATE_KEYS
    dans data.mjs. */
-const SERVER_PRIVATE_KEYS = ['users', 'authLog', 'activeCompany', 'activeEnvironmentId', 'activeScenario', 'lastSavedAt'];
+const SERVER_PRIVATE_KEYS = ['users', 'authLog', 'activeCompany', 'activeEnvironmentId', 'activeScenario', 'lastSavedAt', 'companyOrders'];
 const SERVER_RETRY_MS = 10000;
 /* Découpage par société : même liste que COMPANY_ARRAYS / COMPANY_DICTS
    dans data.mjs (les dictionnaires sont ceux de COMPANY_KEYED_STATE). */
@@ -27532,6 +27651,70 @@ function xlsxWorkbookFiles(sheets) {
  * que l'application a le focus, ce qui est le cas attendu ici puisqu'elle
  * s'utilise en plein écran.
  */
+/* Accueil : ranger les cartes de sociétés par glisser-déposer. Le dépôt
+   sur une carte prend sa place ; l'ordre est enregistré aussitôt (voir
+   `moveCompanyInUserOrder`). Un glisser n'émet pas de clic : la carte
+   déplacée n'ouvre pas la société. */
+document.addEventListener('dragstart', function (event) {
+  const card = event.target && event.target.closest ? event.target.closest('[data-welcome-company]') : null;
+  if (!card) return;
+  welcomeDragCompanyId = card.dataset.welcomeCompany;
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move';
+    // Firefox ne lance le glisser que si une donnée est posée.
+    try { event.dataTransfer.setData('text/plain', welcomeDragCompanyId); } catch (e) { /* sans importance */ }
+  }
+  card.classList.add('dragging');
+});
+document.addEventListener('dragover', function (event) {
+  if (!welcomeDragCompanyId) return;
+  const card = event.target && event.target.closest ? event.target.closest('[data-welcome-company]') : null;
+  if (!card) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+  document.querySelectorAll('.welcome-env-card.drop-target').forEach(function (el) {
+    if (el !== card) el.classList.remove('drop-target');
+  });
+  if (card.dataset.welcomeCompany !== welcomeDragCompanyId) card.classList.add('drop-target');
+});
+document.addEventListener('drop', function (event) {
+  if (!welcomeDragCompanyId) return;
+  const card = event.target && event.target.closest ? event.target.closest('[data-welcome-company]') : null;
+  const moved = welcomeDragCompanyId;
+  welcomeDragCompanyId = null;
+  if (!card) { render(); return; }
+  event.preventDefault();
+  moveCompanyInUserOrder(welcomeCompanyIdsShown(), moved, card.dataset.welcomeCompany);
+  render();
+  const again = document.querySelector('[data-welcome-company="' + moved + '"]');
+  if (again && again.focus) again.focus();
+});
+document.addEventListener('dragend', function () {
+  if (!welcomeDragCompanyId) return;
+  welcomeDragCompanyId = null;
+  render();
+});
+
+/* Même rangement au clavier : Alt+← / Alt+→ (ou ↑ / ↓) sur la carte qui a
+   le focus la recule ou l'avance d'une place. */
+document.addEventListener('keydown', function (event) {
+  if (!event.altKey || event.ctrlKey || event.metaKey) return;
+  const step = event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1
+    : event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : 0;
+  if (!step) return;
+  const card = event.target && event.target.closest ? event.target.closest('[data-welcome-company]') : null;
+  if (!card) return;
+  event.preventDefault();
+  const ids = welcomeCompanyIdsShown();
+  const id = card.dataset.welcomeCompany;
+  const target = ids[ids.indexOf(id) + step];
+  if (!target) return;
+  moveCompanyInUserOrder(ids, id, target);
+  render();
+  const again = document.querySelector('[data-welcome-company="' + id + '"]');
+  if (again && again.focus) again.focus();
+});
+
 /**
  * Ctrl+K (Cmd+K sur Mac) : la palette de commandes, d'où qu'on vienne.
  * Placé avant le raccourci des onglets pour la même raison que lui —
@@ -32623,6 +32806,7 @@ async function boot() {
   // Mode serveur : les données viennent du serveur, jamais du navigateur.
   if (serverSession) {
     await loadServerData();
+    await loadServerPreferences();
     tab = serverData.ready ? serverLandingTab() : 'parametres';
     maybeShowWelcomeOnEntry();
     resetUndoHistory();

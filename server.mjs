@@ -24,6 +24,8 @@
  *                        des droits (« prenom.nom, autre.nom »)
  *   DATA_FILE            fichier des données budgétaires (défaut ./data/budget.json ;
  *                        historique dans le dossier `historique/` à côté)
+ *   PREFERENCES_FILE     préférences d'affichage de chaque personne (défaut
+ *                        ./data/preferences.json) : ordre des sociétés de l'accueil
  *
  * Sans compte local ni LDAP, l'application est publique.
  */
@@ -40,6 +42,7 @@ import {
 import { createRightsStore, parseAdminList, normalizeAccount, RightsError } from './rights.mjs';
 import { createDataStore, declarationOf, DataError } from './data.mjs';
 import { createPresenceStore, PRESENCE_TTL_MS } from './presence.mjs';
+import { createPreferencesStore, PreferencesError } from './preferences.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const HOST = process.env.HOST || '127.0.0.1';
@@ -67,6 +70,8 @@ const rights = createRightsStore(RIGHTS_FILE, RIGHTS_ADMINS);
 
 const DATA_FILE = process.env.DATA_FILE || join(root, 'data', 'budget.json');
 const dataStore = createDataStore(DATA_FILE);
+const PREFERENCES_FILE = process.env.PREFERENCES_FILE || join(root, 'data', 'preferences.json');
+const preferences = createPreferencesStore(PREFERENCES_FILE);
 /* Qui a la main sur quelle société — en mémoire, voir presence.mjs. */
 const presence = createPresenceStore();
 
@@ -506,6 +511,34 @@ async function handleDataApi(req, res, url, auth) {
   }
 }
 
+/* ---------------- /api/preferences ----------------
+
+   GET  /api/preferences   mes préférences d'affichage ({ companyOrder })
+   PUT  /api/preferences   les remplace
+
+   Pas d'identifiant dans le chemin : chacun ne lit et n'écrit que les
+   siennes, sous l'identité vérifiée par l'authentification. Aucune fiche de
+   droits n'est exigée — ranger ses cartes ne donne accès à rien, et
+   l'application croise toujours l'ordre avec le périmètre. */
+const PREFERENCES_PATH = '/api/preferences';
+
+async function handlePreferencesApi(req, res, url, auth) {
+  if (auth.method === 'none') return sendJson(res, 404, { error: 'Préférences centralisées inactives : le site est ouvert sans authentification.' });
+  if (url.pathname !== PREFERENCES_PATH) return sendJson(res, 404, { error: 'Introuvable.' });
+  const account = normalizeAccount(auth.account || auth.username);
+  if (!account) return sendJson(res, 403, { error: 'Identité non reconnue.' });
+  try {
+    if (req.method === 'GET') return sendJson(res, 200, preferences.get(account));
+    if (req.method !== 'PUT') return sendJson(res, 405, { error: 'Méthode non prise en charge.' });
+    if (!sameOriginWrite(req)) return sendJson(res, 403, { error: 'Requête refusée : origine non vérifiée.' });
+    return sendJson(res, 200, preferences.set(account, await readJsonBody(req)));
+  } catch (err) {
+    if (err instanceof PreferencesError || err instanceof RightsError) return sendJson(res, err.status, { error: err.message });
+    console.error('Préférences :', err);
+    return sendJson(res, 500, { error: 'Erreur serveur sur les préférences.' });
+  }
+}
+
 const baseHeaders = {
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
@@ -528,14 +561,16 @@ async function handle(req, res) {
 
   const api = url.pathname === API_PREFIX || url.pathname.startsWith(API_PREFIX + '/');
   const dataApi = url.pathname === DATA_PREFIX || url.pathname.startsWith(DATA_PREFIX + '/');
+  const preferencesApi = url.pathname === PREFERENCES_PATH;
   // POST n'est admis que sur les données, pour `/api/donnees/main` (qui a
   // la main sur une société, voir presence.mjs) : prendre la main n'est pas
   // une écriture du budget, et un PUT sur une ressource sans corps à
   // remplacer n'aurait pas le bon sens.
   if (req.method !== 'GET' && req.method !== 'HEAD' &&
     !(api && (req.method === 'PUT' || req.method === 'DELETE')) &&
-    !(dataApi && (req.method === 'PUT' || req.method === 'POST'))) {
-    res.writeHead(405, { Allow: api ? 'GET, PUT, DELETE' : dataApi ? 'GET, PUT, POST' : 'GET, HEAD' });
+    !(dataApi && (req.method === 'PUT' || req.method === 'POST')) &&
+    !(preferencesApi && req.method === 'PUT')) {
+    res.writeHead(405, { Allow: api ? 'GET, PUT, DELETE' : dataApi ? 'GET, PUT, POST' : preferencesApi ? 'GET, PUT' : 'GET, HEAD' });
     return res.end();
   }
 
@@ -551,6 +586,7 @@ async function handle(req, res) {
 
   if (api) return handleApi(req, res, url, auth);
   if (dataApi) return handleDataApi(req, res, url, auth);
+  if (preferencesApi) return handlePreferencesApi(req, res, url, auth);
 
   if (url.pathname === '/budget-app.html') {
     res.writeHead(301, { Location: '/' });

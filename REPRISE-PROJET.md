@@ -77,6 +77,57 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Accueil : chacun range ses sociétés dans l'ordre qu'il veut, enregistré sur son compte (08/10/2026)
+
+Demande : « laisser l'utilisateur classer les entités dans l'ordre qu'il
+veut. Depuis la page d'accueil l'utilisateur peut positionner ses entités
+comme il le souhaite. Ça sauvegarde automatiquement sur son profil compte. »
+
+**À l'écran** (deuxième écran de l'accueil, les cartes de sociétés) : les
+cartes se glissent-déposent — la carte déposée prend la place de celle qui
+la reçoit (carte saisie estompée, cible entourée d'un pointillé doré). Au
+clavier : Alt+← / Alt+→ (ou ↑ / ↓) sur la carte qui a le focus. La phrase
+sous les cartes le dit. Sans ordre choisi, rien ne change : tri par nom.
+
+**Où l'ordre est gardé** :
+
+- *Mode serveur* : sur le profil de la personne. Nouveau module
+  `preferences.mjs` et nouveau fichier `PREFERENCES_FILE`
+  (`/data/preferences.json`, même volume que droits et budgets, écriture
+  atomique), servi par `GET`/`PUT /api/preferences`. Pas d'identifiant dans
+  le chemin : chacun ne lit et n'écrit **que les siennes**, sous l'identité
+  vérifiée ; aucune fiche de droits exigée (ranger ses cartes ne donne accès
+  à rien). Forme contrôlée (`companyOrder`, liste d'au plus 500 identifiants,
+  doublons retirés, champs inconnus écartés). L'application le lit au
+  démarrage (`loadServerPreferences`) et l'envoie à chaque déplacement ; un
+  échec d'envoi s'annonce par un bandeau rouge. `serverRequest` admet ce seul
+  chemin de plus ; `Dockerfile` et `.dockerignore` listent le module.
+- *Hors serveur* : `state.companyOrders`, par compte local
+  (`companyOrderKey`). Clé ajoutée à `SERVER_PRIVATE_KEYS` **et** à
+  `PRIVATE_KEYS` (data.mjs) : elle ne part jamais avec les données partagées.
+  Migration dans `adoptState` (absente ou illisible → `{}`).
+
+L'ordre ne fait que trier (`sortCompaniesByUserOrder`) : la liste reste
+bornée par les droits et l'environnement ; une société hors de l'ordre suit,
+par nom ; les sociétés d'un autre environnement, absentes de l'écran, gardent
+leur place relative derrière celles qu'on range.
+
+`APP_BUILD` : `2026-10-08.6`.
+
+Vérifié dans Chromium (serveur local, mode navigateur) : glisser la dernière
+carte sur la première la met en tête, Alt+→ l'avance d'une place, l'ordre
+survit au rechargement, aucune erreur JavaScript. L'API a été exercée sur un
+serveur de test : lecture vide, écriture puis relecture, refus d'une forme
+fausse (400), d'une autre origine (403), sans identité (401), DELETE (405).
+
+Contrôles : `test/preferences.test.mjs` (5 tests, 53 au total) ; dans
+`check-budget-app.mjs` (547), un contrôle de bout en bout de l'ordre (tri par
+nom par défaut, cartes déplaçables, dépôt vers la gauche et vers la droite,
+ordre propre à chaque compte, sociétés hors écran conservées, jamais dans
+`serverStatePayload`, et en mode serveur lecture puis `PUT /api/preferences`
+sans rien écrire dans l'état local) ; la liste figée de `SERVER_PRIVATE_KEYS`
+et les chemins réseau refusés sont mis à jour.
+
 ### Extras (Payroll) : le libellé « Jours travaillés » redevient visible (08/10/2026)
 
 Signalement : « La première ligne représentant les journées travaillées est
@@ -11821,7 +11872,7 @@ const app = await importApp(
     '  clearSignInAttempts, randomBytes, randomHex, exportedPayloadIsEncrypted };\n' +
     'export { setUserScope, allowedCompanyIds, allowedCostCenterIds, isCompanyAllowed,\n' +
     '  visibleCompanies, enforceCompanyPermission, rawLinesOf,\n' +
-    '  isCenterAllowed, visibleCostCenters, canEditLineStructure, canEditCaVentilation,\n' +
+    '  isCenterAllowed, visibleCostCenters, canEditLineStructure, canAddLineInCenter, canDeleteLine, canEditCaVentilation,\n' +
     '  scopeCenterRowsHtml, applyRoleDefaultCentersToEditor, DIRECTEUR_DEFAULT_COST_CENTERS,\n' +
     '  companyIdsInSuperGroupRaw, companyIdsInEnvironments, userEnvironmentIds, environmentById,\n' +
     '  availableEnvironments, canSeeAllEnvironments, activeEnvironmentId, setActiveEnvironment,\n' +
@@ -11848,6 +11899,12 @@ const app = await importApp(
     'export function __getServerData() { return serverData; }\n' +
     'export function __clearSaveTimer() { if (saveTimer !== null) { clearTimeout(saveTimer); saveTimer = null; } }\n' +
     'export function __clearServerSession() { serverSession = null; serverDirectory = null; }\n' +
+    // Ordre des sociétés de l'accueil (08/10/2026).
+    'export { userCompanyOrder, sortCompaniesByUserOrder, moveCompanyInUserOrder, setUserCompanyOrder,\n' +
+    '  welcomeCompanyIdsShown, companyOrderKey, loadServerPreferences };\n' +
+    'export function __setServerPreferences(v) { serverPreferences = v; }\n' +
+    'export function __getServerPreferences() { return serverPreferences; }\n' +
+    'export function __swapServerRequest(fn) { const previous = serverRequest; serverRequest = fn; return previous; }\n' +
     'export function __setServerDataForTest(v) { serverData = v; }\n' +
     'export function __setServerDirectory(v) { serverDirectory = v; }\n' +
     'export function __setAuthPermissionsIdForTest(v) { authPermissionsId = v; }\n' +
@@ -12506,11 +12563,12 @@ check('Données tenues par le serveur : ce qui part, état vide, choix du poste'
   const savedState = app.state;
   try {
     const payload = app.serverStatePayload({ companies: [{ id: 'a' }], users: [{ passwordHash: 'x' }], authLog: [1],
-      activeCompany: 'a', activeEnvironmentId: 'e', activeScenario: 's', lastSavedAt: 'hier', scenarios: [] });
+      activeCompany: 'a', activeEnvironmentId: 'e', activeScenario: 's', lastSavedAt: 'hier', scenarios: [],
+      companyOrders: { u1: ['a'] } });
     assert.deepEqual(Object.keys(payload).sort(), ['companies', 'scenarios'],
       'ni comptes locaux, ni journal de sécurité, ni choix d’affichage ne partent au serveur');
     assert.deepEqual(app.SERVER_PRIVATE_KEYS.slice().sort(),
-      ['activeCompany', 'activeEnvironmentId', 'activeScenario', 'authLog', 'lastSavedAt', 'users'],
+      ['activeCompany', 'activeEnvironmentId', 'activeScenario', 'authLog', 'companyOrders', 'lastSavedAt', 'users'],
       'même liste que PRIVATE_KEYS dans data.mjs');
 
     // Périmètre vide : aucune société inventée (adoptState mettrait celles d'origine).
@@ -13790,6 +13848,17 @@ check('Transitions v2 : les fenêtres sortent en fondu via une copie inerte, inv
   assert.ok(ghostZ > 950 && ghostZ < 960, 'la copie passe sous une fenêtre qui s’ouvrirait aussitôt (960), au-dessus du panneau (950)');
   const base = Number((css.match(/--motion-base:\s*(\d+)ms/) || [])[1]);
   assert.ok(app.MODAL_EXIT_MS >= base, 'la copie ne doit pas disparaître avant la fin de son fondu');
+});
+
+check('Extras (Payroll) : le libellé « Jours travaillés » n’est plus masqué par le sélecteur de centre', () => {
+  // Les cellules sont en `white-space: nowrap` : sans `display: block`, le
+  // nom et le centre restaient côte à côte et le sélecteur débordait sur la
+  // colonne du libellé de la première rangée (08/10/2026).
+  const css = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
+  const rule = (css.match(/\.extras-table \.extra-name, \.extras-table \.extra-center \{[^}]*\}/) || [''])[0];
+  assert.ok(/display: block/.test(rule), 'le nom et le centre de l’extra doivent s’empiler (display: block)');
+  assert.ok(/<select class="extra-center" data-extra-center="/.test(html),
+    'le sélecteur de centre doit porter la classe .extra-center à laquelle la règle s’applique');
 });
 
 check('Transitions v2 : rubriques qui se replient en douceur, Accueil qui se remplit à l’arrivée', () => {
@@ -18908,11 +18977,12 @@ check('la politique de sécurité interdit les connexions sortantes', () => {
   }
 });
 
-await checkAsync('les seules sorties réseau restantes visent /api/droits et /api/donnees', async () => {
+await checkAsync('les seules sorties réseau restantes visent /api/droits, /api/donnees et /api/preferences', async () => {
   assert.equal(typeof app.serverRequest, 'function', 'serverRequest doit exister là où fetch existe');
   for (const path of ['https://example.invalid/api/droits', '//example.invalid/api/droits', '/api/budgets',
     '/api/droits/../budgets', '/api/droits/a/b', '/', '/api/donnees/x', '/api/donnees/revision/x',
-    '/api/donneesx', 'https://example.invalid/api/donnees']) {
+    '/api/donneesx', 'https://example.invalid/api/donnees',
+    '/api/preferences/x', '/api/preferencesx', 'https://example.invalid/api/preferences']) {
     await assert.rejects(app.serverRequest('GET', path), /interdite/, 'chemin refusé attendu : ' + path);
   }
 });
@@ -23395,8 +23465,10 @@ await checkAsync('Autorisations : périmètre centre de coûts — Saisie et Pay
     assert.ok(!rendered.includes('data-bulk-center='),
       'pas d’ajustement en masse sur un centre hors périmètre');
 
-    // Son propre centre (F&B) : les montants redeviennent saisissables,
-    // mais créer ou supprimer une charge reste interdit à un directeur.
+    // Son propre centre (F&B) : les montants redeviennent saisissables, et
+    // depuis le 08/10/2026 il peut AJOUTER une ligne saisie à la main ; le
+    // reste de la structure (supprimer, dupliquer, ligne calculée) lui reste
+    // fermé.
     app.__setCenter('F&B');
     app.render();
     rendered = document.getElementById('view').innerHTML;
@@ -23404,8 +23476,8 @@ await checkAsync('Autorisations : périmètre centre de coûts — Saisie et Pay
     assert.ok(rendered.includes('Achat F&amp;B'), 'la ligne du centre autorisé reste visible');
     assert.ok(!rendered.includes('Centre hors périmètre — lecture seule'),
       'les montants du centre autorisé restent saisissables');
-    assert.ok(!rendered.includes('data-add-line='),
-      'un directeur ne crée pas de ligne, même sur son propre centre');
+    assert.ok(rendered.includes('data-add-line="60101100">+ ajouter une ligne<'),
+      'un directeur doit pouvoir ajouter une ligne sur son propre centre (08/10/2026)');
     assert.ok(!rendered.includes('data-open-ratelink-modal='),
       'un directeur ne crée pas de ligne calculée (multiplicateur)');
     assert.ok(!rendered.includes('data-delete='),
@@ -23415,13 +23487,50 @@ await checkAsync('Autorisations : périmètre centre de coûts — Saisie et Pay
     assert.ok(rendered.includes('data-bulk-account=') || rendered.includes('data-bulk-center='),
       'ajuster des MONTANTS reste permis sur son propre centre');
     assert.equal(app.canEditLineStructure(), false, 'un directeur n’a pas la main sur la structure');
+    assert.equal(app.canAddLineInCenter('F&B'), true, 'mais il ajoute des lignes dans son centre');
+    assert.equal(app.canAddLineInCenter('AG'), false, 'jamais dans un centre hors périmètre');
+    assert.equal(app.canAddLineInCenter(null), false, 'ni sur un compte sans centre');
 
     // Garde-fou au point d'écriture : même appelées directement, les
-    // fonctions de structure refusent.
+    // fonctions de structure refusent — sauf l'ajout dans son centre.
     const beforeCount = app.state.lines.length;
-    assert.equal(app.addLine('60101100'), null, 'addLine() doit refuser pour un directeur');
+    assert.equal(app.addLine('60610700'), null, 'addLine() doit refuser un compte hors périmètre (AG)');
     assert.equal(app.duplicateLine('centerui_l1'), null, 'duplicateLine() doit refuser pour un directeur');
     assert.equal(app.state.lines.length, beforeCount, 'aucune ligne créée malgré les appels directs');
+    const added = app.addLine('60101100');
+    assert.ok(added && added.account === '60101100', 'addLine() crée la ligne dans son propre centre');
+    assert.equal(app.state.lines.length, beforeCount + 1, 'exactement une ligne créée');
+
+    // Suppression (08/10/2026) : un directeur retire une ligne VIDE de son
+    // centre — l'ajout fait par erreur se défait —, jamais une charge
+    // budgétée, une ligne hors périmètre, calculée ou servant de référence.
+    assert.equal(app.canDeleteLine(added), true, 'la ligne vide de son centre se supprime');
+    app.__setCenter('F&B');
+    app.render();
+    app.toggleRowMenu(added.id);
+    rendered = document.getElementById('view').innerHTML;
+    assert.ok(rendered.includes('data-delete="' + added.id + '"'),
+      'le bouton « supprimer » doit apparaître pour la ligne vide du directeur');
+    app.toggleRowMenu('centerui_l1');
+    rendered = document.getElementById('view').innerHTML;
+    assert.ok(!rendered.includes('data-delete="centerui_l1"'),
+      'une charge budgétée de son centre reste non supprimable par un directeur');
+    assert.equal(app.canDeleteLine(app.state.lines.find((l) => l.id === 'centerui_l1')), false,
+      'canDeleteLine refuse une ligne avec des montants');
+    added.amounts[3] = 5;
+    assert.equal(app.canDeleteLine(added), false, 'dès qu’un mois est saisi, la ligne n’est plus vide');
+    added.amounts[3] = 0;
+    const emptyAg = { id: 'centerui_vide_ag', companyId: company.id, account: '60610700', name: '', amounts: months(0) };
+    app.state.lines.push(emptyAg);
+    assert.equal(app.canDeleteLine(emptyAg), false, 'une ligne vide hors périmètre reste intouchable');
+    const reference = { id: 'centerui_ref', companyId: company.id, account: '60101100', name: 'Taux',
+      amounts: months(0), rateLink: { rate: 0.1, sourceLineId: added.id } };
+    app.state.lines.push(reference);
+    assert.equal(app.canDeleteLine(added), false, 'une ligne qui sert de référence à un multiplicateur reste');
+    assert.equal(app.canDeleteLine(reference), false, 'une ligne calculée ne se supprime pas');
+    app.state.lines = app.state.lines.filter((l) => l !== added && l !== emptyAg && l !== reference);
+    app.toggleRowMenu(null);
+    app.__setCenter('F&B');
 
     // P&L, depuis le 20/08/2026 (Alexis : « ils ont quand même une visu sur
     // les autres centres de coûts sans pouvoir les remplir ») : la ligne
@@ -29394,6 +29503,77 @@ check('Accueil : la carte « Tous les environnements » a un thème blanc adouci
       'Multi Société C (sans environnement) devrait retomber sur le vert olive par défaut'
     );
   } finally {
+    app.resetWelcomeCompanyStep();
+    restoreEnvironmentFixture(saved);
+  }
+});
+
+await checkAsync('Accueil : chacun range ses sociétés dans l’ordre qu’il veut, enregistré sur son compte (08/10/2026)', async () => {
+  const saved = environmentFixture();
+  const savedOrders = app.state.companyOrders;
+  const order = (htmlCards) => [...htmlCards.matchAll(/data-welcome-company="([^"]+)"/g)].map((m) => m[1]);
+  try {
+    app.state.companyOrders = {};
+    app.__setWelcomeCompanyStep(null);
+    // Sans ordre choisi : par nom, comme avant.
+    assert.deepEqual(order(app.welcomeCompanyCardsHtml()), ['multi_a', 'multi_b', 'multi_c'],
+      'sans ordre choisi, les cartes restent rangées par nom');
+    assert.ok(/data-welcome-company="multi_a" draggable="true"/.test(app.welcomeCompanyCardsHtml()),
+      'les cartes de sociétés doivent se glisser-déposer');
+
+    // Mode local : déposer C sur A le met en tête, et l'ordre est rangé
+    // sous la clé du compte connecté, dans l'état local.
+    assert.equal(app.moveCompanyInUserOrder(app.welcomeCompanyIdsShown(), 'multi_c', 'multi_a'), true);
+    assert.deepEqual(order(app.welcomeCompanyCardsHtml()), ['multi_c', 'multi_a', 'multi_b'],
+      'la carte déposée prend la place de celle qui la reçoit');
+    assert.deepEqual(app.state.companyOrders[app.companyOrderKey()], ['multi_c', 'multi_a', 'multi_b'],
+      'l’ordre est enregistré pour ce compte');
+    // Vers la droite : A déposé sur B passe derrière B.
+    app.moveCompanyInUserOrder(app.welcomeCompanyIdsShown(), 'multi_a', 'multi_b');
+    assert.deepEqual(order(app.welcomeCompanyCardsHtml()), ['multi_c', 'multi_b', 'multi_a']);
+
+    // Un autre compte garde son propre ordre : rien de partagé.
+    const mine = app.companyOrderKey();
+    app.state.companyOrders = { [mine]: ['multi_b'], autre_compte: ['multi_c', 'multi_a', 'multi_b'] };
+    assert.deepEqual(order(app.welcomeCompanyCardsHtml()), ['multi_b', 'multi_a', 'multi_c'],
+      'seul l’ordre du compte connecté compte ; une société non rangée suit, par nom');
+
+    // Les sociétés absentes de l'écran gardent leur place derrière celles
+    // qu'on range (autre environnement), et une société inconnue n'y fait rien.
+    app.state.companyOrders = { [mine]: ['fantome', 'multi_b', 'multi_a', 'multi_c'] };
+    app.moveCompanyInUserOrder(['multi_b', 'multi_a'], 'multi_a', 'multi_b');
+    assert.deepEqual(app.state.companyOrders[mine], ['multi_a', 'multi_b', 'fantome', 'multi_c']);
+
+    // L'ordre reste un affichage : jamais envoyé au serveur avec les budgets.
+    assert.ok(!('companyOrders' in app.serverStatePayload(app.state)),
+      'l’ordre local ne part jamais avec les données partagées');
+
+    // Mode serveur : l'ordre vit sur le profil (PUT /api/preferences), pas
+    // dans l'état local.
+    const calls = [];
+    const previous = app.__swapServerRequest(function (method, path, body) {
+      calls.push({ method, path, body });
+      return Promise.resolve(method === 'GET' ? { companyOrder: ['multi_b', 'multi_c'] } : body);
+    });
+    try {
+      app.adoptServerSession({ method: 'ldap', account: 'ctrl', rights: { role: 'controleur', isAdmin: false, permissions: null } }, null);
+      app.state.companyOrders = {};
+      await app.loadServerPreferences();
+      assert.deepEqual(calls[0], { method: 'GET', path: '/api/preferences', body: undefined }, 'lu sur le profil au démarrage');
+      assert.deepEqual(order(app.welcomeCompanyCardsHtml()), ['multi_b', 'multi_c', 'multi_a'],
+        'l’ordre du profil s’applique dès l’arrivée');
+      app.moveCompanyInUserOrder(app.welcomeCompanyIdsShown(), 'multi_a', 'multi_b');
+      const put = calls.find((c) => c.method === 'PUT');
+      assert.ok(put && put.path === '/api/preferences', 'le nouvel ordre part aussitôt sur le profil');
+      assert.deepEqual(put.body, { companyOrder: ['multi_a', 'multi_b', 'multi_c'] });
+      assert.deepEqual(app.state.companyOrders, {}, 'rien n’est écrit dans l’état local en mode serveur');
+    } finally {
+      app.__swapServerRequest(previous);
+      app.__clearServerSession();
+      app.__setServerPreferences(null);
+    }
+  } finally {
+    app.state.companyOrders = savedOrders;
     app.resetWelcomeCompanyStep();
     restoreEnvironmentFixture(saved);
   }

@@ -25,7 +25,8 @@ documentation. Les identifiants JS restent en anglais, en camelCase.
 | `rights.mjs` | Fichier des droits (`RIGHTS_FILE`, volume Docker `droits`), contrôle de forme, dernier administrateur protégé, `RIGHTS_ADMINS` |
 | `data.mjs` | Données budgétaires tenues par le serveur (`DATA_FILE`, même volume, `historique/`) : périmètre par droits (`scopeOf`), lecture filtrée, fusion des seules sociétés déclarées modifiées, conflits par société (409). `/api/donnees` dans `server.mjs` |
 | `presence.mjs` | Qui a la main sur une société (saisies simultanées) : en mémoire, pris par battement de cœur, rendu après 70 s sans nouvelle. `POST /api/donnees/main` dans `server.mjs`, qui refuse aussi (409) l'écriture d'une société tenue par quelqu'un d'autre |
-| `auth-ldap.mjs`, `test/` | Vérification LDAP (seule dépendance : `ldapts`) et tests serveur (`npm test` : LDAP, droits, données, main) |
+| `preferences.mjs` | Préférences d'affichage de chaque personne (`PREFERENCES_FILE`, même volume) : ordre des sociétés de l'accueil. `GET`/`PUT /api/preferences` dans `server.mjs`, chacun ne lit et n'écrit que les siennes |
+| `auth-ldap.mjs`, `test/` | Vérification LDAP (seule dépendance : `ldapts`) et tests serveur (`npm test` : LDAP, droits, données, main, préférences) |
 | `excel-grid/` | Prototype tableur React/Vite **et** outillage : moteur de référence `src/engine/chart.ts`, imports, validation |
 | `scripts-doc/rebuild-doc.mjs` | Régénère la section 7 de `REPRISE-PROJET.md` |
 | `scripts-fx/taux-du-jour.mjs` | Utilitaire manuel : taux BCE (Frankfurter) à recopier dans Sociétés > Taux de change |
@@ -68,8 +69,9 @@ Invariants techniques :
 - **SAS réseau** : `fetch`, XHR, WebSocket… sont neutralisés au démarrage.
   Aucune fonctionnalité ne doit appeler le réseau ni charger de ressource externe.
   Seule exception : `serverRequest` (CSP `connect-src 'self'`), limité aux
-  chemins `/api/droits` (droits), `/api/donnees` (données de la personne) et
-  `/api/donnees/main` (qui a la main sur la société ouverte).
+  chemins `/api/droits` (droits), `/api/donnees` (données de la personne),
+  `/api/donnees/main` (qui a la main sur la société ouverte) et
+  `/api/preferences` (ordre des sociétés de l'accueil, propre à chacun).
 - **Données tenues par le serveur** (depuis le 02/10/2026) : en mode serveur
   (`serverData` non nul), `boot()` lit `/api/donnees` et `persist()` y renvoie
   l'état (`persistToServer`) en déclarant les sociétés modifiées
@@ -113,7 +115,7 @@ Invariants techniques :
 ## Commandes
 
 ```bash
-npm ci && npm test                     # serveur : LDAP, droits, données, main (48 tests)
+npm ci && npm test                     # serveur : LDAP, droits, données, main, préférences (53 tests)
 npm start                              # http://127.0.0.1:3000 (server.mjs)
 npm --prefix excel-grid install        # une fois (node_modules absent par défaut)
 npm run verify                         # check + test + check:app + check:markup + typecheck
@@ -176,7 +178,8 @@ fichiers de `excel-grid/` ont bougé. Les sections 1 à 6 s'éditent à la main.
   (`/data/droits.json`, `/data/budget.json`, `/data/historique/`). Toute
   opération dessus commence par une sauvegarde **hors du dépôt**
   (`/root/sauvegardes-budgetpbdbcompta/`) : elles sont irréversibles et le
-  dépôt n'en garde aucune trace. L'API `/api/donnees` et `/api/droits` exige une
+  dépôt n'en garde aucune trace. `/data/preferences.json` (ordre des
+  sociétés de l'accueil, par personne) vit dans le même volume. L'API `/api/donnees` et `/api/droits` exige une
   identité LDAP, donc une session ne peut pas écrire par là : passer par
   `docker exec` sur le fichier, en écriture atomique (fichier voisin puis
   `mv`), et vérifier en relisant.
