@@ -3498,7 +3498,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-08.14';
+const APP_BUILD = '2026-10-08.17';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -3854,6 +3854,14 @@ function summarize(lines, resolveAccount) {
       value: ratio(total(byCenter[center.id]), totalRevenue)
     });
   }
+  // Ratios des trois lignes de résultat, sur le CA total comme les ratios
+  // de centre — Alexis, 08/10/2026 : « il manque le ratio sur le total
+  // Expenses, le GOP et l'EBITDA ». Affichés sous leur ligne, en bas du P&L.
+  ratioRows.push(
+    { id: 'charges', label: 'Total Expenses Ratio', months: ratioMonths(charges, produits), value: ratio(total(charges), totalRevenue) },
+    { id: 'gop', label: 'GOP Ratio', months: ratioMonths(gop, produits), value: ratio(total(gop), totalRevenue) },
+    { id: 'ebitda', label: 'EBITDA Ratio', months: ratioMonths(ebitda, produits), value: ratio(total(ebitda), totalRevenue) }
+  );
 
   return {
     produits: produits, charges: charges, chargesGop: chargesGop, otherTaxes: otherTaxes,
@@ -11076,7 +11084,7 @@ function rateLinkOneRevenueCategoryMonths(companyId, lines, categoryId) {
   if (!company) return emptyMonths();
   if (categoryId === 'event') return caEventServiceRevenue(company);
   if (categoryId === 'food' || categoryId === 'beverage') {
-    const revenue = matrixMonthlyRevenue(company);
+    const revenue = caFoodBeverageRevenue(company);
     const percent = caCategoryVentilationPercent(companyId, categoryId);
     return revenue.map(function (v) { return (v * percent) / 100; });
   }
@@ -14154,11 +14162,16 @@ function pnlTable(summary, title, isolateFilter, drillCompanies, compare, fullsc
     body += ratioRow(ratioById[center.id], centerReadOnly);
   }
   body += row('Total Expenses', summary.charges, 'total', 'charges');
+  // Chaque ligne de résultat est suivie de son ratio sur le CA, comme les
+  // centres de coûts (Alexis, 08/10/2026).
+  body += ratioRow(ratioById.charges);
   // GOP et EBITDA sont les deux résultats de la cascade, pas des sommes
   // intermédiaires comme Revenue ou Total Expenses : ils prennent le cran
   // de lecture supérieur (voir `tr.grand-total`).
   body += row('GOP', summary.gop, 'total grand-total', 'gop');
+  body += ratioRow(ratioById.gop);
   body += row('EBITDA', summary.ebitda, 'total grand-total', 'ebitda');
+  body += ratioRow(ratioById.ebitda);
 
   // Ratios définis par l'utilisateur, groupés en bas : ils traversent
   // souvent plusieurs rubriques, les glisser au milieu du P&L brouillerait
@@ -18455,6 +18468,26 @@ function caEventServiceRevenue(company) {
   return out;
 }
 
+/**
+ * CA mensuel (12 valeurs) que se partagent Food et Beverage : celui des
+ * seuls services au couvert (Midi, Soir), Event exclu. Alexis, 08/10/2026 :
+ * « le CA Event est compté 2 fois — il est inclus dans le CA total qui est
+ * ventilé entre food et bev, et après il est repris [dans Event] […] Le CA
+ * Event doit être isolé de la ventilation F&B et uniquement enregistré dans
+ * « Event » ». Les pourcentages Food/Beverage s'appliquent donc à ce
+ * montant, jamais à `matrixMonthlyRevenue` (qui, lui, comprend l'Event) :
+ * Food + Beverage + Event retombe exactement sur le CA total de la matrice.
+ */
+function caFoodBeverageRevenue(company) {
+  const out = emptyMonths();
+  if (!company) return out;
+  const matrix = serviceMatrixOf(company.id);
+  for (let month = 0; month < MONTHS; month++) {
+    out[month] = weekTotal(matrixCoversRevenue(matrix, matrixDayKeys(company.year, month)));
+  }
+  return out;
+}
+
 /* ------------------------------------------------------------------
    VENTILATION À DEUX NIVEAUX (31/08/2026)
 
@@ -18567,7 +18600,9 @@ function caAccountVentilationTotal(companyId, categoryId) {
 function applyCaVentilation(companyId) {
   const company = companyById(companyId);
   if (!company) return 0;
-  const revenue = matrixMonthlyRevenue(company);
+  // Food/Beverage se partagent le CA hors Event : l'Event a sa propre
+  // catégorie, il ne doit pas être ventilé une deuxième fois en F&B.
+  const revenue = caFoodBeverageRevenue(company);
   const eventRevenue = caEventServiceRevenue(company);
   const eventLines = caLinesOf(companyId).filter(function (c) { return caCategoryOf(c) === 'event'; });
   let applied = 0;
@@ -19773,7 +19808,13 @@ function caVentilationPanel(company) {
   };
   /** Largeur du tableau des comptes : compte + part + douze mois + année (+ actions). */
   const accountSpan = MONTHS + 3 + (canEdit ? 1 : 0);
-  const revenue = matrixMonthlyRevenue(company);
+  // CA total de la matrice (Event compris) : sert seulement à savoir s'il
+  // y a quelque chose à ventiler. Les pourcentages Food/Beverage portent
+  // sur le CA HORS Event (`caFoodBeverageRevenue`) — l'Event va en
+  // totalité dans sa propre catégorie, plus bas, et n'est pas compté deux
+  // fois (Alexis, 08/10/2026).
+  const totalYearRevenue = matrixMonthlyRevenue(company).reduce(function (s, v) { return s + v; }, 0);
+  const revenue = caFoodBeverageRevenue(company);
   const yearRevenue = revenue.reduce(function (s, v) { return s + v; }, 0);
   const allLines = caLinesOf(company.id);
   // Seuls les comptes Food/Beverage/Event se ventilent sur le CA
@@ -19784,7 +19825,7 @@ function caVentilationPanel(company) {
 
   // Sans matrice remplie, il n'y a rien à ventiler : on le dit plutôt que
   // d'afficher un tableau de zéros qui laisserait croire à un bug.
-  if (!yearRevenue) {
+  if (!totalYearRevenue) {
     return panel('ca-ventilation', 'Ventilation du CA par compte',
       emptyState(canEdit
         ? 'Le directeur n’a pas encore renseigné sa matrice couverts × ticket moyen pour cet exercice. ' +
@@ -19814,7 +19855,7 @@ function caVentilationPanel(company) {
           'votre chiffre d’affaires : il n’y a donc rien à afficher ici pour l’instant.');
     return panel('ca-ventilation', 'Ventilation du CA par compte',
       emptyState(message),
-      { open: true, meta: money(yearRevenue) + ' € à ventiler' });
+      { open: true, meta: money(totalYearRevenue) + ' € à ventiler' });
   }
 
   const headerMonths = MONTH_LABELS.map(function (label) {
@@ -20015,7 +20056,7 @@ function caVentilationPanel(company) {
   // des cases de saisie qui ne sont pas là.
   const intro = canEdit
     ? 'Le directeur décide du chiffre d’affaires mois par mois dans sa matrice couverts × ticket moyen. ' +
-      'Vous choisissez d’abord la part de ce CA qui revient à Food et à Beverage, puis, à l’intérieur de chaque ' +
+      'Vous choisissez d’abord la part du CA des services Midi et Soir (hors Event) qui revient à Food et à Beverage, puis, à l’intérieur de chaque ' +
       'catégorie, la part qui revient à chacun de ses comptes de produits (classés dans « Comptes suivis »). ' +
       'Event est différent : le CA de son service dans la matrice revient en totalité à la catégorie, ' +
       'automatiquement — pas de pourcentage à poser, sauf si plusieurs comptes se partagent cette catégorie, ' +
@@ -20024,7 +20065,7 @@ function caVentilationPanel(company) {
       '« Hors exploitation » n’apparaissent pas ici : ils se saisissent en montant direct, mois par mois, dans ' +
       '« Comptes suivis ».'
     : 'Voici comment votre chiffre d’affaires est réparti. Le CA que vous renseignez dans la matrice couverts × ' +
-      'ticket moyen est d’abord partagé entre Food et Beverage, puis, à l’intérieur de chaque catégorie, entre ' +
+      'ticket moyen, hors Event, est d’abord partagé entre Food et Beverage, puis, à l’intérieur de chaque catégorie, entre ' +
       'les comptes de produits. Le CA du service Event revient en totalité à la catégorie Event. Ces ' +
       'pourcentages sont posés par le contrôle de gestion : vous les lisez ici, vous ne les modifiez pas. Les ' +
       'comptes « Hors exploitation » n’y figurent pas — ils se saisissent en montant direct.';
@@ -20032,7 +20073,7 @@ function caVentilationPanel(company) {
   return panel('ca-ventilation', 'Ventilation du CA par compte',
     '<p class="muted" style="margin:0 0 12px;font-size:13px">' + intro + '</p>' +
     '<div class="table-wrap"><table><thead><tr>' +
-    '<th class="sticky-col" style="width:' + colWidths.caCompte + 'px">Catégorie</th><th>Part du CA</th>' +
+    '<th class="sticky-col" style="width:' + colWidths.caCompte + 'px">Catégorie</th><th>Part du CA hors Event</th>' +
     headerMonths + '<th class="num">Année</th></tr></thead>' +
     '<tbody>' + categoryRows + categoryControlRow + '</tbody></table></div>' + categoryNotice +
     '<div class="table-wrap" style="margin-top:18px"><table><thead><tr>' +
@@ -20051,7 +20092,7 @@ function caVentilationPanel(company) {
     // d'ajout, qui vivait ici (voir l'historique), vit désormais
     // uniquement dans le panneau « Comptes suivis » ci-dessous et la barre
     // de l'onglet.
-    { open: true, meta: money(yearRevenue) + ' € à ventiler' });
+    { open: true, meta: money(totalYearRevenue) + ' € à ventiler' });
 }
 
 function caTeamPanel(company) {
@@ -25824,8 +25865,11 @@ function pnlRows(summary, label) {
     pushRatio(ratioById[center.id]);
   }
   push('Total Expenses', summary.charges);
+  pushRatio(ratioById.charges);
   push('GOP', summary.gop);
+  pushRatio(ratioById.gop);
   push('EBITDA', summary.ebitda);
+  pushRatio(ratioById.ebitda);
   rows.push([]);
   rows.push(['Gross Margin', percent(summary.ratios.grossMargin)]);
   // Ratios définis par l'utilisateur : à la suite, comme à l'écran.
@@ -25864,8 +25908,13 @@ function styledPnlSheet(summary, title, subtitle) {
   function dataRow(label, months, kind) {
     const isTotal = kind === 'total';
     const labelStyle = isTotal ? XLSX_STYLE.labelTotal : XLSX_STYLE.normal;
-    const moneyStyle = isTotal ? XLSX_STYLE.moneyTotal : (kind === 'muted' ? XLSX_STYLE.moneyMuted : XLSX_STYLE.money);
-    rows.push([xc(label, kind === 'muted' ? XLSX_STYLE.subtitle : labelStyle), xc(Math.round(total(months)), moneyStyle)]
+    // Une seule police pour toutes les lignes de montants : l'italique gris
+    // (`subtitle`) est réservé aux ratios, pour qu'un montant ne se lise
+    // jamais comme un ratio (Alexis, 08/10/2026 : « les lignes de revenus
+    // ainsi que la ligne operational expenses est dans la même police que
+    // les ratios, peut-on uniformiser comme sur Administration »).
+    const moneyStyle = isTotal ? XLSX_STYLE.moneyTotal : XLSX_STYLE.money;
+    rows.push([xc(label, labelStyle), xc(Math.round(total(months)), moneyStyle)]
       .concat(months.map(function (v) { return xc(Math.round(v), moneyStyle); })));
   }
   function ratioDataRow(line) {
@@ -25877,10 +25926,10 @@ function styledPnlSheet(summary, title, subtitle) {
 
   // Le détail du CA précède son total, comme pour les charges F&B ; une
   // simple ligne vide sépare ensuite Produits de Charges.
-  dataRow('Food Revenue', summary.revenueSplit.food, 'muted');
-  dataRow('Beverage Revenue', summary.revenueSplit.beverage, 'muted');
-  dataRow('Event Revenue', summary.revenueSplit.event || emptyMonths(), 'muted');
-  dataRow('Other Revenue', summary.revenueSplit.other, 'muted');
+  dataRow('Food Revenue', summary.revenueSplit.food);
+  dataRow('Beverage Revenue', summary.revenueSplit.beverage);
+  dataRow('Event Revenue', summary.revenueSplit.event || emptyMonths());
+  dataRow('Other Revenue', summary.revenueSplit.other);
   dataRow('Revenue', summary.produits, 'total');
   rows.push([]);
   for (const center of COST_CENTERS) {
@@ -25892,7 +25941,7 @@ function styledPnlSheet(summary, title, subtitle) {
       // Masse salariale : même place qu'à l'écran et dans le CSV (voir `pnlRows`).
       dataRow('Payroll', summary.payroll || emptyMonths());
       if (ratioById.payroll) ratioDataRow(ratioById.payroll);
-      dataRow('Operational expenses', summary.foodBeverage.other, 'muted');
+      dataRow('Operational expenses', summary.foodBeverage.other);
       ratioDataRow(ratioById['other-fnb']);
       continue;
     }
@@ -25900,8 +25949,11 @@ function styledPnlSheet(summary, title, subtitle) {
     ratioDataRow(ratioById[center.id]);
   }
   dataRow('Total Expenses', summary.charges, 'total');
+  ratioDataRow(ratioById.charges);
   dataRow('GOP', summary.gop, 'total');
+  ratioDataRow(ratioById.gop);
   dataRow('EBITDA', summary.ebitda, 'total');
+  ratioDataRow(ratioById.ebitda);
 
   rows.push([]);
   rows.push([xc('Gross Margin', XLSX_STYLE.labelBold), xc(summary.ratios.grossMargin, XLSX_STYLE.percent)]);

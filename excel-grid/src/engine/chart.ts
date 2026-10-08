@@ -514,6 +514,14 @@ export function summarize(
       value: ratio(total(byCenter[center.id]), totalRevenue),
     });
   }
+  // Ratios des trois lignes de résultat, sur le CA total comme les ratios
+  // de centre — Alexis, 08/10/2026 : « il manque le ratio sur le total
+  // Expenses, le GOP et l'EBITDA ». Affichés sous leur ligne, en bas du P&L.
+  ratioRows.push(
+    { id: 'charges', label: 'Total Expenses Ratio', months: ratioMonths(charges, produits), value: ratio(total(charges), totalRevenue) },
+    { id: 'gop', label: 'GOP Ratio', months: ratioMonths(gop, produits), value: ratio(total(gop), totalRevenue) },
+    { id: 'ebitda', label: 'EBITDA Ratio', months: ratioMonths(ebitda, produits), value: ratio(total(ebitda), totalRevenue) },
+  );
 
   const otherRevenueMonths = produits.map((v, i) => v - foodRevenueMonths[i] - bevRevenueMonths[i]);
 
