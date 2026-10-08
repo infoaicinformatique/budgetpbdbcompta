@@ -2473,6 +2473,17 @@ check('Transitions v2 : les fenêtres sortent en fondu via une copie inerte, inv
   assert.ok(app.MODAL_EXIT_MS >= base, 'la copie ne doit pas disparaître avant la fin de son fondu');
 });
 
+check('Extras (Payroll) : le libellé « Jours travaillés » n’est plus masqué par le sélecteur de centre', () => {
+  // Les cellules sont en `white-space: nowrap` : sans `display: block`, le
+  // nom et le centre restaient côte à côte et le sélecteur débordait sur la
+  // colonne du libellé de la première rangée (08/10/2026).
+  const css = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
+  const rule = (css.match(/\.extras-table \.extra-name, \.extras-table \.extra-center \{[^}]*\}/) || [''])[0];
+  assert.ok(/display: block/.test(rule), 'le nom et le centre de l’extra doivent s’empiler (display: block)');
+  assert.ok(/<select class="extra-center" data-extra-center="/.test(html),
+    'le sélecteur de centre doit porter la classe .extra-center à laquelle la règle s’applique');
+});
+
 check('Transitions v2 : rubriques qui se replient en douceur, Accueil qui se remplit à l’arrivée', () => {
   const css = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
   assert.ok(/details\.panel \{ interpolate-size: allow-keywords; \}/.test(css), 'hauteur auto interpolable');

@@ -77,6 +77,30 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Extras (Payroll) : le libellé « Jours travaillés » redevient visible (08/10/2026)
+
+Signalement : « La première ligne représentant les journées travaillées est
+cachée, il faudrait qu'elle soit visible. »
+
+Cause : toutes les cellules de tableau sont en `white-space: nowrap`. Dans la
+colonne figée d'un extra, le champ du nom et le sélecteur de centre (deux
+éléments en ligne) restaient donc **côte à côte** au lieu de s'empiler ; le
+sélecteur débordait de la colonne et recouvrait la cellule voisine, celle du
+libellé « Jours travaillés » de la première rangée. Les rangées « Montant /
+journée » et « = Coût » n'étaient pas touchées.
+
+Correctif (CSS seul) : le sélecteur porte la classe `.extra-center`, et
+`.extra-name` / `.extra-center` passent en `display: block` (centre en
+pleine largeur sous le nom). Vérifié dans Chromium avec le CSS de
+l'application : avant, l'élément affiché à l'emplacement du libellé était le
+sélecteur ; après, c'est bien la cellule « Jours travaillés ».
+
+`APP_BUILD` : `2026-10-08.5`.
+
+Contrôle ajouté (546 au total) : la règle `display: block` sur
+`.extra-name, .extra-center` doit exister et le sélecteur doit porter la
+classe `.extra-center`.
+
 ### Les directeurs peuvent supprimer une ligne vide de leurs centres (08/10/2026)
 
 Demande : « laisse aussi les directeurs supprimer une ligne vide ». Suite de
