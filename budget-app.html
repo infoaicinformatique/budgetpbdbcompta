@@ -1450,6 +1450,12 @@
      La rangée « = Coût » est calculée : un fond discret la détache des deux
      rangées de saisie juste au-dessus. */
   .extras-table .extra-name { width: 100%; font-weight: 600; }
+  /* Nom puis centre l'un SOUS l'autre : les cellules sont en
+     `white-space: nowrap`, et deux champs en ligne y restent côte à côte —
+     le sélecteur de centre débordait alors de la colonne figée et masquait
+     le libellé « Jours travaillés » de la première rangée (08/10/2026). */
+  .extras-table .extra-name, .extras-table .extra-center { display: block; box-sizing: border-box; }
+  .extras-table .extra-center { width: 100%; margin-top: var(--space-1); }
   .extras-table .extra-rate {
     display: flex; align-items: center; gap: var(--space-1); margin-top: var(--space-1);
     font-size: var(--text-xs); white-space: nowrap;
@@ -3429,7 +3435,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-08.4';
+const APP_BUILD = '2026-10-08.5';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -21981,7 +21987,7 @@ function payrollExtrasPanel(company) {
     const identity = '<td class="sticky-col" rowspan="3" style="vertical-align:top">' +
       '<input class="extra-name" data-extra-name="' + extra.id + '" ' +
       'value="' + escapeHtml(extra.name || '') + '" placeholder="Nom de l’extra (ex. Extra salle)" />' +
-      '<select data-extra-center="' + extra.id + '" style="margin-top:4px;width:100%">' +
+      '<select class="extra-center" data-extra-center="' + extra.id + '">' +
       centerOptions + '</select>' +
       '<label class="extra-rate muted">Charges patronales' +
       '<input type="number" min="0" max="200" step="0.1" data-extra-rate="' + extra.id + '" ' +
