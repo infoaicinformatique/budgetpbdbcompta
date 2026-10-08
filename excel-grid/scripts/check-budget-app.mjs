@@ -502,7 +502,7 @@ const app = await importApp(
     '  clearSignInAttempts, randomBytes, randomHex, exportedPayloadIsEncrypted };\n' +
     'export { setUserScope, allowedCompanyIds, allowedCostCenterIds, isCompanyAllowed,\n' +
     '  visibleCompanies, enforceCompanyPermission, rawLinesOf,\n' +
-    '  isCenterAllowed, visibleCostCenters, canEditLineStructure, canAddLineInCenter, canEditCaVentilation,\n' +
+    '  isCenterAllowed, visibleCostCenters, canEditLineStructure, canAddLineInCenter, canDeleteLine, canEditCaVentilation,\n' +
     '  scopeCenterRowsHtml, applyRoleDefaultCentersToEditor, DIRECTEUR_DEFAULT_COST_CENTERS,\n' +
     '  companyIdsInSuperGroupRaw, companyIdsInEnvironments, userEnvironmentIds, environmentById,\n' +
     '  availableEnvironments, canSeeAllEnvironments, activeEnvironmentId, setActiveEnvironment,\n' +
@@ -12111,7 +12111,36 @@ await checkAsync('Autorisations : périmètre centre de coûts — Saisie et Pay
     const added = app.addLine('60101100');
     assert.ok(added && added.account === '60101100', 'addLine() crée la ligne dans son propre centre');
     assert.equal(app.state.lines.length, beforeCount + 1, 'exactement une ligne créée');
-    app.state.lines = app.state.lines.filter((l) => l !== added);
+
+    // Suppression (08/10/2026) : un directeur retire une ligne VIDE de son
+    // centre — l'ajout fait par erreur se défait —, jamais une charge
+    // budgétée, une ligne hors périmètre, calculée ou servant de référence.
+    assert.equal(app.canDeleteLine(added), true, 'la ligne vide de son centre se supprime');
+    app.__setCenter('F&B');
+    app.render();
+    app.toggleRowMenu(added.id);
+    rendered = document.getElementById('view').innerHTML;
+    assert.ok(rendered.includes('data-delete="' + added.id + '"'),
+      'le bouton « supprimer » doit apparaître pour la ligne vide du directeur');
+    app.toggleRowMenu('centerui_l1');
+    rendered = document.getElementById('view').innerHTML;
+    assert.ok(!rendered.includes('data-delete="centerui_l1"'),
+      'une charge budgétée de son centre reste non supprimable par un directeur');
+    assert.equal(app.canDeleteLine(app.state.lines.find((l) => l.id === 'centerui_l1')), false,
+      'canDeleteLine refuse une ligne avec des montants');
+    added.amounts[3] = 5;
+    assert.equal(app.canDeleteLine(added), false, 'dès qu’un mois est saisi, la ligne n’est plus vide');
+    added.amounts[3] = 0;
+    const emptyAg = { id: 'centerui_vide_ag', companyId: company.id, account: '60610700', name: '', amounts: months(0) };
+    app.state.lines.push(emptyAg);
+    assert.equal(app.canDeleteLine(emptyAg), false, 'une ligne vide hors périmètre reste intouchable');
+    const reference = { id: 'centerui_ref', companyId: company.id, account: '60101100', name: 'Taux',
+      amounts: months(0), rateLink: { rate: 0.1, sourceLineId: added.id } };
+    app.state.lines.push(reference);
+    assert.equal(app.canDeleteLine(added), false, 'une ligne qui sert de référence à un multiplicateur reste');
+    assert.equal(app.canDeleteLine(reference), false, 'une ligne calculée ne se supprime pas');
+    app.state.lines = app.state.lines.filter((l) => l !== added && l !== emptyAg && l !== reference);
+    app.toggleRowMenu(null);
     app.__setCenter('F&B');
 
     // P&L, depuis le 20/08/2026 (Alexis : « ils ont quand même une visu sur

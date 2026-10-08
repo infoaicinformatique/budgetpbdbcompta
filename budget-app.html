@@ -3429,7 +3429,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-08.3';
+const APP_BUILD = '2026-10-08.4';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -8506,6 +8506,27 @@ function canAddLineInCenter(centerId) {
   return Boolean(centerId) && centerId !== 'PRODUITS' && isCenterAllowed(currentUser(), centerId);
 }
 
+/**
+ * Peut-on supprimer cette ligne ? Le contrôle de gestion, toujours (avec
+ * confirmation si elle porte des montants). Un directeur — demande du
+ * 08/10/2026 : « laisse aussi les directeurs supprimer une ligne vide » —
+ * seulement une ligne VIDE de son périmètre : saisie à la main, douze mois
+ * à zéro, et qui ne sert pas de référence à un multiplicateur (la retirer
+ * changerait le montant d'une autre ligne). C'est le pendant de
+ * `canAddLineInCenter` : on peut défaire un ajout fait par erreur, pas
+ * retirer une charge budgétée.
+ */
+function canDeleteLine(line) {
+  if (!line) return false;
+  if (canEditLineStructure()) return true;
+  if (isComputedLine(line)) return false;
+  if (line.amounts.some(function (v) { return Number(v) !== 0; })) return false;
+  if (state.lines.some(function (l) { return l.rateLink && l.rateLink.sourceLineId === line.id; })) return false;
+  const company = companyById(line.companyId);
+  const account = company ? findAccount(line.account, accountIndexForPlan(company.planId)) : null;
+  return Boolean(account) && canAddLineInCenter(account.center);
+}
+
 /** Centres de coûts visibles pour la personne connectée, dans l'ordre de `COST_CENTERS`. */
 function visibleCostCenters() {
   if (!authEnabled()) return COST_CENTERS;
@@ -12937,8 +12958,10 @@ function viewSaisie() {
       // centre hors périmètre. L'historique, lui, se consulte toujours :
       // c'est de la lecture.
       const canStructureHere = canStructure && !centerReadOnly;
+      // Exception : un directeur peut retirer une ligne vide de son centre
+      // (`canDeleteLine`).
       const menuButtons = (canStructureHere ? moveButton + duplicateButton + detachButton : '') +
-        historyButton + (canStructureHere ? deleteButton : '');
+        historyButton + (!centerReadOnly && canDeleteLine(line) ? deleteButton : '');
       const menuOpen = rowMenuLineId === line.id;
       const actionsCell = '<div class="row-actions">' +
         (centerReadOnly ? '' : (computed ? editButtons : spreadCell) + noteButton) +
@@ -28870,8 +28893,13 @@ document.getElementById('view').addEventListener('click', function (event) {
   if (deleteButton) {
     const line = state.lines.find(function (l) { return l.id === deleteButton.dataset.delete; });
     if (!line) return;
-    if (!canEditLineStructure()) {
-      showAppError('Seul le contrôle de gestion peut supprimer une charge.');
+    // Revérifié au clic : le montant a pu être saisi depuis l'affichage du
+    // bouton (la frappe ne redessine pas le menu).
+    if (!canDeleteLine(line)) {
+      showAppError(canEditLineStructure() || !directorModeActive()
+        ? 'Seul le contrôle de gestion peut supprimer une charge.'
+        : 'Seule une ligne vide (douze mois à zéro) de votre centre peut être supprimée ; ' +
+          'pour une charge budgétée, voyez le contrôle de gestion.');
       return;
     }
     const removeLine = function () {

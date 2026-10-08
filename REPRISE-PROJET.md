@@ -77,6 +77,36 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Les directeurs peuvent supprimer une ligne vide de leurs centres (08/10/2026)
+
+Demande : « laisse aussi les directeurs supprimer une ligne vide ». Suite de
+l'entrée suivante : un directeur pouvait ajouter une ligne mais pas défaire
+un ajout fait par erreur.
+
+Nouvelle règle `canDeleteLine(ligne)` : le contrôle de gestion supprime
+toujours (avec confirmation si la ligne porte des montants). Un directeur
+supprime seulement une ligne **vide** de son périmètre, c'est-à-dire :
+
+- saisie à la main (pas multiplicateur, poste, Payroll ni CA) ;
+- douze mois à zéro (le nom ne compte pas : même définition que la
+  suppression sans confirmation existante) ;
+- qui ne sert pas de référence à un multiplicateur (la retirer changerait
+  le montant d'une autre ligne) ;
+- sur un compte d'un centre où il peut ajouter (`canAddLineInCenter`).
+
+« supprimer » apparaît alors dans le menu « ⋯ » de la ligne. Le clic
+revérifie la règle (un montant a pu être saisi depuis l'affichage du menu)
+et explique le refus au directeur. Déplacer, dupliquer, détacher et
+supprimer une charge budgétée restent au contrôle de gestion.
+
+`APP_BUILD` : `2026-10-08.4`.
+
+Contrôles (test du directeur à périmètre F&B) : le bouton apparaît pour sa
+ligne vide et pas pour « Achat F&B » (montants saisis) ; `canDeleteLine`
+refuse dès qu'un mois est saisi, une ligne vide hors périmètre (AG), une
+ligne référence d'un multiplicateur et une ligne calculée. Vérifié : le
+contrôle échoue si l'on remet l'ancienne condition du menu.
+
 ### Les directeurs peuvent ajouter des lignes de charges dans leurs centres (08/10/2026)
 
 Demande : « Il faut que les directeurs puissent ajouter des lignes de charges
@@ -105,7 +135,8 @@ créer un multiplicateur ou un poste salarial restent au contrôle de gestion ;
 l'import de budget ne crée toujours pas de ligne pour un directeur
 (`skipped-structure`) — il met à jour les lignes existantes de son périmètre.
 Conséquence à connaître : une ligne ajoutée par erreur par un directeur ne
-peut être supprimée que par le contrôle de gestion.
+peut être supprimée que par le contrôle de gestion (levé le même jour : voir
+l'entrée précédente, suppression d'une ligne vide).
 
 `APP_BUILD` : `2026-10-08.3`.
 
