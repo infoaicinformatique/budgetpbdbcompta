@@ -298,6 +298,54 @@
     border-color: var(--gold);
     box-shadow: var(--focus-ring);
   }
+  /* Préférences d'affichage (Paramètres, 08/10/2026), propres à chaque
+     personne et posées sur <html> par `applyDisplayPreferences()`.
+     Taille du texte : toute l'échelle typographique ci-dessus, d'un cran. */
+  html[data-text-size="petit"] {
+    --text-xs: 10px; --text-sm: 11px; --text-md: 12px; --text-base: 13px;
+    --text-lg: 15px; --text-xl: 19px; --text-display: 26px;
+  }
+  html[data-text-size="grand"] {
+    --text-xs: 12px; --text-sm: 13px; --text-md: 14px; --text-base: 15.5px;
+    --text-lg: 17.5px; --text-xl: 23px; --text-display: 30px;
+  }
+  html[data-text-size="tres-grand"] {
+    --text-xs: 13px; --text-sm: 14px; --text-md: 15.5px; --text-base: 17px;
+    --text-lg: 19px; --text-xl: 25px; --text-display: 33px;
+  }
+  /* Densité des tableaux : la hauteur des lignes, pas leur contenu. */
+  html[data-density="compacte"] th, html[data-density="compacte"] td {
+    padding-top: var(--space-05); padding-bottom: var(--space-05);
+  }
+  html[data-density="compacte"] td input, html[data-density="compacte"] td select {
+    padding-top: 1px; padding-bottom: 1px;
+  }
+  html[data-density="aeree"] th, html[data-density="aeree"] td {
+    padding-top: var(--space-3); padding-bottom: var(--space-3);
+  }
+  /* Animations réduites : même effet que la préférence système plus bas. */
+  html[data-motion="reduites"] *, html[data-motion="reduites"] *::before, html[data-motion="reduites"] *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+  html[data-motion="reduites"] .busy-spinner { animation-duration: 700ms !important; animation-iteration-count: infinite !important; }
+  .display-prefs { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: var(--space-4); }
+  .display-pref { display: flex; flex-direction: column; gap: var(--space-1); }
+  .display-pref-label { font-weight: 600; }
+  .display-pref-help { font-size: var(--text-sm); }
+  .palette-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: var(--space-2); }
+  .palette-swatch {
+    display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-25);
+    border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface);
+    font: inherit; font-size: var(--text-md); color: var(--text); text-align: left; cursor: pointer;
+  }
+  .palette-swatch:hover { border-color: var(--gold); }
+  .palette-swatch.selected { border-color: var(--gold); box-shadow: 0 0 0 2px var(--gold); font-weight: 600; }
+  .palette-colors { display: inline-flex; flex-shrink: 0; border-radius: 50%; overflow: hidden; width: 26px; height: 26px; box-shadow: 0 0 0 1px rgba(0,0,0,.12); }
+  .palette-colors span { flex: 1; }
+
   /* Toutes les animations de l'application sont décoratives : elles
      accompagnent un changement, elles ne le portent jamais. Quand le
      système demande à les réduire, on les coupe — le contenu, lui, ne
@@ -3441,7 +3489,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-08.6';
+const APP_BUILD = '2026-10-08.7';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -4215,6 +4263,9 @@ function darkenHex(hex, amount) {
  */
 function applyEnvironmentTheme() {
   if (typeof document === 'undefined' || !document.documentElement || !document.documentElement.style) return;
+  // Une palette personnelle pose elle-même `--navy` (voir
+  // `applyDisplayPreferences`) : ne pas l'écraser.
+  if (personalPaletteColor()) return;
   const environment = environmentById(activeEnvironmentId());
   const color = environment ? environment.navyColor : null;
   const style = document.documentElement.style;
@@ -4257,7 +4308,14 @@ function environmentColorHex(id) {
   if (!id) return null;
   const environment = environmentById(id);
   if (!environment) return null;
-  return environment.navyColor || DEFAULT_NAVY_COLOR;
+  // Une palette personnelle (Paramètres › Préférences d'affichage)
+  // remplace la couleur de chaque environnement, accueil compris.
+  return personalPaletteColor() || environment.navyColor || DEFAULT_NAVY_COLOR;
+}
+
+/** Couleur d'une carte sans environnement : celle de la palette personnelle, sinon le vert olive. */
+function defaultCardColor() {
+  return personalPaletteColor() || DEFAULT_NAVY_COLOR;
 }
 
 function uid(prefix) {
@@ -4631,11 +4689,12 @@ function defaultState() {
     // saisis à la main : l'application est hors ligne, impossible d'aller
     // chercher un taux en direct.
     exchangeRates: {},
-    // Ordre des sociétés sur l'écran d'accueil, choisi par chaque compte
-    // local (glisser-déposer des cartes) : { [clé du compte]: [ids] }.
-    // Hors mode serveur seulement — en mode serveur, l'ordre vit sur le
-    // profil de la personne (`/api/preferences`), voir `userCompanyOrder`.
-    companyOrders: {},
+    // Préférences propres à chaque compte local : ordre des sociétés de
+    // l'accueil et réglages visuels (Paramètres › Préférences d'affichage) :
+    // { [clé du compte]: { companyOrder: [ids], display: { textSize, density, motion } } }.
+    // Hors mode serveur seulement — en mode serveur, elles vivent sur le
+    // profil de la personne (`/api/preferences`), voir `userPreferences`.
+    userPreferences: {},
     seeds: {}
   })));
   // « LPM test » reste la société active par défaut, même si d'autres
@@ -4882,17 +4941,10 @@ function adoptState(parsed) {
        valeurs positives : une série trop courte ferait planter l'affichage
        du tableau, et une valeur illisible remonterait en NaN jusque dans le
        6411 du centre. */
-    // Ordre des sociétés de l'accueil (08/10/2026) : absent des états
-    // antérieurs, et rien qu'un ordre d'affichage — une forme illisible
-    // retombe sur « aucun ordre choisi », jamais sur une erreur.
-    const orders = parsed.companyOrders && typeof parsed.companyOrders === 'object' && !Array.isArray(parsed.companyOrders)
-      ? parsed.companyOrders : {};
-    parsed.companyOrders = {};
-    for (const key of Object.keys(orders)) {
-      if (Array.isArray(orders[key])) {
-        parsed.companyOrders[key] = orders[key].filter(function (id) { return typeof id === 'string'; });
-      }
-    }
+    // Préférences par compte local (08/10/2026) : absentes des états
+    // antérieurs, et rien que de l'affichage — une forme illisible retombe
+    // sur les réglages par défaut, jamais sur une erreur.
+    parsed.userPreferences = normalizeUserPreferencesMap(parsed.userPreferences);
     parsed.payrollExtras = Array.isArray(parsed.payrollExtras) ? parsed.payrollExtras : [];
     for (const extra of parsed.payrollExtras) {
       if (typeof extra.name !== 'string') extra.name = '';
@@ -6582,7 +6634,7 @@ function welcomeEnvironmentCardsHtml() {
     // représente aucun en propre, donc pas de couleur d'environnement dessus
     // (voir `.all-environments-card` dans le CSS pour son thème clair dédié).
     const isAllEnvironments = !id;
-    const color = isAllEnvironments ? 'var(--bg)' : (environmentColorHex(id) || DEFAULT_NAVY_COLOR);
+    const color = isAllEnvironments ? 'var(--bg)' : (environmentColorHex(id) || defaultCardColor());
     return '<button type="button" class="welcome-env-card' + tier + (isAllEnvironments ? ' all-environments-card' : '') +
       (current === (id || null) ? ' current' : '') +
       '" data-welcome-env="' + (id || '') + '" style="background-color:' + color + '">' +
@@ -6612,38 +6664,187 @@ function welcomeEnvironmentCardsHtml() {
  * visuellement ».
  */
 /* ------------------------------------------------------------------
-   Ordre des sociétés de l'accueil, propre à chaque personne
+   Préférences propres à chaque personne : ordre des sociétés de l'accueil
+   et réglages visuels
 
-   Demande du 08/10/2026 : « laisser l'utilisateur classer les entités dans
-   l'ordre qu'il veut. Depuis la page d'accueil l'utilisateur peut
-   positionner ses entités comme il le souhaite. Ça sauvegarde
-   automatiquement sur son profil compte. »
+   Demandes du 08/10/2026 :
+   - « laisser l'utilisateur classer les entités dans l'ordre qu'il veut.
+     Depuis la page d'accueil l'utilisateur peut positionner ses entités
+     comme il le souhaite. Ça sauvegarde automatiquement sur son profil
+     compte. » Les cartes de sociétés se glissent-déposent (ou Alt+← /
+     Alt+→ sur la carte qui a le focus) ;
+   - « une partie dans les préférences qui gère les paramètres visuels pour
+     l'affichage (chaque utilisateur a son profil) » : Paramètres ›
+     Préférences d'affichage (taille du texte, densité des tableaux,
+     animations). Pas de thème sombre : Alexis l'a fait retirer le
+     17/08/2026.
 
-   Les cartes de sociétés se glissent-déposent (ou Alt+← / Alt+→ sur la
-   carte qui a le focus). L'ordre est enregistré tout de suite :
+   Tout est enregistré tout de suite :
    - en mode serveur, sur le profil de la personne (`/api/preferences`,
      preferences.mjs) — il la suit d'un poste à l'autre ;
-   - sinon, dans l'état local, par compte (`state.companyOrders`).
-   Ce n'est qu'un ordre d'affichage : la liste reste bornée par les droits,
-   une société absente de l'ordre se range après les autres, par nom.
+   - sinon, dans l'état local, par compte (`state.userPreferences`).
+   Ce n'est que de l'affichage : la liste des sociétés reste bornée par les
+   droits, une société absente de l'ordre se range après les autres, par nom.
    ------------------------------------------------------------------ */
+
+/* Valeurs permises de chaque réglage visuel, la première étant celle par
+   défaut — mêmes listes que `DISPLAY_OPTIONS` dans preferences.mjs. */
+const DISPLAY_OPTIONS = {
+  textSize: ['normal', 'petit', 'grand', 'tres-grand'],
+  density: ['normale', 'compacte', 'aeree'],
+  motion: ['normales', 'reduites'],
+  palette: ['charte', 'vert-comptable', 'vert-tableur', 'bleu-erp', 'bleu-marine', 'bleu-cloud',
+    'bleu-bureautique', 'turquoise', 'violet-gestion', 'indigo', 'bordeaux', 'orange',
+    'anthracite', 'ardoise', 'sapin-cuivre', 'contraste'],
+};
+
+/*
+ * Palettes de couleurs (Paramètres › Préférences d'affichage, 08/10/2026) :
+ * « la gestion des couleurs d'affichage avec une quinzaine d'archétypes de
+ * couleur prédéfinis (les plus utilisés dans les logiciels de
+ * comptabilité) ». Des archétypes, pas des copies : aucun nom ni logo de
+ * marque, seulement les grandes familles qu'on retrouve d'un logiciel à
+ * l'autre (vert « compta », vert tableur, bleu ERP, bleu marine
+ * financier…).
+ *
+ * Chaque palette donne une couleur principale (en-tête, boutons, titres —
+ * `--navy`) et une couleur d'accent (actions, totaux — `--gold`) ; les
+ * teintes dérivées (fond, lignes, en-têtes de tableau) se calculent
+ * (`displayPaletteProperties`). Toutes gardent un fond clair et un texte
+ * sombre : le thème sombre a été retiré à la demande d'Alexis (17/08/2026)
+ * et ses textes illisibles avaient été la principale source de défauts.
+ * `charte` (la charte Palm Beach Cannes) reste la valeur par défaut, et
+ * c'est la seule qui laisse chaque environnement afficher sa propre
+ * couleur (`applyEnvironmentTheme`) ; une palette personnelle s'applique
+ * partout, accueil compris.
+ */
+const DISPLAY_PALETTES = {
+  'charte': { label: 'Charte Palm Beach (par défaut)', primary: DEFAULT_NAVY_COLOR, accent: '#b8963f' },
+  'vert-comptable': { label: 'Vert comptable', primary: '#1f6f43', accent: '#c58b16' },
+  'vert-tableur': { label: 'Vert tableur', primary: '#217346', accent: '#2f6fb0' },
+  'bleu-erp': { label: 'Bleu ERP', primary: '#0a5fb4', accent: '#d9730d' },
+  'bleu-marine': { label: 'Bleu marine financier', primary: '#1b3a5c', accent: '#b8963f' },
+  'bleu-cloud': { label: 'Bleu ciel cloud', primary: '#0b6e99', accent: '#0f9d8a' },
+  'bleu-bureautique': { label: 'Bleu bureautique', primary: '#2b579a', accent: '#c4441b' },
+  'turquoise': { label: 'Turquoise', primary: '#00796b', accent: '#c98a00' },
+  'violet-gestion': { label: 'Violet gestion', primary: '#714b67', accent: '#017e84' },
+  'indigo': { label: 'Indigo moderne', primary: '#3f3d9e', accent: '#e07b2e' },
+  'bordeaux': { label: 'Bordeaux', primary: '#7b1e2b', accent: '#a8873a' },
+  'orange': { label: 'Orange énergie', primary: '#a8420c', accent: '#1e5aa8' },
+  'anthracite': { label: 'Anthracite sobre', primary: '#374151', accent: '#2563eb' },
+  'ardoise': { label: 'Ardoise et menthe', primary: '#334e68', accent: '#1f8f6f' },
+  'sapin-cuivre': { label: 'Sapin et cuivre', primary: '#234e3b', accent: '#b0662f' },
+  'contraste': {
+    label: 'Contraste élevé', primary: '#000000', accent: '#0047b3',
+    // Pour qui lit mal les gris : texte noir pur, gris secondaire foncé,
+    // lignes bien visibles, fond blanc.
+    extra: { '--text': '#000000', '--muted': '#3d3d3d', '--line': '#8a8a8a', '--bg': '#ffffff' },
+  },
+};
+
+/* Propriétés CSS qu'une palette pose sur <html> (et retire en revenant à la charte). */
+const DISPLAY_PALETTE_PROPERTIES = ['--navy', '--navy-deep', '--gold', '--gold-soft', '--gold-line',
+  '--bg', '--line', '--surface-tint-1', '--surface-tint-2', '--badge-gold-text', '--text', '--muted'];
+
+/** Mélange deux couleurs #rrggbb : `amount` = part de `other` (0 → `hex`, 1 → `other`). */
+function mixHex(hex, other, amount) {
+  const a = /^#?([0-9a-fA-F]{6})$/.exec(hex || '');
+  const b = /^#?([0-9a-fA-F]{6})$/.exec(other || '');
+  if (!a || !b) return hex;
+  const x = parseInt(a[1], 16);
+  const y = parseInt(b[1], 16);
+  const channel = function (shift) {
+    const value = Math.round(((x >> shift) & 255) * (1 - amount) + ((y >> shift) & 255) * amount);
+    return Math.max(0, Math.min(255, value)).toString(16).padStart(2, '0');
+  };
+  return '#' + channel(16) + channel(8) + channel(0);
+}
+
+/** Valeurs des variables CSS d'une palette ; `null` pour la charte (rien à poser). */
+function displayPaletteProperties(id) {
+  const palette = DISPLAY_PALETTES[id];
+  if (!palette || id === DISPLAY_OPTIONS.palette[0]) return null;
+  const white = '#ffffff';
+  return Object.assign({
+    '--navy': palette.primary,
+    '--navy-deep': darkenHex(palette.primary, 0.3),
+    '--gold': palette.accent,
+    '--gold-soft': mixHex(palette.accent, white, 0.86),
+    '--gold-line': mixHex(palette.accent, white, 0.62),
+    '--bg': mixHex(palette.primary, white, 0.95),
+    '--line': mixHex(palette.primary, '#d8d8d8', 0.82),
+    '--surface-tint-1': mixHex(palette.primary, white, 0.89),
+    '--surface-tint-2': mixHex(palette.primary, white, 0.92),
+    '--badge-gold-text': darkenHex(palette.accent, 0.35),
+  }, palette.extra || {});
+}
+
+/** Couleur principale de la palette personnelle, ou `null` avec la charte. */
+function personalPaletteColor() {
+  const id = userPreferences().display.palette;
+  return id !== DISPLAY_OPTIONS.palette[0] && DISPLAY_PALETTES[id] ? DISPLAY_PALETTES[id].primary : null;
+}
+const DISPLAY_OPTION_LABELS = {
+  textSize: { normal: 'Normale', petit: 'Petite', grand: 'Grande', 'tres-grand': 'Très grande' },
+  density: { normale: 'Normale', compacte: 'Compacte — plus de lignes à l’écran', aeree: 'Aérée — plus d’espace entre les lignes' },
+  motion: { normales: 'Activées', reduites: 'Réduites — changements instantanés' },
+  palette: Object.keys(DISPLAY_PALETTES).reduce(function (labels, id) {
+    labels[id] = DISPLAY_PALETTES[id].label;
+    return labels;
+  }, {}),
+};
 
 /* Préférences lues sur le serveur au démarrage ; `null` hors mode serveur. */
 let serverPreferences = null;
 /* Carte en cours de glissement sur l'accueil (id de société). */
 let welcomeDragCompanyId = null;
 
-/** Clé du compte local dans `state.companyOrders` (`''` sans compte). */
-function companyOrderKey() {
+/** Réglages visuels complets : chaque valeur absente ou inconnue vaut celle par défaut. */
+function normalizeDisplayPreferences(display) {
+  const out = {};
+  for (const key of Object.keys(DISPLAY_OPTIONS)) {
+    const value = display && typeof display === 'object' ? display[key] : undefined;
+    out[key] = DISPLAY_OPTIONS[key].indexOf(value) === -1 ? DISPLAY_OPTIONS[key][0] : value;
+  }
+  return out;
+}
+
+/** Nettoie `state.userPreferences` (migration, voir `adoptState`). */
+function normalizeUserPreferencesMap(map) {
+  const out = {};
+  if (!map || typeof map !== 'object' || Array.isArray(map)) return out;
+  for (const key of Object.keys(map)) {
+    const entry = map[key];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    out[key] = {
+      companyOrder: Array.isArray(entry.companyOrder)
+        ? entry.companyOrder.filter(function (id) { return typeof id === 'string'; }) : [],
+      display: normalizeDisplayPreferences(entry.display),
+    };
+  }
+  return out;
+}
+
+/** Clé du compte local dans `state.userPreferences` (`''` sans compte). */
+function userPreferencesKey() {
   const user = authEnabled() ? currentUser() : null;
   return user ? String(user.id || user.username || '') : '';
 }
 
+/** Préférences de la personne connectée, valeurs par défaut comprises. */
+function userPreferences() {
+  const entry = serverSession
+    ? serverPreferences
+    : (state && state.userPreferences ? state.userPreferences[userPreferencesKey()] : null);
+  return {
+    companyOrder: entry && Array.isArray(entry.companyOrder) ? entry.companyOrder : [],
+    display: normalizeDisplayPreferences(entry && entry.display),
+  };
+}
+
 /** Ordre choisi par la personne connectée (ids de sociétés), éventuellement vide. */
 function userCompanyOrder() {
-  if (serverSession) return serverPreferences && Array.isArray(serverPreferences.companyOrder) ? serverPreferences.companyOrder : [];
-  const orders = state.companyOrders || {};
-  return Array.isArray(orders[companyOrderKey()]) ? orders[companyOrderKey()] : [];
+  return userPreferences().companyOrder;
 }
 
 /** Trie des sociétés selon l'ordre de la personne ; les autres suivent, par nom. */
@@ -6657,30 +6858,137 @@ function sortCompaniesByUserOrder(companies) {
   });
 }
 
-/** Lit mes préférences sur le serveur (démarrage). Une panne laisse l'ordre par nom. */
+/** Lit mes préférences sur le serveur (démarrage). Une panne laisse les réglages par défaut. */
 async function loadServerPreferences() {
   if (!serverSession || !serverRequest) return;
   try {
     const data = await serverRequest('GET', '/api/preferences');
-    serverPreferences = { companyOrder: Array.isArray(data && data.companyOrder) ? data.companyOrder : [] };
+    serverPreferences = {
+      companyOrder: Array.isArray(data && data.companyOrder) ? data.companyOrder : [],
+      display: normalizeDisplayPreferences(data && data.display),
+    };
   } catch (e) {
-    serverPreferences = { companyOrder: [] };
+    serverPreferences = { companyOrder: [], display: normalizeDisplayPreferences(null) };
   }
+  applyDisplayPreferences();
 }
 
-/** Enregistre un nouvel ordre sur le profil de la personne. */
-function setUserCompanyOrder(order) {
+/**
+ * Enregistre une partie des préférences (`{ companyOrder }` ou
+ * `{ display }`) sur le profil de la personne ; le reste est conservé.
+ * `failure` : début du message affiché si le serveur refuse.
+ */
+function saveUserPreferences(patch, failure) {
+  const current = userPreferences();
+  const next = {
+    companyOrder: patch.companyOrder || current.companyOrder,
+    display: normalizeDisplayPreferences(Object.assign({}, current.display, patch.display || {})),
+  };
   if (serverSession) {
-    serverPreferences = { companyOrder: order };
+    serverPreferences = next;
     if (!serverRequest) return Promise.resolve();
-    return serverRequest('PUT', '/api/preferences', { companyOrder: order }).catch(function (e) {
-      showToast('Ordre des sociétés non enregistré : ' + (e.message || e), true);
+    return serverRequest('PUT', '/api/preferences', patch).catch(function (e) {
+      showToast(failure + ' : ' + (e.message || e), true);
     });
   }
-  if (!state.companyOrders || typeof state.companyOrders !== 'object') state.companyOrders = {};
-  state.companyOrders[companyOrderKey()] = order;
+  if (!state.userPreferences || typeof state.userPreferences !== 'object') state.userPreferences = {};
+  state.userPreferences[userPreferencesKey()] = next;
   save();
   return Promise.resolve();
+}
+
+/** Enregistre un nouvel ordre des sociétés sur le profil de la personne. */
+function setUserCompanyOrder(order) {
+  return saveUserPreferences({ companyOrder: order }, 'Ordre des sociétés non enregistré');
+}
+
+/** Change un réglage visuel et l'applique aussitôt. Une valeur inconnue est ignorée. */
+function setUserDisplayPreference(key, value) {
+  if (!DISPLAY_OPTIONS[key] || DISPLAY_OPTIONS[key].indexOf(value) === -1) return false;
+  const display = {};
+  display[key] = value;
+  saveUserPreferences({ display: display }, 'Préférence d’affichage non enregistrée');
+  applyDisplayPreferences();
+  return true;
+}
+
+/** Remet les réglages visuels par défaut (l'ordre des sociétés ne bouge pas). */
+function resetUserDisplayPreferences() {
+  saveUserPreferences({ display: normalizeDisplayPreferences(null) }, 'Préférences d’affichage non enregistrées');
+  applyDisplayPreferences();
+}
+
+/**
+ * Pose les réglages visuels sur `<html>` (`data-text-size`,
+ * `data-density`, `data-motion`) : la feuille de style fait le reste (voir
+ * « Préférences d'affichage » dans le CSS). Appelée à chaque rendu de
+ * l'en-tête, comme `applyEnvironmentTheme()`, et dès qu'un réglage change.
+ */
+function applyDisplayPreferences() {
+  if (typeof document === 'undefined' || !document.documentElement || !document.documentElement.setAttribute) return;
+  const display = userPreferences().display;
+  const root = document.documentElement;
+  root.setAttribute('data-text-size', display.textSize);
+  root.setAttribute('data-density', display.density);
+  root.setAttribute('data-motion', display.motion);
+  root.setAttribute('data-palette', display.palette);
+  // Palette : posée en style en ligne, comme la couleur d'environnement
+  // (`applyEnvironmentTheme`), qu'elle remplace. Retour à la charte : on
+  // retire tout ce qu'une palette a pu poser, puis la couleur de
+  // l'environnement reprend sa place.
+  if (!root.style || !root.style.setProperty) return;
+  const properties = displayPaletteProperties(display.palette);
+  for (const name of DISPLAY_PALETTE_PROPERTIES) {
+    if (properties && properties[name]) root.style.setProperty(name, properties[name]);
+    else root.style.removeProperty(name);
+  }
+  if (!properties) applyEnvironmentTheme();
+}
+
+/** Rubrique « Préférences d'affichage » de Paramètres (compte local comme annuaire). */
+function displayPreferencesPanel() {
+  const display = userPreferences().display;
+  const field = function (key, label, help) {
+    const options = DISPLAY_OPTIONS[key].map(function (value) {
+      return '<option value="' + value + '"' + (display[key] === value ? ' selected' : '') + '>' +
+        escapeHtml(DISPLAY_OPTION_LABELS[key][value]) + '</option>';
+    }).join('');
+    return '<label class="display-pref">' +
+      '<span class="display-pref-label">' + escapeHtml(label) + '</span>' +
+      '<select data-display-pref="' + key + '">' + options + '</select>' +
+      '<span class="muted display-pref-help">' + escapeHtml(help) + '</span></label>';
+  };
+  const isDefault = Object.keys(DISPLAY_OPTIONS).every(function (key) {
+    return display[key] === DISPLAY_OPTIONS[key][0];
+  });
+  const where = serverSession
+    ? 'Enregistrées sur votre compte : vous les retrouvez sur tous vos postes.'
+    : 'Enregistrées pour votre compte, dans ce navigateur.';
+  return panel('parametres-affichage', 'Préférences d’affichage',
+    '<p class="muted" style="margin:0 0 12px;font-size:13px">Propres à vous : chacun règle son ' +
+    'affichage sans rien changer pour les autres. Appliquées tout de suite. ' + escapeHtml(where) + '</p>' +
+    '<div class="display-prefs">' +
+    field('textSize', 'Taille du texte', 'Agrandit ou réduit les textes et les montants de toute l’application.') +
+    field('density', 'Densité des tableaux', 'Hauteur des lignes de la Saisie, du P&L, du Payroll et des autres tableaux.') +
+    field('motion', 'Animations', 'Fondus et glissements à l’ouverture des écrans et des fenêtres.') +
+    '</div>' +
+    '<div class="display-pref-label" style="margin:18px 0 4px">Couleurs</div>' +
+    '<p class="muted" style="margin:0 0 10px;font-size:12px">La charte Palm Beach garde la couleur de chaque ' +
+    'environnement ; une autre palette s’applique partout, accueil compris.</p>' +
+    '<div class="palette-grid" role="radiogroup" aria-label="Palette de couleurs">' +
+    DISPLAY_OPTIONS.palette.map(function (id) {
+      const palette = DISPLAY_PALETTES[id];
+      const selected = display.palette === id;
+      return '<button type="button" class="palette-swatch' + (selected ? ' selected' : '') + '" role="radio" ' +
+        'aria-checked="' + (selected ? 'true' : 'false') + '" data-display-palette="' + id + '">' +
+        '<span class="palette-colors"><span style="background:' + palette.primary + '"></span>' +
+        '<span style="background:' + palette.accent + '"></span></span>' +
+        '<span class="palette-name">' + escapeHtml(palette.label) + '</span></button>';
+    }).join('') +
+    '</div>' +
+    (isDefault ? '' : '<button type="button" class="action ghost" data-display-prefs-reset="1" ' +
+      'style="margin-top:12px">Rétablir l’affichage par défaut</button>'),
+    { open: true });
 }
 
 /**
@@ -6733,7 +7041,7 @@ function welcomeCompanyCardsHtml() {
     // façon ; c'est seulement sur l'écran « Tous les environnements »
     // (`welcomeCompanyStepEnvId === null`) que ça fait vraiment une
     // différence, chaque société y retrouvant sa propre couleur.
-    const color = environmentColorHex(environmentIdForCompany(c)) || DEFAULT_NAVY_COLOR;
+    const color = environmentColorHex(environmentIdForCompany(c)) || defaultCardColor();
     return '<button type="button" class="welcome-env-card' + tier + (current === c.id ? ' current' : '') +
       (welcomeDragCompanyId === c.id ? ' dragging' : '') +
       '" data-welcome-company="' + c.id + '" draggable="true" ' +
@@ -9409,7 +9717,7 @@ function startServerRightsRefresh() {
 /* Ce qui ne part jamais au serveur : comptes et journal propres au mode
    local, choix d'affichage propres au poste. Même liste que PRIVATE_KEYS
    dans data.mjs. */
-const SERVER_PRIVATE_KEYS = ['users', 'authLog', 'activeCompany', 'activeEnvironmentId', 'activeScenario', 'lastSavedAt', 'companyOrders'];
+const SERVER_PRIVATE_KEYS = ['users', 'authLog', 'activeCompany', 'activeEnvironmentId', 'activeScenario', 'lastSavedAt', 'userPreferences'];
 const SERVER_RETRY_MS = 10000;
 /* Découpage par société : même liste que COMPANY_ARRAYS / COMPANY_DICTS
    dans data.mjs (les dictionnaires sont ceux de COMPANY_KEYED_STATE). */
@@ -12589,6 +12897,7 @@ function renderEnvironmentButton() {
 function renderHeader() {
   renderEnvironmentButton();
   applyEnvironmentTheme();
+  applyDisplayPreferences();
 
   document.getElementById('lock-button').hidden = !cryptoKey;
   document.getElementById('settings-link').hidden = !tabAllowedNow('parametres');
@@ -24547,7 +24856,8 @@ function viewParametres() {
     return viewPage({
       title: 'Paramètres',
       hint: 'Vos réglages personnels.',
-      body: emptyState('Aucun compte connecté : rien à régler ici.') + parametresLdapPanel(),
+      body: emptyState('Aucun compte connecté : seul l’affichage de ce navigateur se règle ici.') +
+        displayPreferencesPanel() + parametresLdapPanel(),
     });
   }
 
@@ -24603,10 +24913,11 @@ function viewParametres() {
 
   return viewPage({
     title: 'Paramètres',
-    hint: 'Vos réglages personnels : votre compte et votre mot de passe.',
+    hint: 'Vos réglages personnels : votre compte, votre mot de passe et votre affichage.',
     body:
       panel('parametres-compte', 'Mon compte', accountBody, { open: true }) +
       panel('parametres-mdp', 'Mot de passe', passwordBody, { open: true }) +
+      displayPreferencesPanel() +
       parametresLdapPanel(),
   });
 }
@@ -24644,9 +24955,10 @@ function viewParametresServeur() {
 
   return viewPage({
     title: 'Paramètres',
-    hint: 'Votre compte, la connexion à l’annuaire' + (isAdminUser(user) ? ' et les droits d’accès de chacun.' : '.'),
+    hint: 'Votre compte, votre affichage, la connexion à l’annuaire' + (isAdminUser(user) ? ' et les droits d’accès de chacun.' : '.'),
     body:
       panel('parametres-compte', 'Mon compte', accountBody, { open: true }) +
+      displayPreferencesPanel() +
       parametresDonneesPanel() +
       parametresLdapPanel() +
       (isAdminUser(user) && !serverSession.error ? parametresDroitsPanels() : ''),
@@ -30408,6 +30720,32 @@ document.addEventListener('input', function (event) {
   if (!setupWizard || !event.target) return;
   if (event.target.id === 'wizard-name') setupWizard.name = event.target.value;
   else if (event.target.id === 'wizard-year') setupWizard.year = event.target.value;
+});
+
+/* Paramètres › Préférences d'affichage : chaque réglage s'applique et
+   s'enregistre dès qu'on le choisit, sans bouton « Enregistrer ». */
+document.addEventListener('change', function (event) {
+  const select = event.target && event.target.closest ? event.target.closest('select[data-display-pref]') : null;
+  if (!select) return;
+  if (setUserDisplayPreference(select.dataset.displayPref, select.value)) {
+    render();
+    showToast('Affichage mis à jour');
+  }
+});
+document.addEventListener('click', function (event) {
+  const swatch = event.target && event.target.closest ? event.target.closest('[data-display-palette]') : null;
+  if (!swatch) return;
+  if (setUserDisplayPreference('palette', swatch.dataset.displayPalette)) {
+    render();
+    showToast('Couleurs : ' + DISPLAY_PALETTES[swatch.dataset.displayPalette].label);
+  }
+});
+document.addEventListener('click', function (event) {
+  const button = event.target && event.target.closest ? event.target.closest('[data-display-prefs-reset]') : null;
+  if (!button) return;
+  resetUserDisplayPreferences();
+  render();
+  showToast('Affichage par défaut rétabli');
 });
 
 document.addEventListener('change', function (event) {

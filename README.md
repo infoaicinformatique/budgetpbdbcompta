@@ -219,6 +219,12 @@ budgets, collaborateurs, CA, objectifs… sont lus et écrits sur le serveur
   /api/preferences` : sans identifiant dans le chemin, chacun ne lit et
   n'écrit que le sien. Ce n'est qu'un affichage, il ne donne accès à rien.
   Hors serveur, il est gardé dans le navigateur, par compte local.
+- **Préférences d'affichage** (08/10/2026, même fichier et même adresse) :
+  Paramètres › Préférences d'affichage, propres à chacun — taille du texte,
+  densité des tableaux, animations et palette de couleurs (quinze archétypes
+  de logiciels de gestion plus la charte Palm Beach, par défaut). Appliquées
+  tout de suite, enregistrées sur le profil ; un `PUT` n'envoie que le
+  réglage changé. Pas de thème sombre (retiré à la demande d'Alexis).
 
 Sauvegarde : `sudo docker exec budgetpbdbcompta cat /data/budget.json > budget-$(date +%F).json`.
 Revenir à une version : copier un fichier de `/data/historique/` sur

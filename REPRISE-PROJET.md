@@ -77,6 +77,78 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Paramètres › Préférences d'affichage : taille du texte, densité, animations et seize palettes, par personne (08/10/2026)
+
+Demandes : « une partie dans les préférences qui gère les paramètres visuels
+pour l'affichage (chaque utilisateur a son profil) », puis, **important** :
+« la gestion des couleurs d'affichage avec une quinzaine d'archétypes de
+couleur prédéfinis (les plus utilisés dans les logiciels de comptabilité) ».
+
+Nouvelle rubrique **Préférences d'affichage** dans Paramètres (compte de
+l'annuaire comme compte local, et même sans compte). Chaque réglage
+s'applique et s'enregistre dès qu'on le choisit (bandeau « Affichage mis à
+jour ») ; « Rétablir l'affichage par défaut » n'apparaît que si quelque chose
+a changé.
+
+- **Taille du texte** : petite / normale / grande / très grande — toute
+  l'échelle `--text-*` d'un cran (`html[data-text-size]`).
+- **Densité des tableaux** : compacte / normale / aérée — marges hautes et
+  basses des cellules (`html[data-density]`).
+- **Animations** : activées / réduites — même règle que la préférence
+  système `prefers-reduced-motion` (`html[data-motion]`).
+- **Couleurs** : un nuancier de **seize palettes** — la charte Palm Beach
+  (par défaut) et quinze archétypes de logiciels de gestion : vert comptable,
+  vert tableur, bleu ERP, bleu marine financier, bleu ciel cloud, bleu
+  bureautique, turquoise, violet gestion, indigo moderne, bordeaux, orange
+  énergie, anthracite sobre, ardoise et menthe, sapin et cuivre, contraste
+  élevé. Des familles de couleurs, **aucun nom ni logo de marque**. Chaque
+  palette donne une couleur principale (`--navy`) et un accent (`--gold`) ;
+  fond, lignes et en-têtes de tableau en sont dérivés (`mixHex`,
+  `displayPaletteProperties`) et posés en style en ligne sur `<html>`.
+
+Décisions :
+
+- **Pas de thème sombre** : Alexis l'a fait retirer le 17/08/2026, et ses
+  textes illisibles avaient été la principale source de défauts. Toutes les
+  palettes gardent fond clair et texte sombre ; un contrôle vérifie que
+  chaque couleur principale contraste à 4,5:1 au moins avec le blanc
+  (en-tête et boutons).
+- **Couleur des environnements** : la charte la conserve (comportement
+  inchangé). Une palette personnelle la **remplace partout**, accueil
+  compris (`environmentColorHex`, `defaultCardColor`,
+  `applyEnvironmentTheme`) — sinon l'en-tête changerait de couleur d'un
+  environnement à l'autre sans que la personne l'ait choisi.
+
+Enregistrement : même mécanique que l'ordre des sociétés (entrée
+précédente), généralisée. Serveur : `preferences.mjs` gère un bloc `display`
+validé contre `DISPLAY_OPTIONS` (listes fermées, première valeur = défaut),
+et un `PUT` **partiel** ne touche qu'à ce qu'il envoie (ranger ses cartes ne
+remet pas l'affichage à zéro, et inversement) ; `GET` rend des préférences
+complètes, défauts compris. Application : `serverPreferences` en mode
+serveur ; hors serveur, `state.userPreferences[compte] = { companyOrder,
+display }`, qui remplace la clé `companyOrders` de l'entrée précédente
+(jamais livrée) — clé privée des deux côtés (`SERVER_PRIVATE_KEYS`,
+`PRIVATE_KEYS`), migrée par `normalizeUserPreferencesMap`.
+`applyDisplayPreferences()` est appelée à chaque rendu de l'en-tête et au
+chargement des préférences.
+
+`APP_BUILD` : `2026-10-08.7`.
+
+Vérifié dans Chromium sur un serveur local (compte local de secours, donc en
+**mode serveur**) : choisir « Bleu marine financier » et « Grande » pose
+`--navy: #1b3a5c` et `--text-base: 15.5px`, l'en-tête et la Saisie changent
+de couleur, le fichier `preferences.json` reçoit les deux réglages, et ils
+sont retrouvés après rechargement ; aucune erreur JavaScript.
+
+Contrôles : 3 tests serveur de plus (56) — valeurs inconnues refusées, `PUT`
+partiel sans écrasement, seize palettes ; dans `check-budget-app.mjs` (548),
+un contrôle des préférences d'affichage : listes identiques à
+preferences.mjs, réglages posés sur `<html>` et rangés par compte, valeur
+inconnue ignorée, rétablir sans toucher à l'ordre, migration, règles CSS,
+nuancier complet, contraste de chaque palette, palette qui remplace puis rend
+la couleur d'environnement, et en mode serveur lecture au démarrage puis
+`PUT` du seul réglage changé.
+
 ### Accueil : chacun range ses sociétés dans l'ordre qu'il veut, enregistré sur son compte (08/10/2026)
 
 Demande : « laisser l'utilisateur classer les entités dans l'ordre qu'il
@@ -11901,7 +11973,10 @@ const app = await importApp(
     'export function __clearServerSession() { serverSession = null; serverDirectory = null; }\n' +
     // Ordre des sociétés de l'accueil (08/10/2026).
     'export { userCompanyOrder, sortCompaniesByUserOrder, moveCompanyInUserOrder, setUserCompanyOrder,\n' +
-    '  welcomeCompanyIdsShown, companyOrderKey, loadServerPreferences };\n' +
+    '  welcomeCompanyIdsShown, userPreferencesKey, loadServerPreferences, userPreferences,\n' +
+    '  DISPLAY_OPTIONS, setUserDisplayPreference, resetUserDisplayPreferences, applyDisplayPreferences,\n' +
+    '  displayPreferencesPanel, normalizeUserPreferencesMap, DISPLAY_PALETTES, displayPaletteProperties,\n' +
+    '  mixHex };\n' +
     'export function __setServerPreferences(v) { serverPreferences = v; }\n' +
     'export function __getServerPreferences() { return serverPreferences; }\n' +
     'export function __swapServerRequest(fn) { const previous = serverRequest; serverRequest = fn; return previous; }\n' +
@@ -12564,11 +12639,11 @@ check('Données tenues par le serveur : ce qui part, état vide, choix du poste'
   try {
     const payload = app.serverStatePayload({ companies: [{ id: 'a' }], users: [{ passwordHash: 'x' }], authLog: [1],
       activeCompany: 'a', activeEnvironmentId: 'e', activeScenario: 's', lastSavedAt: 'hier', scenarios: [],
-      companyOrders: { u1: ['a'] } });
+      userPreferences: { u1: { companyOrder: ['a'] } } });
     assert.deepEqual(Object.keys(payload).sort(), ['companies', 'scenarios'],
       'ni comptes locaux, ni journal de sécurité, ni choix d’affichage ne partent au serveur');
     assert.deepEqual(app.SERVER_PRIVATE_KEYS.slice().sort(),
-      ['activeCompany', 'activeEnvironmentId', 'activeScenario', 'authLog', 'companyOrders', 'lastSavedAt', 'users'],
+      ['activeCompany', 'activeEnvironmentId', 'activeScenario', 'authLog', 'lastSavedAt', 'userPreferences', 'users'],
       'même liste que PRIVATE_KEYS dans data.mjs');
 
     // Périmètre vide : aucune société inventée (adoptState mettrait celles d'origine).
@@ -29510,10 +29585,11 @@ check('Accueil : la carte « Tous les environnements » a un thème blanc adouci
 
 await checkAsync('Accueil : chacun range ses sociétés dans l’ordre qu’il veut, enregistré sur son compte (08/10/2026)', async () => {
   const saved = environmentFixture();
-  const savedOrders = app.state.companyOrders;
+  const savedOrders = app.state.userPreferences;
+  const orderOf = (key) => (app.state.userPreferences[key] || {}).companyOrder;
   const order = (htmlCards) => [...htmlCards.matchAll(/data-welcome-company="([^"]+)"/g)].map((m) => m[1]);
   try {
-    app.state.companyOrders = {};
+    app.state.userPreferences = {};
     app.__setWelcomeCompanyStep(null);
     // Sans ordre choisi : par nom, comme avant.
     assert.deepEqual(order(app.welcomeCompanyCardsHtml()), ['multi_a', 'multi_b', 'multi_c'],
@@ -29526,26 +29602,26 @@ await checkAsync('Accueil : chacun range ses sociétés dans l’ordre qu’il v
     assert.equal(app.moveCompanyInUserOrder(app.welcomeCompanyIdsShown(), 'multi_c', 'multi_a'), true);
     assert.deepEqual(order(app.welcomeCompanyCardsHtml()), ['multi_c', 'multi_a', 'multi_b'],
       'la carte déposée prend la place de celle qui la reçoit');
-    assert.deepEqual(app.state.companyOrders[app.companyOrderKey()], ['multi_c', 'multi_a', 'multi_b'],
+    assert.deepEqual(orderOf(app.userPreferencesKey()), ['multi_c', 'multi_a', 'multi_b'],
       'l’ordre est enregistré pour ce compte');
     // Vers la droite : A déposé sur B passe derrière B.
     app.moveCompanyInUserOrder(app.welcomeCompanyIdsShown(), 'multi_a', 'multi_b');
     assert.deepEqual(order(app.welcomeCompanyCardsHtml()), ['multi_c', 'multi_b', 'multi_a']);
 
     // Un autre compte garde son propre ordre : rien de partagé.
-    const mine = app.companyOrderKey();
-    app.state.companyOrders = { [mine]: ['multi_b'], autre_compte: ['multi_c', 'multi_a', 'multi_b'] };
+    const mine = app.userPreferencesKey();
+    app.state.userPreferences = { [mine]: { companyOrder: ['multi_b'] }, autre_compte: { companyOrder: ['multi_c', 'multi_a', 'multi_b'] } };
     assert.deepEqual(order(app.welcomeCompanyCardsHtml()), ['multi_b', 'multi_a', 'multi_c'],
       'seul l’ordre du compte connecté compte ; une société non rangée suit, par nom');
 
     // Les sociétés absentes de l'écran gardent leur place derrière celles
     // qu'on range (autre environnement), et une société inconnue n'y fait rien.
-    app.state.companyOrders = { [mine]: ['fantome', 'multi_b', 'multi_a', 'multi_c'] };
+    app.state.userPreferences = { [mine]: { companyOrder: ['fantome', 'multi_b', 'multi_a', 'multi_c'] } };
     app.moveCompanyInUserOrder(['multi_b', 'multi_a'], 'multi_a', 'multi_b');
-    assert.deepEqual(app.state.companyOrders[mine], ['multi_a', 'multi_b', 'fantome', 'multi_c']);
+    assert.deepEqual(orderOf(mine), ['multi_a', 'multi_b', 'fantome', 'multi_c']);
 
     // L'ordre reste un affichage : jamais envoyé au serveur avec les budgets.
-    assert.ok(!('companyOrders' in app.serverStatePayload(app.state)),
+    assert.ok(!('userPreferences' in app.serverStatePayload(app.state)),
       'l’ordre local ne part jamais avec les données partagées');
 
     // Mode serveur : l'ordre vit sur le profil (PUT /api/preferences), pas
@@ -29557,7 +29633,7 @@ await checkAsync('Accueil : chacun range ses sociétés dans l’ordre qu’il v
     });
     try {
       app.adoptServerSession({ method: 'ldap', account: 'ctrl', rights: { role: 'controleur', isAdmin: false, permissions: null } }, null);
-      app.state.companyOrders = {};
+      app.state.userPreferences = {};
       await app.loadServerPreferences();
       assert.deepEqual(calls[0], { method: 'GET', path: '/api/preferences', body: undefined }, 'lu sur le profil au démarrage');
       assert.deepEqual(order(app.welcomeCompanyCardsHtml()), ['multi_b', 'multi_c', 'multi_a'],
@@ -29566,16 +29642,146 @@ await checkAsync('Accueil : chacun range ses sociétés dans l’ordre qu’il v
       const put = calls.find((c) => c.method === 'PUT');
       assert.ok(put && put.path === '/api/preferences', 'le nouvel ordre part aussitôt sur le profil');
       assert.deepEqual(put.body, { companyOrder: ['multi_a', 'multi_b', 'multi_c'] });
-      assert.deepEqual(app.state.companyOrders, {}, 'rien n’est écrit dans l’état local en mode serveur');
+      assert.deepEqual(app.state.userPreferences, {}, 'rien n’est écrit dans l’état local en mode serveur');
     } finally {
       app.__swapServerRequest(previous);
       app.__clearServerSession();
       app.__setServerPreferences(null);
     }
   } finally {
-    app.state.companyOrders = savedOrders;
+    app.state.userPreferences = savedOrders;
     app.resetWelcomeCompanyStep();
     restoreEnvironmentFixture(saved);
+  }
+});
+
+await checkAsync('Paramètres › Préférences d’affichage : propres à chaque compte, appliquées aussitôt (08/10/2026)', async () => {
+  const savedPrefs = app.state.userPreferences;
+  const root = document.documentElement;
+  try {
+    // Mêmes listes que le serveur : une valeur acceptée ici ne doit jamais
+    // être refusée par preferences.mjs, ni l'inverse.
+    const serverModule = await import(new URL('../../preferences.mjs', import.meta.url));
+    assert.deepEqual(app.DISPLAY_OPTIONS, serverModule.DISPLAY_OPTIONS,
+      'DISPLAY_OPTIONS doit être identique dans budget-app.html et preferences.mjs');
+
+    app.state.userPreferences = {};
+    assert.deepEqual(app.userPreferences().display, { textSize: 'normal', density: 'normale', motion: 'normales', palette: 'charte' },
+      'sans réglage, l’affichage par défaut');
+    let panelHtml = app.displayPreferencesPanel();
+    for (const key of ['textSize', 'density', 'motion']) {
+      assert.ok(panelHtml.includes('data-display-pref="' + key + '"'), 'le réglage ' + key + ' doit être proposé');
+    }
+    assert.ok(!panelHtml.includes('data-display-prefs-reset'), 'rien à rétablir tant que tout est par défaut');
+    assert.ok(!/sombre|data-theme/.test(panelHtml), 'pas de thème sombre : retiré à la demande d’Alexis (17/08/2026)');
+
+    // Un réglage s'applique sur <html> et s'enregistre pour CE compte.
+    assert.equal(app.setUserDisplayPreference('textSize', 'grand'), true);
+    assert.equal(root.getAttribute('data-text-size'), 'grand', 'la taille du texte est posée sur <html>');
+    app.setUserDisplayPreference('density', 'compacte');
+    assert.equal(root.getAttribute('data-density'), 'compacte');
+    assert.deepEqual(app.state.userPreferences[app.userPreferencesKey()].display,
+      { textSize: 'grand', density: 'compacte', motion: 'normales', palette: 'charte' }, 'enregistré sur le profil du compte');
+    assert.equal(app.setUserDisplayPreference('textSize', 'enorme'), false, 'une valeur inconnue est ignorée');
+    assert.equal(app.userPreferences().display.textSize, 'grand');
+    panelHtml = app.displayPreferencesPanel();
+    assert.ok(/<option value="grand" selected>/.test(panelHtml), 'le réglage choisi est présélectionné');
+    assert.ok(panelHtml.includes('data-display-prefs-reset'), 'le retour aux réglages par défaut est proposé');
+
+    // Un autre compte garde les siens.
+    const mine = app.userPreferencesKey();
+    app.state.userPreferences = { [mine]: app.state.userPreferences[mine], autre: { display: { textSize: 'petit' } } };
+    assert.equal(app.userPreferences().display.textSize, 'grand', 'chacun son profil');
+
+    // Rétablir ne touche que l'affichage.
+    app.state.userPreferences[mine].companyOrder = ['soc_x'];
+    app.resetUserDisplayPreferences();
+    assert.deepEqual(app.userPreferences().display, { textSize: 'normal', density: 'normale', motion: 'normales', palette: 'charte' });
+    assert.deepEqual(app.userPreferences().companyOrder, ['soc_x'], 'l’ordre des sociétés est conservé');
+    assert.equal(root.getAttribute('data-text-size'), 'normal');
+
+    // Migration : forme illisible → défauts, jamais d'erreur.
+    assert.deepEqual(app.normalizeUserPreferencesMap({ a: { display: { textSize: 'x', motion: 'reduites' } }, b: 3, c: [] }),
+      { a: { companyOrder: [], display: { textSize: 'normal', density: 'normale', motion: 'reduites', palette: 'charte' } } });
+    assert.deepEqual(app.normalizeUserPreferencesMap('n’importe quoi'), {});
+
+    // La feuille de style porte bien les trois réglages.
+    const css = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
+    assert.ok(/html\[data-text-size="grand"\] \{[^}]*--text-base:/.test(css), 'la taille du texte agit sur l’échelle typographique');
+    assert.ok(/html\[data-density="compacte"\] th, html\[data-density="compacte"\] td \{/.test(css), 'la densité agit sur les cellules');
+    assert.ok(/html\[data-motion="reduites"\] \*[^{]*\{[^}]*animation-duration: \.01ms !important/.test(css), 'les animations se coupent');
+
+    // Palettes de couleurs : quinze archétypes plus la charte, chacun avec
+    // ses deux couleurs, proposés en nuancier ; la palette choisie pose ses
+    // variables sur <html> et remplace la couleur des environnements, la
+    // charte les rend.
+    assert.equal(app.DISPLAY_OPTIONS.palette.length, 16, 'quinze archétypes plus la charte');
+    assert.equal(app.DISPLAY_OPTIONS.palette[0], 'charte', 'la charte reste la palette par défaut');
+    for (const id of app.DISPLAY_OPTIONS.palette) {
+      const palette = app.DISPLAY_PALETTES[id];
+      assert.ok(palette && /^#[0-9a-f]{6}$/.test(palette.primary) && /^#[0-9a-f]{6}$/.test(palette.accent),
+        'la palette ' + id + ' doit avoir une couleur principale et un accent');
+      assert.ok(app.displayPreferencesPanel().includes('data-display-palette="' + id + '"'), 'la palette ' + id + ' doit être proposée');
+      // Lisibilité : la couleur principale porte du texte blanc (en-tête,
+      // boutons) et sert de couleur de titre sur fond clair — elle doit
+      // rester sombre (contraste WCAG ≥ 4,5 avec le blanc).
+      const lum = (hex) => {
+        const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+          .map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+        return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+      };
+      assert.ok(1.05 / (lum(palette.primary) + 0.05) >= 4.5,
+        'la couleur principale de ' + id + ' doit contraster avec le blanc (4,5:1)');
+    }
+    assert.equal(app.displayPaletteProperties('charte'), null, 'la charte ne pose rien');
+    app.state.superGroups = (app.state.superGroups || []).concat([{ id: 'pal_env', name: 'Env palette', navyColor: '#772266' }]);
+    app.resetStateIndexes();
+    try {
+      assert.equal(app.environmentColorHex('pal_env'), '#772266', 'avec la charte, chaque environnement garde sa couleur');
+      app.setUserDisplayPreference('palette', 'bleu-marine');
+      assert.equal(root.style.getPropertyValue ? root.style.getPropertyValue('--navy') : '#1b3a5c', '#1b3a5c',
+        'la palette pose sa couleur principale sur <html>');
+      assert.equal(root.getAttribute('data-palette'), 'bleu-marine');
+      assert.equal(app.environmentColorHex('pal_env'), '#1b3a5c', 'une palette personnelle remplace la couleur de l’environnement');
+      assert.ok(/class="palette-swatch selected"[^>]*data-display-palette="bleu-marine"/.test(app.displayPreferencesPanel()),
+        'la palette choisie est marquée');
+      app.setUserDisplayPreference('palette', 'charte');
+      assert.equal(app.environmentColorHex('pal_env'), '#772266', 'revenir à la charte rend sa couleur à l’environnement');
+      if (root.style.getPropertyValue) assert.equal(root.style.getPropertyValue('--gold'), '', 'et retire les couleurs de la palette');
+    } finally {
+      app.state.superGroups = app.state.superGroups.filter((sg) => sg.id !== 'pal_env');
+      app.resetStateIndexes();
+    }
+    assert.equal(app.mixHex('#000000', '#ffffff', 0.5), '#808080');
+
+    // Mode serveur : un réglage part seul sur le profil, sans écraser l'ordre.
+    const calls = [];
+    const previous = app.__swapServerRequest(function (method, path, body) {
+      calls.push({ method, path, body });
+      return Promise.resolve(method === 'GET'
+        ? { companyOrder: ['soc_y'], display: { textSize: 'tres-grand', density: 'aeree', motion: 'reduites' } } : body);
+    });
+    try {
+      app.adoptServerSession({ method: 'ldap', account: 'ctrl', rights: { role: 'controleur', isAdmin: false, permissions: null } }, null);
+      app.state.userPreferences = {};
+      await app.loadServerPreferences();
+      assert.equal(root.getAttribute('data-text-size'), 'tres-grand', 'le profil s’applique dès l’arrivée');
+      assert.equal(root.getAttribute('data-motion'), 'reduites');
+      app.setUserDisplayPreference('density', 'normale');
+      const put = calls.find((c) => c.method === 'PUT');
+      assert.deepEqual(put, { method: 'PUT', path: '/api/preferences', body: { display: { density: 'normale' } } },
+        'seul le réglage changé part, l’ordre des sociétés n’est pas renvoyé');
+      assert.deepEqual(app.userPreferences().companyOrder, ['soc_y']);
+      assert.deepEqual(app.state.userPreferences, {}, 'rien dans l’état local en mode serveur');
+      assert.ok(app.displayPreferencesPanel().includes('tous vos postes'), 'le texte dit où c’est enregistré');
+    } finally {
+      app.__swapServerRequest(previous);
+      app.__clearServerSession();
+      app.__setServerPreferences(null);
+    }
+  } finally {
+    app.state.userPreferences = savedPrefs;
+    app.applyDisplayPreferences();
   }
 });
 
