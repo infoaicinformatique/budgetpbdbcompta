@@ -309,7 +309,7 @@ function answerConfirmations(value) { app.__setConfirmHandler(() => value); }
 const app = await importApp(
   (
     `${data}\n${budgetData}\n${emasphereData}\n${appSource}\n` +
-    'export { render, handleExport, state, detailRows, pnlRows,\n' +
+    'export { render, handleExport, state, detailRows, pnlRows, exportPnlSummary,\n' +
     '  encryptState, decryptPayload, deriveKey, showLock, submitLock, lockNow,\n' +
     '  isProtected, persist, addCompanyFromForm, openCompany, deleteCompany,\n' +
     '  seedBudgetForCompany, reloadCompanyBudgetFromSeed,\n' +
@@ -6771,6 +6771,79 @@ check('CA Event isolé de la ventilation Food/Beverage : pas compté deux fois',
     const html = document.getElementById('view').innerHTML;
     assert.ok(html.includes('Part du CA hors Event'), 'l’en-tête du niveau catégorie doit dire « hors Event »');
     assert.ok(!html.includes(app.money(77500)), 'Food ne doit plus afficher 25 % du CA Event compris (77 500)');
+  } finally {
+    app.state.companies = saved.companies; app.state.lines = saved.lines;
+    app.state.caLines = saved.caLines; app.state.activeCompany = saved.active;
+    app.state.serviceMatrix = saved.matrix; app.state.caVentilation = saved.ventilation;
+    app.state.caCategoryVentilation = saved.categoryVentilation;
+    app.state.dailyBudgetRevenue = saved.daily;
+    app.resetStateIndexes();
+    app.__setTab(saved.tab);
+    app.render();
+  }
+});
+
+check('Export P&L (Excel et CSV) : Event Revenue et Other Revenue identiques à l’onglet P&L', () => {
+  // Alexis, 08/10/2026 : « dans les P&L l'export Event Revenue et Other
+  // revenue ne correspondent pas au fichier d'export P&L Excel ». L'export
+  // partait de `summarize()` brut : Event Revenue à 0, le CA Event resté
+  // dans Other Revenue. Il passe désormais par le même isolement que
+  // l'écran (`withEventRevenueSplit`).
+  const saved = {
+    companies: app.state.companies.slice(), lines: app.state.lines.slice(),
+    caLines: (app.state.caLines || []).slice(), active: app.state.activeCompany,
+    matrix: JSON.parse(JSON.stringify(app.state.serviceMatrix || {})),
+    ventilation: JSON.parse(JSON.stringify(app.state.caVentilation || {})),
+    categoryVentilation: JSON.parse(JSON.stringify(app.state.caCategoryVentilation || {})),
+    daily: JSON.parse(JSON.stringify(app.state.dailyBudgetRevenue || {})),
+    tab: app.__getTab(),
+  };
+  try {
+    const a = { id: 'expevt_a', name: 'Export Event A', currency: 'EUR', year: 2026, groupId: null };
+    const b = { id: 'expevt_b', name: 'Export Event B', currency: 'EUR', year: 2026, groupId: null };
+    app.state.companies = [a, b];
+    app.state.activeCompany = a.id;
+    app.state.lines = [];
+    app.state.caLines = [];
+    app.state.caVentilation = {};
+    app.state.caCategoryVentilation = {};
+    app.state.dailyBudgetRevenue = {};
+
+    // Chaque société : 10 000 € d'Event en janvier sur le même compte, classé Event.
+    for (const company of [a, b]) {
+      app.setServiceMatrixValue(company.id, 'amount', 'event', '2026-01-05', '10000');
+      const evt = app.addCaLine(company.id, '70880200', 'Event');
+      app.setCaCategory(evt.id, 'event');
+      assert.equal(app.applyCaVentilation(company.id), 1);
+    }
+    app.__setTab('pnl');
+    app.render(); // syncCaLines : les comptes CA rejoignent linesOf()
+
+    // Une société : l'export reprend exactement les lignes de l'écran.
+    const linesA = app.linesOf(a.id);
+    const screen = app.summarizeForDisplay(linesA);
+    const exported = app.exportPnlSummary(linesA);
+    assert.equal(Math.round(screen.revenueSplit.event[0]), 10000, 'à l’écran : 10 000 € en Event Revenue');
+    assert.deepEqual(exported.revenueSplit.event.map(Math.round), screen.revenueSplit.event.map(Math.round),
+      'Event Revenue de l’export = celui de l’onglet P&L');
+    assert.deepEqual(exported.revenueSplit.other.map(Math.round), screen.revenueSplit.other.map(Math.round),
+      'Other Revenue de l’export = celui de l’onglet P&L (le CA Event n’y reste pas)');
+
+    const csv = app.pnlRows(exported, 'Test');
+    assert.equal(csv.find((row) => row[0] === 'Event Revenue')[1], 10000, 'CSV : Event Revenue');
+    assert.equal(csv.find((row) => row[0] === 'Other Revenue')[1], 0, 'CSV : Other Revenue sans le CA Event');
+    const sheet = app.styledPnlSheet(exported, 'Test', '');
+    const value = (cell) => (cell && typeof cell === 'object' ? cell.v : cell);
+    const xlsxRow = (name) => sheet.rows.find((r) => r && r.length && value(r[0]) === name);
+    assert.equal(value(xlsxRow('Event Revenue')[1]), 10000, 'Excel : Event Revenue');
+    assert.equal(value(xlsxRow('Other Revenue')[1]), 0, 'Excel : Other Revenue sans le CA Event');
+
+    // Deux sociétés au même compte Event : 20 000 €, pas 40 000 €.
+    const both = app.linesOf(a.id).concat(app.linesOf(b.id));
+    const consolidated = app.exportPnlSummary(both);
+    assert.equal(Math.round(consolidated.revenueSplit.event[0]), 20000,
+      'deux sociétés au même compte Event : son CA ne se lit qu’une fois');
+    assert.equal(Math.round(consolidated.revenueSplit.other[0]), 0, 'Other Revenue ne doit pas devenir négatif');
   } finally {
     app.state.companies = saved.companies; app.state.lines = saved.lines;
     app.state.caLines = saved.caLines; app.state.activeCompany = saved.active;
