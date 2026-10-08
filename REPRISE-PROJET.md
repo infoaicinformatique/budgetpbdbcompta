@@ -77,6 +77,40 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Saisie : les directeurs créent aussi des multiplicateurs dans leurs centres (08/10/2026)
+
+Demande : « le bouton + multiplicateur doit également être présent dans
+l'onglet saisie des directeurs dans les centres de coûts dont ils ont le
+droit de modification ».
+
+« + multiplicateur » était réservé au droit de structure
+(`canEditLineStructure`, contrôle de gestion). Il suit désormais la même
+règle que « + ajouter une ligne » (`canAddLineInCenter`) : un directeur le
+voit sur les comptes des centres de son périmètre, jamais hors périmètre ni
+quand quelqu'un d'autre a la main sur le budget. « + poste » (poste
+salarial) reste au contrôle de gestion.
+
+Le multiplicateur n'avait **aucune garde** hors de l'affichage du bouton :
+nouvelle règle `canCreateRateLinkOn(compte)`, vérifiée à l'ouverture de la
+fenêtre (`openRateLinkModal`) et à l'enregistrement d'un nouveau
+multiplicateur (`saveRateLink`, avec message si le compte est hors
+périmètre). La modification d'un multiplicateur existant n'est pas
+touchée : elle était déjà ouverte au directeur sur ses centres.
+
+À savoir : une ligne calculée ne se supprime pas par un directeur
+(`canDeleteLine`, seulement les lignes vides saisies à la main) — un
+multiplicateur créé par erreur se corrige (modifier) ou se fait retirer par
+le contrôle de gestion.
+
+`APP_BUILD` : `2026-10-08.13`.
+
+Contrôles (test du directeur à périmètre F&B) : bouton présent sur son
+centre, absent hors périmètre ; « + poste » absent ; `canCreateRateLinkOn`
+vrai sur F&B, faux sur AG ; la fenêtre ne s'ouvre pas sur AG ;
+`saveRateLink` refuse un compte AG substitué et crée bien le multiplicateur
+sur F&B. Vérifiés en échec sans chacune des deux corrections (bouton,
+garde d'enregistrement).
+
 ### Accueil : pastille « EN COURS » en blanc sous une palette personnelle (08/10/2026)
 
 Demande : « mets la pastille « EN COURS » en blanc ».
@@ -11909,7 +11943,7 @@ const app = await importApp(
     '  rateLinkRefAccountResults, rateLinkSourceLineOptions, rateLinkSourceLabel,\n' +
     '  rateLinkExpenseCategoryMonths, rateLinkRevenueCategoryMonths, rateLinkOneRevenueCategoryMonths,\n' +
     '  rateLinkCategoryLabel, rateLinkCategoryIdsOf,\n' +
-    '  openRateLinkModal, closeRateLinkModal, saveRateLink, detachRateLink, rateLinkModalHtml,\n' +
+    '  openRateLinkModal, closeRateLinkModal, saveRateLink, detachRateLink, rateLinkModalHtml, canCreateRateLinkOn,\n' +
     '  formatRateValue,\n' +
     '  openMoveLineModal, closeMoveLineModal, moveLineTargetResults, moveLineToAccount,\n' +
     '  openNoteEditing, deleteNote, isComputedLine,\n' +
@@ -23709,6 +23743,8 @@ await checkAsync('Autorisations : périmètre centre de coûts — Saisie et Pay
       'les montants d’un centre hors périmètre doivent être en lecture seule');
     assert.ok(!rendered.includes('data-add-line='),
       'aucun bouton d’ajout de ligne sur un centre hors périmètre');
+    assert.ok(!rendered.includes('data-open-ratelink-modal='),
+      'aucun « + multiplicateur » sur un centre hors périmètre');
     assert.ok(!rendered.includes('data-delete='),
       'aucun bouton de suppression sur un centre hors périmètre');
     assert.ok(!rendered.includes('data-bulk-center='),
@@ -23727,8 +23763,43 @@ await checkAsync('Autorisations : périmètre centre de coûts — Saisie et Pay
       'les montants du centre autorisé restent saisissables');
     assert.ok(rendered.includes('data-add-line="60101100">+ ajouter une ligne<'),
       'un directeur doit pouvoir ajouter une ligne sur son propre centre (08/10/2026)');
-    assert.ok(!rendered.includes('data-open-ratelink-modal='),
-      'un directeur ne crée pas de ligne calculée (multiplicateur)');
+    assert.ok(rendered.includes('data-open-ratelink-modal="60101100"'),
+      'un directeur doit voir « + multiplicateur » sur son propre centre (08/10/2026)');
+    assert.ok(!rendered.includes('data-open-payroll-modal='),
+      'le poste salarial reste au contrôle de gestion');
+    // Garde-fous au point d'entrée et à l'enregistrement : hors périmètre,
+    // la fenêtre ne s'ouvre pas et rien ne s'enregistre.
+    assert.equal(app.canCreateRateLinkOn('60101100'), true, 'multiplicateur permis sur son centre');
+    assert.equal(app.canCreateRateLinkOn('60610700'), false, 'refusé sur un compte hors périmètre (AG)');
+    app.openRateLinkModal('60610700', null);
+    assert.equal(app.__getRateLinkModal(), null, 'la fenêtre ne s’ouvre pas sur un compte hors périmètre');
+    const fillRateLinkForm = () => {
+      app.__getRateLinkModal().refAccount = '60101100';
+      app.render();
+      document.getElementById('ratelink-source-line').value = 'centerui_l1';
+      document.getElementById('ratelink-name').value = 'Multiplicateur directeur';
+      document.getElementById('ratelink-rate').value = '0.1';
+    };
+    const beforeRate = app.state.lines.length;
+    app.openRateLinkModal('60101100', null);
+    assert.ok(app.__getRateLinkModal(), 'la fenêtre s’ouvre sur son centre');
+    fillRateLinkForm();
+    app.__getRateLinkModal().account = '60610700'; // contournement simulé
+    app.saveRateLink();
+    assert.equal(app.state.lines.length, beforeRate, 'saveRateLink refuse un compte hors périmètre');
+    app.closeRateLinkModal();
+    // Sur son propre centre, le multiplicateur se crée vraiment.
+    app.openRateLinkModal('60101100', null);
+    fillRateLinkForm();
+    app.saveRateLink();
+    const createdRate = app.state.lines.find((l) => l.name === 'Multiplicateur directeur');
+    assert.ok(createdRate && createdRate.account === '60101100' && createdRate.rateLink &&
+      createdRate.rateLink.sourceLineId === 'centerui_l1', 'un directeur crée un multiplicateur sur son centre');
+    assert.equal(app.state.lines.length, beforeRate + 1);
+    app.state.lines = app.state.lines.filter((l) => l !== createdRate);
+    app.__setCenter('F&B');
+    app.render();
+    rendered = document.getElementById('view').innerHTML;
     assert.ok(!rendered.includes('data-delete='),
       'un directeur ne supprime pas de ligne, même sur son propre centre');
     assert.ok(!rendered.includes('data-duplicate-line='),
