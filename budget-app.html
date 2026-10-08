@@ -3489,7 +3489,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-08.10';
+const APP_BUILD = '2026-10-08.11';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -4309,8 +4309,9 @@ function environmentColorHex(id) {
   const environment = environmentById(id);
   if (!environment) return null;
   // Une palette personnelle (Paramètres › Préférences d'affichage)
-  // remplace la couleur de chaque environnement, accueil compris.
-  return personalPaletteColor() || environment.navyColor || DEFAULT_NAVY_COLOR;
+  // remplace la couleur de chaque environnement par une teinte de la
+  // palette, distincte d'un environnement à l'autre, accueil compris.
+  return paletteEnvironmentColor(id) || environment.navyColor || DEFAULT_NAVY_COLOR;
 }
 
 /** Couleur d'une carte sans environnement : celle de la palette personnelle, sinon le vert olive. */
@@ -6784,6 +6785,115 @@ function personalPaletteColor() {
   const id = userPreferences().display.palette;
   return id !== DISPLAY_OPTIONS.palette[0] && DISPLAY_PALETTES[id] ? DISPLAY_PALETTES[id].primary : null;
 }
+
+/** Rapport de contraste WCAG entre une couleur #rrggbb et le blanc. */
+function contrastWithWhite(hex) {
+  const match = /^#?([0-9a-fA-F]{6})$/.exec(hex || '');
+  if (!match) return 21;
+  const num = parseInt(match[1], 16);
+  const channel = function (shift) {
+    const v = ((num >> shift) & 255) / 255;
+    return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  };
+  const luminance = 0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0);
+  return 1.05 / (luminance + 0.05);
+}
+
+/** Assombrit une couleur jusqu'à ce qu'un texte blanc y reste lisible (4,5:1). */
+function readableOnWhiteText(hex) {
+  let color = hex;
+  for (let i = 0; i < 30 && contrastWithWhite(color) < 4.5; i++) color = darkenHex(color, 0.08);
+  return color;
+}
+
+/** Fait tourner la teinte (roue chromatique) d'une couleur #rrggbb de `degrees`. */
+function rotateHue(hex, degrees) {
+  const match = /^#?([0-9a-fA-F]{6})$/.exec(hex || '');
+  if (!match) return hex;
+  const num = parseInt(match[1], 16);
+  const r = ((num >> 16) & 255) / 255;
+  const g = ((num >> 8) & 255) / 255;
+  const b = (num & 255) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (!d) return hex; // gris : aucune teinte à faire tourner
+  const s = d / (1 - Math.abs(2 * l - 1));
+  let h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  h = ((h * 60 + degrees) % 360 + 360) % 360;
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+  const m = l - c / 2;
+  const rgb = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x]
+    : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
+  return '#' + rgb.map(function (v) {
+    return Math.round((v + m) * 255).toString(16).padStart(2, '0');
+  }).join('');
+}
+
+/** Écart entre deux couleurs #rrggbb (distance dans l'espace RVB). */
+function colorDistance(a, b) {
+  const x = parseInt(String(a).slice(1), 16);
+  const y = parseInt(String(b).slice(1), 16);
+  let sum = 0;
+  for (const shift of [16, 8, 0]) {
+    const diff = ((x >> shift) & 255) - ((y >> shift) & 255);
+    sum += diff * diff;
+  }
+  return Math.sqrt(sum);
+}
+
+const PALETTE_SHADE_COUNT = 12;
+const PALETTE_SHADE_MIN_DISTANCE = 38;
+
+/**
+ * Teintes d'une palette, une par environnement (08/10/2026 : « garde une
+ * couleur distincte par environnement avec les palettes »). Tirées des deux
+ * couleurs de la palette — principale, accent, leurs mélanges, leurs
+ * nuances, puis de petites rotations de teinte autour d'elles — pour rester
+ * dans son esprit ; toutes assez sombres pour porter le texte blanc des
+ * cartes et de l'en-tête, et nettement différentes les unes des autres
+ * (on écarte une teinte trop proche d'une teinte déjà retenue). La première
+ * est toujours la couleur principale de la palette.
+ */
+function paletteEnvironmentShades(id) {
+  const palette = DISPLAY_PALETTES[id];
+  if (!palette) return [];
+  const p = palette.primary;
+  const a = palette.accent;
+  const candidates = [p, a, mixHex(p, a, 0.5), darkenHex(p, 0.35), darkenHex(a, 0.35),
+    mixHex(p, '#ffffff', 0.25), mixHex(a, '#ffffff', 0.2), mixHex(p, a, 0.25), mixHex(p, a, 0.75)];
+  for (const degrees of [30, -30, 60, -60, 90, -90, 120, -120, 150, 180]) {
+    candidates.push(rotateHue(a, degrees), rotateHue(p, degrees));
+  }
+  // Repli pour une palette sans teinte (noir, gris) : une gamme de gris.
+  for (let i = 1; i <= 6; i++) candidates.push(mixHex(p, '#ffffff', i * 0.08));
+  const shades = [];
+  for (const candidate of candidates.map(readableOnWhiteText)) {
+    if (shades.length >= PALETTE_SHADE_COUNT) break;
+    if (shades.every(function (kept) { return colorDistance(kept, candidate) >= PALETTE_SHADE_MIN_DISTANCE; })) {
+      shades.push(candidate);
+    }
+  }
+  return shades;
+}
+
+/**
+ * Couleur d'un environnement sous la palette personnelle : sa teinte selon
+ * sa place dans la liste de tous les environnements (`state.superGroups`,
+ * ordre de création) — stable d'un écran à l'autre et identique pour tout
+ * le monde, quel que soit le périmètre de droits. `null` avec la charte.
+ */
+function paletteEnvironmentColor(environmentId) {
+  if (!personalPaletteColor()) return null;
+  const shades = paletteEnvironmentShades(userPreferences().display.palette);
+  const index = (state.superGroups || []).findIndex(function (sg) { return sg.id === environmentId; });
+  if (index < 0 || !shades.length) return personalPaletteColor();
+  const round = Math.floor(index / shades.length);
+  const shade = shades[index % shades.length];
+  return round ? readableOnWhiteText(darkenHex(shade, Math.min(0.15 * round, 0.6))) : shade;
+}
 const DISPLAY_OPTION_LABELS = {
   textSize: { normal: 'Normale', petit: 'Petite', grand: 'Grande', 'tres-grand': 'Très grande' },
   density: { normale: 'Normale', compacte: 'Compacte — plus de lignes à l’écran', aeree: 'Aérée — plus d’espace entre les lignes' },
@@ -6938,6 +7048,13 @@ function applyDisplayPreferences() {
   // l'environnement reprend sa place.
   if (!root.style || !root.style.setProperty) return;
   const properties = displayPaletteProperties(display.palette);
+  // Environnement affiché : sa propre teinte de la palette pour l'en-tête
+  // et les boutons, comme la charte y met sa couleur d'environnement.
+  const environmentShade = properties ? paletteEnvironmentColor(activeEnvironmentId()) : null;
+  if (environmentShade) {
+    properties['--navy'] = environmentShade;
+    properties['--navy-deep'] = darkenHex(environmentShade, 0.3);
+  }
   for (const name of DISPLAY_PALETTE_PROPERTIES) {
     if (properties && properties[name]) root.style.setProperty(name, properties[name]);
     else root.style.removeProperty(name);
@@ -6974,7 +7091,8 @@ function displayPreferencesPanel() {
     '</div>' +
     '<div class="display-pref-label" style="margin:18px 0 4px">Couleurs</div>' +
     '<p class="muted" style="margin:0 0 10px;font-size:12px">La charte Palm Beach garde la couleur de chaque ' +
-    'environnement ; une autre palette s’applique partout, accueil compris.</p>' +
+    'environnement ; avec une autre palette, chaque environnement prend sa propre teinte de cette palette, ' +
+    'accueil compris.</p>' +
     '<div class="palette-grid" role="radiogroup" aria-label="Palette de couleurs">' +
     DISPLAY_OPTIONS.palette.map(function (id) {
       const palette = DISPLAY_PALETTES[id];
