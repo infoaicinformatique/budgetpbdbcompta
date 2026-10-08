@@ -3489,7 +3489,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-08.8';
+const APP_BUILD = '2026-10-08.9';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -12882,7 +12882,10 @@ function renderEnvironmentButton() {
   if (button.hidden) return;
 
   const environment = environmentById(activeEnvironmentId());
-  const company = hasCompanyChoice ? activeCompany() : null;
+  // Toujours « Environnement — Société », même quand la société est seule
+  // dans son environnement (08/10/2026 : « Nammos — Nammos » plutôt que
+  // « Nammos » tout court) — le bouton se lit de la même manière partout.
+  const company = activeCompany();
   // Logo de l'environnement actif à côté du nom (Alexis : « ... et dans
   // l'environnement ») — remplace la pastille dorée décorative (`::before`)
   // le temps qu'un logo est présent, plutôt que de les cumuler.
