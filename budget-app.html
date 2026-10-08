@@ -3498,7 +3498,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-08.12';
+const APP_BUILD = '2026-10-08.13';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -10952,7 +10952,23 @@ function rateLinkCategoryIdsOf(rateLink) {
   return rateLink.categoryId ? [rateLink.categoryId] : [];
 }
 
+/**
+ * Peut-on créer un multiplicateur sur ce compte ? Même règle que « + ajouter
+ * une ligne » (08/10/2026 : « le bouton + multiplicateur doit également être
+ * présent dans l'onglet saisie des directeurs dans les centres de coûts dont
+ * ils ont le droit de modification ») : le contrôle de gestion partout, un
+ * directeur sur les comptes des centres de son périmètre.
+ */
+function canCreateRateLinkOn(accountNumber) {
+  if (canEditLineStructure()) return true;
+  const company = activeCompany();
+  const account = company ? findAccount(accountNumber, accountIndexForPlan(company.planId)) : null;
+  return Boolean(account) && canAddLineInCenter(account.center);
+}
+
 function openRateLinkModal(account, editingLineId) {
+  // Garde-fou au point d'entrée, pas seulement à l'affichage du bouton.
+  if (!editingLineId && !canCreateRateLinkOn(account)) return;
   const editingLine = editingLineId ? state.lines.find(function (l) { return l.id === editingLineId; }) : null;
   const link = editingLine && editingLine.rateLink;
   const isCategoryLink = !!(link && link.categoryKind);
@@ -11297,6 +11313,12 @@ function saveRateLink() {
     const line = state.lines.find(function (l) { return l.id === rateLinkModal.editingLineId; });
     if (line) line.rateLink = rateLink;
   } else {
+    // Revérifié à l'enregistrement : la main ou les droits ont pu changer
+    // pendant que la fenêtre était ouverte.
+    if (!canCreateRateLinkOn(rateLinkModal.account)) {
+      showAppError('Ce compte est hors de votre périmètre : impossible d’y créer un multiplicateur.');
+      return;
+    }
     const nameInput = document.getElementById('ratelink-name');
     const name = nameInput ? nameInput.value.trim() : '';
     if (!name) { showAppError('Donnez un nom à la nouvelle dépense.'); return; }
@@ -13376,18 +13398,18 @@ function viewSaisie() {
       (currentCenter === 'PRODUITS'
         ? '<span class="muted" style="font-size:12px">Le CA se renseigne désormais jour par jour — ' +
           '<button class="mini" data-goto-ca-tab="1">ouvrir l’onglet CA</button></span>'
-        // Créer une charge : la ligne vide est ouverte au directeur sur ses
-        // centres (`canAddLineInCenter`) ; multiplicateur et poste salarial
-        // restent à qui a le droit de structure. Jamais sur un centre hors
-        // périmètre. « ajuster » reste, lui, une modification de montants —
-        // donc ouvert au directeur sur ses propres centres.
+        // Créer une charge : la ligne vide et le multiplicateur (08/10/2026)
+        // sont ouverts au directeur sur ses centres (`canAddLineInCenter`) ;
+        // le poste salarial reste à qui a le droit de structure. Jamais sur
+        // un centre hors périmètre. « ajuster » reste, lui, une modification
+        // de montants — donc ouvert au directeur sur ses propres centres.
         : (canAddLineHere
-            ? '<button class="mini mini-primary" data-add-line="' + account.account + '">+ ajouter une ligne</button>'
+            ? '<button class="mini mini-primary" data-add-line="' + account.account + '">+ ajouter une ligne</button>' +
+              '<button class="mini" data-open-ratelink-modal="' + account.account +
+              '" title="Calculer automatiquement un montant chaque mois, en multipliant un autre compte">+ multiplicateur</button>'
             : '') +
           (canAddHere
-            ? '<button class="mini" data-open-ratelink-modal="' + account.account +
-              '" title="Calculer automatiquement un montant chaque mois, en multipliant un autre compte">+ multiplicateur</button>' +
-              (isPayrollAccount(account.account)
+            ? (isPayrollAccount(account.account)
                 ? '<button class="mini" data-open-payroll-modal="' + account.account +
                   '" title="Calculer un coût chargé à partir d’un ETP, d’un brut mensuel et d’un taux de charges">+ poste</button>'
                 : '')
