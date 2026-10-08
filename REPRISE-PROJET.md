@@ -77,6 +77,26 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Excel du P&L : une seule police pour les lignes de montants (08/10/2026)
+
+Demande : « Les lignes de revenus ainsi que la ligne « operational
+expenses » est dans la même police que les ratios, peut-on uniformiser
+comme sur « Administration » ».
+
+- `styledPnlSheet` : Food/Beverage/Event/Other Revenue et Operational
+  expenses étaient écrits en style « atténué » (libellé `subtitle`,
+  italique gris — celui des ratios — et montants `moneyMuted`). Ils
+  prennent désormais le style des autres lignes de charges (`normal`,
+  `money`). Le genre `muted` disparaît de `dataRow` ; l'italique gris reste
+  réservé aux ratios. Écran et CSV inchangés.
+
+`APP_BUILD` : `2026-10-08.17`.
+
+Contrôle : « Excel du P&L : lignes de revenus et Operational expenses dans
+la même police qu'Administration » — styles identiques cellule par cellule
+à la ligne Administration, ratio toujours distinct. Vérifié en échec sur la
+version précédente.
+
 ### P&L : ratios de Total Expenses, du GOP et de l'EBITDA (08/10/2026)
 
 Demande : « Dans l'onglet P&L il manque le ratio sur le total Expenses, le
@@ -17900,6 +17920,29 @@ check('P&L : ratio sur le CA de Total Expenses, du GOP et de l’EBITDA, chacun 
     const idx = labels.indexOf(name);
     assert.ok(idx >= 0 && labels[idx + 1] === ratioName, `${ratioName} doit suivre ${name} dans l’Excel`);
   }
+});
+
+check('Excel du P&L : lignes de revenus et Operational expenses dans la même police qu’Administration, l’italique réservé aux ratios', () => {
+  // Alexis, 08/10/2026 : « les lignes de revenus ainsi que la ligne
+  // operational expenses est dans la même police que les ratios, peut-on
+  // uniformiser comme sur Administration ».
+  const company = app.state.companies.find((c) => c.name === 'Palm Beach Test');
+  const summary = ts.summarize(app.state.lines.filter((l) => l.companyId === company.id));
+  const sheet = app.styledPnlSheet(summary, 'Test', '');
+  // `xc` rend la valeur nue quand le style vaut 0 (`normal`) : une cellule
+  // est donc soit `{ v, s }`, soit une valeur sans style (style 0).
+  const valueOf = (cell) => (cell && typeof cell === 'object' ? cell.v : cell);
+  const byLabel = (name) => sheet.rows.find((r) => r && r.length && valueOf(r[0]) === name);
+  const styleOf = (row) => row.map((cell) => (cell && typeof cell === 'object' ? cell.s : 0));
+  const reference = byLabel('Administration');
+  assert.ok(reference, 'ligne Administration absente de l’Excel');
+  for (const name of ['Food Revenue', 'Beverage Revenue', 'Event Revenue', 'Other Revenue', 'Operational expenses']) {
+    const row = byLabel(name);
+    assert.ok(row, `${name} absent de l’Excel`);
+    assert.deepEqual(styleOf(row), styleOf(reference), `${name} doit avoir la police d’Administration, pas celle des ratios`);
+  }
+  const ratio = byLabel('Food Cost Ratio');
+  assert.notEqual(styleOf(ratio)[0], styleOf(reference)[0], 'les ratios gardent leur police propre');
 });
 
 check('le chiffre d’affaires se ventile en Food/Bev/Autres, et le ratio « Operational expenses » est celui de sa propre ligne', () => {

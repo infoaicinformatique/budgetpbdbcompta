@@ -3498,7 +3498,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-08.16';
+const APP_BUILD = '2026-10-08.17';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -25908,8 +25908,13 @@ function styledPnlSheet(summary, title, subtitle) {
   function dataRow(label, months, kind) {
     const isTotal = kind === 'total';
     const labelStyle = isTotal ? XLSX_STYLE.labelTotal : XLSX_STYLE.normal;
-    const moneyStyle = isTotal ? XLSX_STYLE.moneyTotal : (kind === 'muted' ? XLSX_STYLE.moneyMuted : XLSX_STYLE.money);
-    rows.push([xc(label, kind === 'muted' ? XLSX_STYLE.subtitle : labelStyle), xc(Math.round(total(months)), moneyStyle)]
+    // Une seule police pour toutes les lignes de montants : l'italique gris
+    // (`subtitle`) est réservé aux ratios, pour qu'un montant ne se lise
+    // jamais comme un ratio (Alexis, 08/10/2026 : « les lignes de revenus
+    // ainsi que la ligne operational expenses est dans la même police que
+    // les ratios, peut-on uniformiser comme sur Administration »).
+    const moneyStyle = isTotal ? XLSX_STYLE.moneyTotal : XLSX_STYLE.money;
+    rows.push([xc(label, labelStyle), xc(Math.round(total(months)), moneyStyle)]
       .concat(months.map(function (v) { return xc(Math.round(v), moneyStyle); })));
   }
   function ratioDataRow(line) {
@@ -25921,10 +25926,10 @@ function styledPnlSheet(summary, title, subtitle) {
 
   // Le détail du CA précède son total, comme pour les charges F&B ; une
   // simple ligne vide sépare ensuite Produits de Charges.
-  dataRow('Food Revenue', summary.revenueSplit.food, 'muted');
-  dataRow('Beverage Revenue', summary.revenueSplit.beverage, 'muted');
-  dataRow('Event Revenue', summary.revenueSplit.event || emptyMonths(), 'muted');
-  dataRow('Other Revenue', summary.revenueSplit.other, 'muted');
+  dataRow('Food Revenue', summary.revenueSplit.food);
+  dataRow('Beverage Revenue', summary.revenueSplit.beverage);
+  dataRow('Event Revenue', summary.revenueSplit.event || emptyMonths());
+  dataRow('Other Revenue', summary.revenueSplit.other);
   dataRow('Revenue', summary.produits, 'total');
   rows.push([]);
   for (const center of COST_CENTERS) {
@@ -25936,7 +25941,7 @@ function styledPnlSheet(summary, title, subtitle) {
       // Masse salariale : même place qu'à l'écran et dans le CSV (voir `pnlRows`).
       dataRow('Payroll', summary.payroll || emptyMonths());
       if (ratioById.payroll) ratioDataRow(ratioById.payroll);
-      dataRow('Operational expenses', summary.foodBeverage.other, 'muted');
+      dataRow('Operational expenses', summary.foodBeverage.other);
       ratioDataRow(ratioById['other-fnb']);
       continue;
     }
