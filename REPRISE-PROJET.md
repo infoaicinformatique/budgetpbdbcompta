@@ -77,6 +77,26 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### P&L : ticket moyen de l'année pondéré, plus la somme des mois (08/10/2026)
+
+Constaté en ajoutant le ticket moyen à l'export Excel (entrée suivante),
+corrigé à la demande d'Alexis (« oui corrige aussi l'écran ») : dans
+l'onglet P&L, la colonne « Année » du ticket moyen passait par `row`, qui
+additionne les douze mois. 3 000 couverts à 100 € en janvier et 1 000 à
+40 € en mars affichaient 140 €, au lieu de 85 € (340 000 € ÷ 4 000).
+
+- `activityYearTicket(series)` : CA au couvert de l'année ÷ couverts de
+  l'année, partagé par l'écran et `pnlActivityOf` (export Excel).
+- `pnlTable` : ligne « Ticket moyen » par `ticketRow`, qui affiche ce
+  ticket annuel (et, en comparaison, celui de la période comparée, l'écart
+  et l'écart en %). Les colonnes mensuelles ne changent pas.
+
+`APP_BUILD` : `2026-10-08.20`.
+
+Contrôle : le contrôle de l'entrée suivante vérifie aussi l'onglet P&L —
+85 € dans la colonne Année, plus 140 €. Vérifié en échec avec l'ancienne
+ligne.
+
 ### Export Excel du P&L : couverts, ticket moyen et ETP (08/10/2026)
 
 Demande : « Sur l'export excel il manque le nombre de couverts, le ticket
@@ -93,9 +113,8 @@ moyen et le nombre d'ETP, comme présents sur l'onglet P&L. »
   **recalculé** (CA au couvert ÷ couverts de l'année), ETP en moyenne des
   douze mois. Nouveau style Excel `decimal` (`#,##0.00`) pour le ticket et
   l'ETP. Le CSV ne change pas.
-- Constaté au passage, non corrigé : à l'écran, la colonne Année du ticket
-  moyen est la **somme** des tickets mensuels (`row` → `total(months)`),
-  pas une moyenne pondérée.
+- Constaté au passage : à l'écran, la colonne Année du ticket moyen était
+  la **somme** des tickets mensuels — corrigé dans l'entrée suivante.
 
 `APP_BUILD` : `2026-10-08.19`.
 
@@ -18920,6 +18939,20 @@ await checkAsync('export Excel du P&L : couverts, ticket moyen et ETP, placés c
     assert.equal(etp, at('Payroll Ratio') + 1, 'Effectif (ETP) juste sous Payroll et son ratio, comme à l’écran');
     const average = Math.round((headcount.reduce((a, b) => a + b, 0) / 12) * 100) / 100;
     assert.ok(Math.abs(num(sheet[etp][1]) - average) < 0.005, 'Excel : ETP de l’année = moyenne des douze mois');
+
+    // L'onglet P&L affiche le même ticket annuel (85 €), pas la somme des
+    // tickets mensuels (140 €) — corrigé le même jour à la demande d'Alexis.
+    const savedActive = app.state.activeCompany;
+    app.state.activeCompany = company.id;
+    app.__setTab('pnl');
+    app.render();
+    const html = document.getElementById('view').innerHTML;
+    app.state.activeCompany = savedActive;
+    const ticketRow = html.slice(html.indexOf('>Ticket moyen<'), html.indexOf('</tr>', html.indexOf('>Ticket moyen<')));
+    assert.ok(ticketRow.length > 0, 'ligne Ticket moyen absente de l’onglet P&L');
+    assert.ok(ticketRow.includes('<strong>' + app.money(85) + '</strong>'),
+      'onglet P&L : ticket moyen de l’année = 85 € (pondéré), pas ' + app.money(140));
+    assert.ok(!ticketRow.includes('<strong>' + app.money(140) + '</strong>'), 'la somme des tickets mensuels ne doit plus apparaître');
   } finally {
     app.state.serviceMatrix = savedMatrix;
     app.setExportSelection(app.state.companies.map((c) => c.id));

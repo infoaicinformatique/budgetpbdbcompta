@@ -3498,7 +3498,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-08.19';
+const APP_BUILD = '2026-10-08.20';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -14039,6 +14039,32 @@ function pnlTable(summary, title, isolateFilter, drillCompanies, compare, fullsc
       '</tr>';
   }
   /**
+   * Ligne Ticket moyen. Comme `row`, mais sa colonne « Année » n'est PAS la
+   * somme des douze tickets mensuels (3 000 couverts à 100 € en janvier et
+   * 1 000 à 40 € en mars donnaient 140 €) : c'est le CA au couvert de
+   * l'année ÷ ses couverts (85 €), comme l'export Excel (`pnlActivityOf`)
+   * — Alexis, 08/10/2026. Les mois restent ceux de la matrice.
+   */
+  function ticketRow(series, compareSeries) {
+    const yearTicket = activityYearTicket(series);
+    if (compare) {
+      const before = compareSeries ? activityYearTicket(compareSeries) : 0;
+      const gap = yearTicket - before;
+      const ratio = before ? (gap / Math.abs(before)) * 100 : null;
+      return '<tr class="sub-row"><td class="sticky-col">Ticket moyen</td>' +
+        '<td class="num total-col"><strong>' + money(yearTicket) + '</strong></td>' +
+        '<td class="num">' + money(before) + '</td>' +
+        '<td class="num' + (gap < 0 ? ' neg' : '') + '">' + money(gap) + '</td>' +
+        '<td class="num' + (ratio !== null && ratio < 0 ? ' neg' : '') + '">' +
+        (ratio === null ? '<span class="muted">—</span>' : formatRateValue(Math.round(ratio * 10) / 10) + ' %') +
+        '</td></tr>';
+    }
+    return '<tr class="sub-row"><td class="sticky-col">Ticket moyen</td>' +
+      '<td class="num total-col"><strong>' + money(yearTicket) + '</strong></td>' +
+      series.ticket.map(function (v) { return '<td class="num">' + money(v) + '</td>'; }).join('') +
+      '</tr>';
+  }
+  /**
    * Ligne Effectif (ETP), affichée juste sous Payroll — Alexis, 01/09/2026 :
    * « je veux que dans payroll et pnl les ETP soient visible ». Même
    * traitement que Couverts/Ticket moyen (`row`, plus haut) : une série
@@ -14101,7 +14127,7 @@ function pnlTable(summary, title, isolateFilter, drillCompanies, compare, fullsc
   const headcountMonths = payrollHeadcountMonths(activityCompanies);
   const compareHeadcountMonths = compare ? payrollHeadcountMonths(compare.companies) : null;
   let body = row('Couverts', activity.covers, 'sub-row', null, compareActivity && compareActivity.covers);
-  body += row('Ticket moyen', activity.ticket, 'sub-row', null, compareActivity && compareActivity.ticket);
+  body += ticketRow(activity, compareActivity);
   body += divider();
 
   // Food Revenue et Beverage Revenue recalculés pour que leur somme retombe
@@ -25893,6 +25919,18 @@ function pnlRows(summary, label) {
 
 /** `subtitle` : texte libre affiché en petit sous le titre (période, date, société…). */
 /**
+ * Ticket moyen de l'année d'une série `{ covers, ticket }` : CA au couvert
+ * de l'année ÷ couverts de l'année — jamais la somme ni la moyenne simple
+ * des douze tickets mensuels. Partagé par l'onglet P&L et l'export Excel.
+ */
+function activityYearTicket(series) {
+  const coversYear = total(series.covers);
+  if (!coversYear) return 0;
+  const revenueYear = series.covers.reduce(function (sum, c, i) { return sum + c * (Number(series.ticket[i]) || 0); }, 0);
+  return revenueYear / coversYear;
+}
+
+/**
  * Indicateurs d'activité de la synthèse P&L exportée — Alexis, 08/10/2026 :
  * « sur l'export excel il manque le nombre de couverts, le ticket moyen et
  * le nombre d'ETP, comme présents sur l'onglet P&L ». Mêmes sources que
@@ -25904,14 +25942,12 @@ function pnlRows(summary, label) {
  */
 function pnlActivityOf(companies) {
   const series = matrixMonthlySeries(companies);
-  const coversYear = total(series.covers);
-  const coversRevenueYear = series.covers.reduce(function (sum, c, i) { return sum + c * series.ticket[i]; }, 0);
   const headcount = payrollHeadcountMonths(companies);
   return {
     covers: series.covers,
-    coversYear: coversYear,
+    coversYear: total(series.covers),
     ticket: series.ticket,
-    ticketYear: coversYear ? coversRevenueYear / coversYear : 0,
+    ticketYear: activityYearTicket(series),
     headcount: headcount,
     headcountYear: total(headcount) / MONTHS,
   };

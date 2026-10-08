@@ -7156,6 +7156,20 @@ await checkAsync('export Excel du P&L : couverts, ticket moyen et ETP, placés c
     assert.equal(etp, at('Payroll Ratio') + 1, 'Effectif (ETP) juste sous Payroll et son ratio, comme à l’écran');
     const average = Math.round((headcount.reduce((a, b) => a + b, 0) / 12) * 100) / 100;
     assert.ok(Math.abs(num(sheet[etp][1]) - average) < 0.005, 'Excel : ETP de l’année = moyenne des douze mois');
+
+    // L'onglet P&L affiche le même ticket annuel (85 €), pas la somme des
+    // tickets mensuels (140 €) — corrigé le même jour à la demande d'Alexis.
+    const savedActive = app.state.activeCompany;
+    app.state.activeCompany = company.id;
+    app.__setTab('pnl');
+    app.render();
+    const html = document.getElementById('view').innerHTML;
+    app.state.activeCompany = savedActive;
+    const ticketRow = html.slice(html.indexOf('>Ticket moyen<'), html.indexOf('</tr>', html.indexOf('>Ticket moyen<')));
+    assert.ok(ticketRow.length > 0, 'ligne Ticket moyen absente de l’onglet P&L');
+    assert.ok(ticketRow.includes('<strong>' + app.money(85) + '</strong>'),
+      'onglet P&L : ticket moyen de l’année = 85 € (pondéré), pas ' + app.money(140));
+    assert.ok(!ticketRow.includes('<strong>' + app.money(140) + '</strong>'), 'la somme des tickets mensuels ne doit plus apparaître');
   } finally {
     app.state.serviceMatrix = savedMatrix;
     app.setExportSelection(app.state.companies.map((c) => c.id));
