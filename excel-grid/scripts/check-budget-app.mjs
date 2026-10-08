@@ -413,6 +413,8 @@ const app = await importApp(
     '  importForecastRealizedMatrixFile };\n' +
     'export function __setPanelOpen(id, open) { setPanelOpen(id, open); }\n' +
     'export function __undoHistoryBytes() { return undoHistoryBytes(); }\n' +
+    'export function __undoSnapshotBytes() { return undoSnapshot ? undoSnapshot.length : 0; }\n' +
+    'export { undoSerialize, makeUndoDelta, applyUndoDelta };\n' +
     'export function __UNDO_MAX() { return UNDO_MAX; }\n' +
     'export function __UNDO_MAX_BYTES() { return UNDO_MAX_BYTES; }\n' +
     'export { ensureDailyRevenue };\n' +
@@ -426,7 +428,11 @@ const app = await importApp(
     '  saveEmployeeFromForm, deleteEmployee, syncPayrollLines,\n' +
     '  togglePayrollMatrixDetail, payrollLockedRates, payrollRateLocked, payrollLockedRateValue,\n' +
     '  setPayrollLockedRate, payrollLockScopeCompanies, lockPayrollRateFromPanel, unlockPayrollRateFromPanel,\n' +
-    '  employeeRateOf, bonusGrossFromNet,\n' +
+    '  employeeRateOf, bonusGrossFromNet, employeeLabel,\n' +
+    '  payrollExtrasOf, payrollExtraById, newPayrollExtra, payrollExtraLabel,\n' +
+    '  payrollExtraEmployerRate, payrollExtraMonthGross, payrollExtraMonths, payrollExtraTotals,\n' +
+    '  payrollExtraCenters, addPayrollExtra, deletePayrollExtra, setPayrollExtraMonth,\n' +
+    '  setPayrollExtraName, setPayrollExtraCenter, setPayrollExtraEmployerRate, payrollExtrasPanel,\n' +
     '  monthlyLeaveCharge, companyLeaveRelease, setCompanyLeaveRelease, leaveReleaseIsManual,\n' +
     '  PAYROLL_LOCKABLE_RATES,\n' +
     '  employeeRateFieldHtml, payrollLockPanel, employeeEditorHtml,\n' +
@@ -496,7 +502,7 @@ const app = await importApp(
     '  clearSignInAttempts, randomBytes, randomHex, exportedPayloadIsEncrypted };\n' +
     'export { setUserScope, allowedCompanyIds, allowedCostCenterIds, isCompanyAllowed,\n' +
     '  visibleCompanies, enforceCompanyPermission, rawLinesOf,\n' +
-    '  isCenterAllowed, visibleCostCenters, canEditLineStructure,\n' +
+    '  isCenterAllowed, visibleCostCenters, canEditLineStructure, canEditCaVentilation,\n' +
     '  scopeCenterRowsHtml, applyRoleDefaultCentersToEditor, DIRECTEUR_DEFAULT_COST_CENTERS,\n' +
     '  companyIdsInSuperGroupRaw, companyIdsInEnvironments, userEnvironmentIds, environmentById,\n' +
     '  availableEnvironments, canSeeAllEnvironments, activeEnvironmentId, setActiveEnvironment,\n' +
@@ -514,6 +520,8 @@ const app = await importApp(
     '  viewParametres, serverAuthInfo, parametresLdapBody, SERVER_AUTH_COOKIE,\n' +
     '  serverRequest, adoptServerSession, buildServerDirectory, serverRightsPayload, serverUserFromRights,\n' +
     '  serverLandingTab, sessionUsername, isServerUserId, applyPagePermissions,\n' +
+    '  budgetHand, budgetHandHeldByOther, budgetHandHolderName, budgetHandBannerHtml,\n' +
+    '  claimBudgetHand, releaseBudgetHand, onActiveCompanyChanged, BUDGET_HAND_BEAT_MS,\n' +
     '  applyRefreshedServerRights, serverRightsSignature,\n' +
     '  serverStatePayload, emptyServerState, adoptServerState, parametresDonneesPanel, SERVER_PRIVATE_KEYS,\n' +
     '  serverDataHasPendingChanges, markServerDataInSync, serverChangesBetween };\n' +
@@ -573,7 +581,9 @@ const app = await importApp(
 
     'export { MATRIX_SERVICES, normalizeServiceMatrix, serviceMatrixOf, serviceMatrixValue,\n' +
     '  setServiceMatrixValue, matrixDayKeys, matrixServiceRevenue, matrixTotalCovers,\n' +
-    '  matrixTotalRevenue, weekTotal, matrixOverallTicket, matrixYearTotals, matrixMonthlySeries,\n' +
+    '  matrixTotalRevenue, matrixDayRevenue, matrixCoversRevenue, matrixServiceIsDirect,\n' +
+    '  MATRIX_COVER_SERVICES, convertDirectServicesToAmount,\n' +
+    '  weekTotal, matrixOverallTicket, matrixYearTotals, matrixMonthlySeries,\n' +
     '  setMatrixMonth, mergeBreakfastIntoLunch, caMatrixWorkbookSheets, downloadCaMatrix,\n' +
     '  parseCaMatrixRows, applyCaMatrixImport, importCaMatrixSheets, importCaMatrixFromFile,\n' +
     '  caMatrixNorm, caMatrixCellNumber, xlsxWorkbookFiles, CA_MATRIX_SHEET_SERVICES };\n' +
@@ -599,7 +609,8 @@ const app = await importApp(
     'export { currentModalContainer, focusableIn, trapModalTab };\n' +
     'export { importIssuesSummaryText, importSummaryMessage };\n' +
     'export { changeCompanyYear, shiftDateKey, shiftCompanyDates, purgeCompanyData, COMPANY_KEYED_STATE,\n' +
-    '  UNDO_PRESERVED_KEYS };\n' +
+    '  SERVER_COMPANY_ARRAYS,\n' +
+    '  UNDO_IGNORED_KEYS };\n' +
     'export { playModalExit, MODAL_EXIT_MS };\n' +
     'export { markWelcomeChoice };\n' +
     'export { styledPnlSheet };\n' +
@@ -5567,10 +5578,10 @@ check('rateLinkRevenueCategoryMonths : Food/Beverage/Event lisent la formule mat
       'CA Beverage = 40 % × 1000 (matrice), en direct, sans avoir cliqué « Appliquer aux comptes »');
 
     // Un deuxième service alimente Event : 100 % lui revient automatiquement, sans pourcentage.
-    app.setServiceMatrixValue(company.id, 'covers', eventServiceId, y + '-01-05', '5');
-    app.setServiceMatrixValue(company.id, 'ticket', eventServiceId, y + '-01-05', '50');
+    // Il se saisit en montant global par jour depuis le 07/10/2026.
+    app.setServiceMatrixValue(company.id, 'amount', eventServiceId, y + '-01-05', '250');
     const eventTotals = app.rateLinkRevenueCategoryMonths(company.id, app.rawLinesOf(company.id), 'event');
-    assert.ok(Math.abs(eventTotals[0] - 250) < 0.01, 'CA Event = 100 % du service Event de la matrice (5 × 50)');
+    assert.ok(Math.abs(eventTotals[0] - 250) < 0.01, 'CA Event = 100 % du montant global saisi sur le service Event');
 
     // Hors exploitation : pas de formule matrice — saisie directe, déjà en
     // direct elle aussi (aucun bouton « Appliquer » sur son chemin).
@@ -6494,10 +6505,9 @@ check('Catégorie Event du CA : 100 % automatique depuis le service Event de la 
     // « Event » est une quatrième catégorie, au même titre que Food/Beverage.
     assert.ok(app.CA_CATEGORIES.some((c) => c.id === 'event'), 'Event doit être une catégorie CA_CATEGORIES');
 
-    // Janvier : le service Event de la matrice (distinct de breakfast/lunch/
-    // dinner) fait 5 couverts à 30 € = 150 €.
-    app.setServiceMatrixValue(company.id, 'covers', 'event', '2026-01-05', '5');
-    app.setServiceMatrixValue(company.id, 'ticket', 'event', '2026-01-05', '30');
+    // Janvier : le service Event de la matrice (distinct du midi et du soir)
+    // fait 150 €, saisis en montant global sur la journée.
+    app.setServiceMatrixValue(company.id, 'amount', 'event', '2026-01-05', '150');
     assert.equal(Math.round(app.caEventServiceRevenue(company)[0]), 150,
       'le CA du service Event de janvier doit être isolé des autres services de la matrice');
 
@@ -6603,8 +6613,7 @@ check('Compte Event unique retiré de la catégorie : le pourcentage précédemm
     app.state.caVentilation = {};
     app.state.dailyBudgetRevenue = {};
 
-    app.setServiceMatrixValue(company.id, 'covers', 'event', '2026-02-10', '4');
-    app.setServiceMatrixValue(company.id, 'ticket', 'event', '2026-02-10', '25');
+    app.setServiceMatrixValue(company.id, 'amount', 'event', '2026-02-10', '100');
 
     const evt = app.addCaLine(company.id, '70103100', 'Anniversaire');
     app.setCaCategory(evt.id, 'event');
@@ -8254,6 +8263,183 @@ check('Matrice officielle : trois services MIDI / SOIR / EVENT, Breakfast retir�
     'libellés du classeur officiel, dans l’ordre des blocs');
 });
 
+check('Matrice CA : l’Event se saisit en montant global par jour, et le CA Total le prend', () => {
+  // Alexis, 07/10/2026 : « dans la matrice de saisie de CA le total ne prend
+  // pas le montant du CA Event. Il faut également modifier les deux options
+  // (matrices et au sein de l'application) de saisir du CA event en montant
+  // global par jour au lieu de saisir couverts et Prix moyen. Ex : 80 000 €
+  // directement sans mettre 800 € en PM et 100 couverts ».
+  const company = { id: 'mxevt_co', name: 'Matrice Event', currency: 'EUR', year: 2026, groupId: null };
+  const saved = {
+    companies: app.state.companies.slice(), active: app.state.activeCompany,
+    matrix: app.state.serviceMatrix, tab: app.__getTab(),
+  };
+  app.state.companies = [company];
+  app.state.activeCompany = company.id;
+  app.state.serviceMatrix = {};
+  try {
+    // Event est le seul service à montant global ; midi et soir restent au couvert.
+    assert.equal(app.matrixServiceIsDirect('event'), true, 'Event doit être un service à montant global');
+    assert.equal(app.matrixServiceIsDirect('lunch'), false, 'le midi reste en couverts × prix moyen');
+    assert.deepEqual(app.MATRIX_COVER_SERVICES.map((x) => x.id), ['lunch', 'dinner'],
+      'seuls le midi et le soir se saisissent au couvert');
+
+    const key = '2026-07-10';
+    const keys = [key];
+    // L'exemple d'Alexis, au centime : 100 couverts à 800 € ne se saisissent
+    // plus, c'est 80 000 € d'un coup.
+    app.setServiceMatrixValue(company.id, 'covers', 'lunch', key, 100);
+    app.setServiceMatrixValue(company.id, 'ticket', 'lunch', key, 50);
+    app.setServiceMatrixValue(company.id, 'amount', 'event', key, 80000);
+    const m = app.serviceMatrixOf(company.id);
+
+    assert.equal(app.matrixDayRevenue(m, 'event', key), 80000,
+      'le CA de l’Event est le montant saisi, pas un produit couverts × prix');
+    assert.equal(app.matrixDayRevenue(m, 'lunch', key), 5000, 'le midi reste couverts × prix moyen');
+    assert.equal(app.matrixTotalRevenue(m, keys)[0], 85000,
+      'le CA Total du jour doit additionner les deux — c’est le bug signalé par Alexis');
+    assert.equal(app.caEventServiceRevenue(company)[6], 80000,
+      'le CA Event du mois (juillet) doit valoir le montant global saisi');
+
+    // L'Event n'apporte aucun couvert, et son CA n'entre donc pas dans le
+    // ticket moyen : sinon 85 000 ÷ 100 = 850 € de « ticket moyen ».
+    assert.equal(app.matrixTotalCovers(m, keys)[0], 100, 'l’Event n’ajoute aucun couvert');
+    assert.equal(app.matrixCoversRevenue(m, keys)[0], 5000, 'le CA au couvert exclut l’Event');
+    assert.equal(app.matrixOverallTicket(m, keys), 50,
+      'le ticket moyen reste 50 € (5 000 ÷ 100), pas 850 € — on ne divise pas un CA Event par des couverts qu’il n’a pas produits');
+    const series = app.matrixMonthlySeries([company]);
+    assert.equal(series.covers[6], 100, 'couverts de juillet');
+    assert.equal(series.ticket[6], 50, 'le ticket moyen du PnL exclut lui aussi le CA Event');
+    // Le total annuel, lui, prend bien l'Event : c'est du chiffre d'affaires.
+    assert.equal(app.matrixYearTotals(m, 2026).revenue, 85000,
+      'le CA de l’année comprend le montant de l’Event');
+
+    // Aucune écriture incohérente possible : l'Event n'a ni couverts ni
+    // prix moyen, les autres services n'ont pas de montant global.
+    app.setServiceMatrixValue(company.id, 'covers', 'event', key, 100);
+    app.setServiceMatrixValue(company.id, 'ticket', 'event', key, 800);
+    assert.equal(app.serviceMatrixValue(m, 'covers', 'event', key), 0,
+      'écrire des couverts sur l’Event doit être refusé, pas stocké dans un coin');
+    assert.equal(app.matrixTotalRevenue(m, keys)[0], 85000,
+      'et le CA Total ne doit pas bouger pour autant');
+    app.setServiceMatrixValue(company.id, 'amount', 'lunch', key, 9999);
+    assert.equal(app.serviceMatrixValue(m, 'amount', 'lunch', key), 0,
+      'un montant global sur le midi doit être refusé : il se saisit au couvert');
+
+    // La matrice affichée : le midi et le soir ont leurs couverts et leur
+    // prix moyen, l'Event une seule case — sur sa ligne de CA.
+    app.__setTab('ca');
+    app.__setMatrixMonth(6); // juillet
+    const card = app.directorMatrixCard(company);
+    assert.ok(card.includes('data-matrix-input="amount|event|' + key + '"'),
+      'la ligne de CA de l’Event doit être saisissable dans le tableau');
+    assert.ok(!card.includes('data-matrix-input="covers|event|'),
+      'l’Event ne doit plus avoir de case de couverts');
+    assert.ok(!card.includes('data-matrix-input="ticket|event|'),
+      'l’Event ne doit plus avoir de case de prix moyen');
+    assert.ok(card.includes('data-matrix-input="covers|lunch|' + key + '"') &&
+      card.includes('data-matrix-input="ticket|lunch|' + key + '"'),
+      'le midi garde ses deux cases');
+    assert.ok(card.includes('CA hors Event ÷ couverts du mois'),
+      'la tuile du ticket moyen doit dire ce qu’elle divise, maintenant que l’Event en est exclu');
+  } finally {
+    app.state.companies = saved.companies; app.state.activeCompany = saved.active;
+    app.state.serviceMatrix = saved.matrix;
+    app.resetStateIndexes();
+    app.__setTab(saved.tab);
+    app.render();
+  }
+});
+
+check('Migration matrixEventAmount2026 : le CA Event déjà saisi en couverts × prix devient un montant global, à l’euro près', () => {
+  // Sans cette conversion, la normalisation (qui n'accepte plus ni couvert
+  // ni prix moyen sur l'Event) ferait disparaître un CA Event déjà budgété.
+  const raw = {
+    companies: [{ id: 'mig_evt', name: 'Mig Event', currency: 'EUR', year: 2026, groupId: null }],
+    activeCompany: 'mig_evt', lines: [],
+    serviceMatrix: { mig_evt: {
+      covers: { '2026-01-05': { lunch: 20, event: 100 }, '2026-01-06': { event: 30 } },
+      ticket: { '2026-01-05': { lunch: 40, event: 800 }, '2026-01-06': { event: 25 } },
+    } },
+  };
+  const adopted = app.adoptState(JSON.parse(JSON.stringify(raw)));
+  assert.ok(adopted.migrations.matrixEventAmount2026, 'le drapeau de migration doit être posé');
+  const m = adopted.serviceMatrix.mig_evt;
+
+  assert.equal(m.amount['2026-01-05'].event, 80000, '100 couverts à 800 € font 80 000 € de montant global');
+  assert.equal(m.amount['2026-01-06'].event, 750, '30 × 25 = 750 €');
+  assert.equal(m.covers['2026-01-05'].event, undefined, 'les couverts de l’Event sont effacés');
+  assert.equal(m.ticket['2026-01-05'].event, undefined, 'son prix moyen aussi');
+  assert.equal(m.covers['2026-01-06'], undefined,
+    'une journée qui n’avait QUE de l’Event ne laisse pas un objet vide derrière elle');
+
+  // Le midi n'est pas touché, et le CA total du 5 janvier est inchangé.
+  assert.equal(m.covers['2026-01-05'].lunch, 20, 'le midi garde ses couverts');
+  assert.equal(m.ticket['2026-01-05'].lunch, 40, 'et son prix moyen');
+  assert.equal(app.matrixTotalRevenue(m, ['2026-01-05'])[0], 20 * 40 + 80000,
+    'le CA du jour est inchangé par la migration : 800 € de midi + 80 000 € d’Event');
+
+  // Rejouée sur un état déjà migré, elle ne refait rien.
+  const again = app.adoptState(JSON.parse(JSON.stringify(adopted)));
+  assert.deepEqual(again.serviceMatrix.mig_evt, m, 'migration jouée une seule fois');
+});
+
+check('Matrice CA importée à l’ancien format : l’Event en Prix Moy × Nbr de couv reste accepté', () => {
+  // Les directeurs ont des fichiers en circulation, exportés avant le
+  // 07/10/2026, où l'EVENT porte encore un prix moyen et des couverts. Les
+  // refuser silencieusement reviendrait à perdre leur CA Event.
+  const company = { id: 'camx_old', name: 'Ancien Format', currency: 'EUR', year: 2027, groupId: null };
+  const saved = { companies: app.state.companies.slice(), matrix: app.state.serviceMatrix };
+  app.state.companies = [company];
+  app.state.serviceMatrix = {};
+  try {
+    const head = ['FÉVRIER', ''].concat(Array.from({ length: 28 }, (_, i) => String(i + 1)));
+    const rows = [
+      ['FÉVRIER 2027'],
+      head,
+      ['', ''].concat(Array(28).fill('LUNDI')),
+      [],
+      ['EVENT', 'Prix Moy', '', '800'],       // 2 février, ancien format
+      ['', 'Nbr de couv', '', '100'],
+      ['', 'CA', '', ''],                      // la formule, sans valeur en cache
+    ];
+    const parsed = app.parseCaMatrixRows(rows, 2027);
+    app.applyCaMatrixImport(company.id, parsed);
+    const m = app.serviceMatrixOf(company.id);
+    assert.equal(app.serviceMatrixValue(m, 'amount', 'event', '2027-02-02'), 80000,
+      '800 × 100 doit devenir un montant global de 80 000 €');
+    assert.equal(app.serviceMatrixValue(m, 'covers', 'event', '2027-02-02'), 0,
+      'et rien ne doit rester en couverts sur l’Event');
+
+    // Nouveau format : la ligne CA de l'EVENT fait foi, et prime sur un
+    // éventuel reste de l'ancien format.
+    const modern = app.parseCaMatrixRows([
+      ['MARS 2027'],
+      ['MARS', ''].concat(Array.from({ length: 31 }, (_, i) => String(i + 1))),
+      ['', ''].concat(Array(31).fill('LUNDI')),
+      ['EVENT', 'CA', '', '', '45 000 €'],   // 3 mars : espace des milliers et symbole
+    ], 2027);
+    app.applyCaMatrixImport(company.id, modern);
+    assert.equal(app.serviceMatrixValue(m, 'amount', 'event', '2027-03-03'), 45000,
+      'la ligne CA de l’EVENT se lit comme une saisie, format français compris');
+
+    // La ligne CA du MIDI, elle, est une FORMULE : sa valeur en cache ne
+    // doit jamais être réimportée comme une saisie.
+    const lunchCa = app.parseCaMatrixRows([
+      ['AVRIL 2027'],
+      ['AVRIL', ''].concat(Array.from({ length: 30 }, (_, i) => String(i + 1))),
+      ['', ''].concat(Array(30).fill('LUNDI')),
+      ['MIDI', 'CA', '7777'],                 // 1er avril : valeur mise en cache par Excel
+    ], 2027);
+    assert.deepEqual(app.applyCaMatrixImport(company.id, lunchCa).months, [],
+      'un bloc où seule la formule CA du midi porte une valeur ne compte pas comme rempli');
+  } finally {
+    app.state.companies = saved.companies;
+    app.state.serviceMatrix = saved.matrix;
+    app.resetStateIndexes();
+  }
+});
+
 check('Migration matrixMidiSoir2026 : Breakfast fusionné dans le Midi, CA inchangé au centime', () => {
   const raw = {
     companies: [{ id: 'mig_bf', name: 'Mig BF', currency: 'EUR', year: 2026, groupId: null }],
@@ -8292,13 +8478,13 @@ await checkAsync('Matrice officielle : export Excel pré-rempli, puis réimport 
   app.state.serviceMatrix = {};
   dom.blobs.length = 0;
   try {
-    // 10/07/2027 (un samedi) : midi 96 × 46, soir 120 × 78, event 30 × 50.
+    // 10/07/2027 (un samedi) : midi 96 × 46, soir 120 × 78, event 80 000 €
+    // en montant global (07/10/2026 : plus de couverts ni de prix moyen).
     app.setServiceMatrixValue(company.id, 'covers', 'lunch', '2027-07-10', 96);
     app.setServiceMatrixValue(company.id, 'ticket', 'lunch', '2027-07-10', 46);
     app.setServiceMatrixValue(company.id, 'covers', 'dinner', '2027-07-10', 120);
     app.setServiceMatrixValue(company.id, 'ticket', 'dinner', '2027-07-10', 78);
-    app.setServiceMatrixValue(company.id, 'covers', 'event', '2027-07-10', 30);
-    app.setServiceMatrixValue(company.id, 'ticket', 'event', '2027-07-10', 50);
+    app.setServiceMatrixValue(company.id, 'amount', 'event', '2027-07-10', 80000);
     // Un autre mois, pour vérifier qu'un import partiel ne l'efface pas.
     app.setServiceMatrixValue(company.id, 'covers', 'lunch', '2027-03-02', 40);
     app.setServiceMatrixValue(company.id, 'ticket', 'lunch', '2027-03-02', 30);
@@ -8322,7 +8508,9 @@ await checkAsync('Matrice officielle : export Excel pré-rempli, puis réimport 
     for (const month of ['JANVIER', 'FEVRIER', 'JUILLET', 'DECEMBRE']) {
       assert.ok(rows.some((r) => app.caMatrixNorm(r[0]) === month), 'bloc ' + month + ' présent sur la même feuille');
     }
-    assert.ok(flat.includes('TOTAL CA MIDI + SOIR'), 'ligne de total du modèle');
+    assert.ok(flat.includes('TOTAL CA'), 'ligne de total du modèle');
+    assert.ok(!flat.includes('TOTAL CA MIDI + SOIR'),
+      'le total ne laisse plus l’Event dehors : il s’appelle « TOTAL CA » (Alexis, 07/10/2026)');
     assert.ok(!/BUDGET|Variance/i.test(flat), 'plus de ligne BUDGET / Variance');
     assert.ok(!/BREAKFAST/i.test(flat), 'plus de service Breakfast');
     const julyHead = rows.findIndex((r) => app.caMatrixNorm(r[0]) === 'JUILLET');
@@ -8333,6 +8521,21 @@ await checkAsync('Matrice officielle : export Excel pré-rempli, puis réimport 
     assert.equal(rows[julyHead + 3][col10], '46', 'prix moyen du midi pré-rempli');
     assert.equal(rows[julyHead + 4][col10], '96', 'couverts du midi pré-remplis');
 
+    // EVENT : une SEULE ligne, « CA », et c'est une valeur saisie — pas de
+    // Prix Moy ni de Nbr de couv (Alexis, 07/10/2026 : « 80 000 €
+    // directement sans mettre 800 € en PM et 100 couverts »).
+    const eventHead = rows.findIndex((r, i) => i > julyHead && app.caMatrixNorm(r[0]) === 'EVENT');
+    assert.ok(eventHead > julyHead, 'le bloc EVENT de juillet doit exister');
+    assert.equal(rows[eventHead][1], 'CA', 'la seule sous-ligne de l’EVENT est « CA »');
+    assert.equal(rows[eventHead][col10], '80000', 'le montant global du jour est pré-rempli');
+    assert.notEqual(rows[eventHead + 1][1], 'Prix Moy', 'l’EVENT n’a plus de ligne Prix Moy');
+    assert.notEqual(rows[eventHead + 1][1], 'Nbr de couv', 'l’EVENT n’a plus de ligne Nbr de couv');
+
+    // Le TOTAL CA du jour additionne bien les TROIS services : le bug
+    // signalé par Alexis était justement un total à deux termes.
+    const totalRow = rows.findIndex((r, i) => i > julyHead && app.caMatrixNorm(r[0]) === 'TOTAL CA');
+    assert.ok(totalRow > eventHead, 'la ligne TOTAL CA doit suivre les trois blocs de service');
+
     // Le CA est une formule (couverts × prix), pas une valeur figée.
     const files = app.xlsxWorkbookFiles(app.caMatrixWorkbookSheets(company));
     const matrixXml = files.find((f) => f.name === 'xl/worksheets/sheet2.xml').content;
@@ -8341,16 +8544,22 @@ await checkAsync('Matrice officielle : export Excel pré-rempli, puis réimport 
       'le classeur se recalcule à l’ouverture');
 
     // Réimport : on vide juillet, on réimporte le fichier → restauré.
-    for (const svc of ['lunch', 'dinner', 'event']) {
+    for (const svc of ['lunch', 'dinner']) {
       app.setServiceMatrixValue(company.id, 'covers', svc, '2027-07-10', 0);
       app.setServiceMatrixValue(company.id, 'ticket', svc, '2027-07-10', 0);
     }
+    app.setServiceMatrixValue(company.id, 'amount', 'event', '2027-07-10', 0);
     await app.importCaMatrixFromFile(new File([buffer], 'Matrice_CA_Anna_Cannes.xlsx'));
     const m = app.serviceMatrixOf(company.id);
     assert.equal(app.serviceMatrixValue(m, 'covers', 'lunch', '2027-07-10'), 96, 'couverts midi restaurés');
     assert.equal(app.serviceMatrixValue(m, 'ticket', 'dinner', '2027-07-10'), 78, 'prix moyen soir restauré');
-    assert.equal(app.serviceMatrixValue(m, 'covers', 'event', '2027-07-10'), 30, 'couverts event restaurés');
+    assert.equal(app.serviceMatrixValue(m, 'amount', 'event', '2027-07-10'), 80000,
+      'montant global de l’event restauré — la ligne CA de l’EVENT est bien relue comme une saisie');
     assert.equal(app.serviceMatrixValue(m, 'covers', 'lunch', '2027-03-02'), 40, 'mars intact');
+
+    // Le CA du jour additionne les trois services : 96 × 46 + 120 × 78 + 80 000.
+    assert.equal(app.matrixTotalRevenue(m, ['2027-07-10'])[0], 96 * 46 + 120 * 78 + 80000,
+      'le CA total du jour doit prendre le montant de l’Event');
   } finally {
     app.state.companies = saved.companies; app.state.activeCompany = saved.active;
     app.state.serviceMatrix = saved.matrix;
@@ -8760,6 +8969,271 @@ function payrollFixture(overrides) {
   app.state.employees = [employee];
   return { company, employee };
 }
+
+check('Payroll : les extras se saisissent par journée travaillée, et leur coût rejoint le 6411/6451 du centre', () => {
+  // Alexis, 08/10/2026 : « sur le payroll il faut qu'on développe un moyen
+  // pour saisir les extras par jour travaillé et que l'on puisse entrer les
+  // montants payés, de manière à ce que tout soit simple et intuitif ».
+  // Maille arrêtée avec lui : une ligne nommée par besoin, et par mois le
+  // nombre de journées × le montant payé pour une journée (un BRUT, sur
+  // lequel les charges patronales du centre s'ajoutent).
+  const saved = {
+    lines: app.state.lines.slice(), companies: app.state.companies.slice(),
+    active: app.state.activeCompany, employees: (app.state.employees || []).slice(),
+    extras: (app.state.payrollExtras || []).slice(), tab: app.__getTab(),
+  };
+  try {
+    const { company } = payrollFixture();
+    app.state.employees = [];
+    app.state.payrollExtras = [];
+    app.resetStateIndexes();
+
+    const extra = app.addPayrollExtra();
+    assert.ok(extra, 'le bouton « + Ajouter un extra » doit créer une ligne');
+    assert.equal(app.payrollExtrasOf(company.id).length, 1, 'une ligne, rattachée à la société active');
+    assert.equal(extra.center, 'F&B', 'le centre de départ est F&B, comme pour un collaborateur');
+    assert.equal(app.payrollExtraEmployerRate(extra), 0.42,
+      'le taux de charges patronales part du défaut de l’application');
+    assert.equal(app.payrollExtraLabel(extra), 'Extra sans nom',
+      'une ligne sans nom garde un libellé plutôt que d’être anonyme');
+
+    app.setPayrollExtraName(extra.id, 'Extra salle');
+    // Janvier : 4 journées à 130 €. Juillet : 40 journées à 145 €.
+    app.setPayrollExtraMonth(extra.id, 'days', 0, '4');
+    app.setPayrollExtraMonth(extra.id, 'dailyGross', 0, '130');
+    app.setPayrollExtraMonth(extra.id, 'days', 6, '40');
+    app.setPayrollExtraMonth(extra.id, 'dailyGross', 6, '145');
+
+    const months = app.payrollExtraMonths(app.payrollExtraById(extra.id));
+    assert.equal(months.gross[0], 520, 'janvier : 4 journées × 130 € = 520 € de brut');
+    assert.equal(months.gross[6], 5800, 'juillet : 40 × 145 = 5 800 €');
+    assert.equal(months.gross[1], 0, 'un mois sans journée ne coûte rien');
+    assert.ok(Math.abs(months.employerCharges[0] - 520 * 0.42) < 0.01,
+      'les charges patronales s’ajoutent au brut de la journée, au taux de la ligne');
+    assert.ok(Math.abs(months.employerCost[0] - 520 * 1.42) < 0.01,
+      'le coût employeur est le brut plus ses charges');
+
+    // Une journée saisie sans montant (ou l'inverse) ne coûte rien : on ne
+    // devine pas un tarif, et on ne compte pas un montant sans journée.
+    app.setPayrollExtraMonth(extra.id, 'days', 2, '5');
+    assert.equal(app.payrollExtraMonthGross(app.payrollExtraById(extra.id), 2), 0,
+      'des journées sans montant ne produisent aucun coût');
+    app.setPayrollExtraMonth(extra.id, 'days', 2, '0');
+
+    // Report dans la Saisie : le brut sur le 6411 du centre, les charges
+    // sur son 6451, et RIEN sur le 6412 (les congés payés n'ont été dictés
+    // que pour les collaborateurs).
+    const accounts = app.payrollAccountsForCenter('F&B');
+    const gross = app.linesOf(company.id).find(function (l) { return l.account === accounts.gross; });
+    const employer = app.linesOf(company.id).find(function (l) { return l.account === accounts.employer; });
+    const leave = app.linesOf(company.id).find(function (l) { return l.account === accounts.leave; });
+    assert.ok(gross && employer, 'les lignes 6411 et 6451 du centre doivent exister, sans collaborateur');
+    assert.equal(gross.amounts[0], 520, 'le brut de janvier atterrit sur le 6411 du centre');
+    assert.equal(gross.amounts[6], 5800, 'et celui de juillet aussi');
+    assert.equal(employer.amounts[0], Math.round(520 * 0.42), 'les charges patronales sur le 6451');
+    assert.ok(!leave || leave.amounts.every(function (v) { return v === 0; }),
+      'aucun congé payé sur un extra : la règle des 10 % ne vise que les collaborateurs');
+
+    // Taux propre à la ligne : saisi en pourcentage, il change les charges
+    // sans toucher au brut.
+    app.setPayrollExtraEmployerRate(extra.id, '50');
+    assert.equal(app.payrollExtraEmployerRate(app.payrollExtraById(extra.id)), 0.5);
+    const afterRate = app.linesOf(company.id).find(function (l) { return l.account === accounts.employer; });
+    assert.equal(afterRate.amounts[0], 260, 'les charges de janvier suivent le nouveau taux (520 × 50 %)');
+    assert.equal(app.linesOf(company.id).find(function (l) { return l.account === accounts.gross; }).amounts[0], 520,
+      'le brut, lui, ne bouge pas');
+
+    // Changer de centre déménage le coût d'un 6411 à l'autre.
+    app.setPayrollExtraCenter(extra.id, 'AG');
+    const agAccounts = app.payrollAccountsForCenter('AG');
+    const agGross = app.linesOf(company.id).find(function (l) { return l.account === agAccounts.gross; });
+    assert.ok(agGross && agGross.amounts[0] === 520, 'le brut suit le centre choisi');
+    const fbGross = app.linesOf(company.id).find(function (l) { return l.account === accounts.gross; });
+    assert.ok(!fbGross, 'et l’ancien centre, qui n’emploie plus personne, perd ses lignes calculées');
+    app.setPayrollExtraCenter(extra.id, 'F&B');
+
+    // Totaux de la société, et par centre (ce que lit `payrollCenterMonths`).
+    const totals = app.payrollExtraTotals(company.id);
+    assert.equal(totals.days[0], 4, 'les journées se totalisent');
+    assert.equal(totals.gross[6], 5800);
+    assert.deepEqual(app.payrollExtraCenters(company.id), ['F&B']);
+    assert.equal(app.payrollExtraTotals(company.id, 'AG').gross[0], 0,
+      'un centre sans extra ne totalise rien');
+
+    // Les KPI de l'onglet comprennent les extras : sans cela, l'onglet et
+    // le P&L annonceraient deux coûts employeur différents pour la même
+    // masse salariale (le préfixe Payroll du moteur couvre 6411/6451).
+    app.__setTab('payroll');
+    app.render();
+    const rendered = document.getElementById('view').innerHTML;
+    assert.ok(rendered.includes('d’extras'),
+      'la tuile « Coût employeur » doit dire la part des extras');
+    assert.ok(rendered.includes('journée') && rendered.includes('d’extra'),
+      'la tuile « Masse brute » doit dire le nombre de journées d’extra');
+  } finally {
+    app.state.lines = saved.lines; app.state.companies = saved.companies;
+    app.state.activeCompany = saved.active; app.state.employees = saved.employees;
+    app.state.payrollExtras = saved.extras;
+    app.resetStateIndexes();
+    app.__setTab(saved.tab);
+    app.render();
+  }
+});
+
+check('Payroll : le tableau des extras montre les deux saisies et ce qui en découle, jamais mélangés', () => {
+  const saved = {
+    lines: app.state.lines.slice(), companies: app.state.companies.slice(),
+    active: app.state.activeCompany, employees: (app.state.employees || []).slice(),
+    extras: (app.state.payrollExtras || []).slice(),
+    locked: JSON.parse(JSON.stringify(app.state.payrollLockedRates || {})),
+  };
+  try {
+    const { company } = payrollFixture();
+    app.state.employees = [];
+    app.state.payrollExtras = [];
+    app.resetStateIndexes();
+
+    // Panneau vide : il explique la maille et propose d'ajouter.
+    const empty = app.payrollExtrasPanel(company);
+    assert.ok(empty.includes("panel-id=\"payroll-extras\"") || empty.includes('payroll-extras'),
+      'la rubrique doit porter l’identifiant « payroll-extras »');
+    assert.ok(empty.includes('data-add-payroll-extra'), 'le bouton d’ajout doit être proposé');
+    assert.ok(empty.includes('journées travaillées'), 'l’état vide doit dire comment se saisit un extra');
+
+    const extra = app.addPayrollExtra();
+    app.setPayrollExtraName(extra.id, 'Extra plonge');
+    app.setPayrollExtraMonth(extra.id, 'days', 0, '2');
+    app.setPayrollExtraMonth(extra.id, 'dailyGross', 0, '110');
+
+    const html = app.payrollExtrasPanel(company);
+    // Les deux séries saisissables, et une par mois.
+    assert.ok(html.includes('data-extra-input="days|' + extra.id + '|0"'),
+      'les journées travaillées de janvier doivent être saisissables');
+    assert.ok(html.includes('data-extra-input="dailyGross|' + extra.id + '|11"'),
+      'le montant de la journée doit être saisissable jusqu’en décembre');
+    assert.equal((html.match(/data-extra-input="days\|/g) || []).length, 12,
+      'une case de journées par mois');
+    assert.equal((html.match(/data-extra-input="dailyGross\|/g) || []).length, 12,
+      'une case de montant par mois');
+    // Les cases héritent de la navigation des autres grilles.
+    assert.ok(html.includes('class="month-input"'),
+      'les cases doivent porter .month-input : tabulation et flèches comme dans un tableur');
+    // Le nom, le centre, le taux et le retrait.
+    assert.ok(html.includes('data-extra-name="' + extra.id + '"'), 'le nom se saisit sur la ligne');
+    assert.ok(html.includes('data-extra-center="' + extra.id + '"'), 'le centre de coûts se choisit sur la ligne');
+    assert.ok(html.includes('data-extra-rate="' + extra.id + '"'), 'le taux de charges patronales se règle sur la ligne');
+    assert.ok(html.includes('data-delete-payroll-extra="' + extra.id + '"'), 'la ligne se retire');
+    // Ce qui découle de la saisie n'est PAS saisissable.
+    assert.ok(html.includes('= Coût') && html.includes('Jours travaillés') && html.includes('Montant / journée'),
+      'les trois rangées doivent être nommées');
+    assert.ok(html.includes(app.money(220)), 'le coût de janvier (2 × 110) doit s’afficher');
+    assert.ok(html.includes('Total extras — brut') && html.includes('Charges patronales') &&
+      html.includes('= Coût employeur'),
+      'le pied de tableau doit donner le brut, les charges et le coût employeur');
+
+    // Taux figé par le contrôle de gestion : la case se grise, et c'est le
+    // taux figé qui s'applique — même règle que la fiche collaborateur.
+    app.setPayrollLockedRate(company.id, 'employerRate', 0.45);
+    const lockedHtml = app.payrollExtrasPanel(company);
+    assert.ok(/data-extra-rate="[^"]*" [^>]*disabled/.test(lockedHtml),
+      'un taux figé doit griser la case du tableau');
+    assert.equal(app.payrollExtraEmployerRate(app.payrollExtraById(extra.id)), 0.45,
+      'le taux figé prime sur celui de la ligne');
+    // Et une tentative d'écriture est refusée plutôt que silencieusement perdue.
+    app.setPayrollExtraEmployerRate(extra.id, '10');
+    assert.equal(app.payrollExtraEmployerRate(app.payrollExtraById(extra.id)), 0.45,
+      'on ne contourne pas un taux figé par le tableau des extras');
+    app.setPayrollLockedRate(company.id, 'employerRate', null);
+  } finally {
+    app.state.lines = saved.lines; app.state.companies = saved.companies;
+    app.state.activeCompany = saved.active; app.state.employees = saved.employees;
+    app.state.payrollExtras = saved.extras;
+    app.state.payrollLockedRates = saved.locked;
+    app.resetStateIndexes();
+    app.render();
+  }
+});
+
+check('Payroll : les extras suivent leur société — migration, duplication, suppression', () => {
+  // Une donnée rattachée à une société doit être déclarée partout : sinon
+  // elle survit à sa suppression, ne suit pas une duplication, ou part au
+  // serveur comme un élément commun (voir COMPANY_KEYED_STATE/COMPANY_ARRAYS).
+  const raw = {
+    companies: [{ id: 'xtr_mig', name: 'Mig Extras', currency: 'EUR', year: 2026, groupId: null }],
+    activeCompany: 'xtr_mig', lines: [],
+    payrollExtras: [{
+      id: 'xtr_1', companyId: 'xtr_mig', name: 'Extra salle', center: 'F&B',
+      // Séries abîmées : trop courtes, avec du texte et un négatif.
+      days: [4, '3', -2, 'abc'],
+      dailyGross: [130],
+      employerRate: 'x',
+    }],
+  };
+  const adopted = app.adoptState(JSON.parse(JSON.stringify(raw)));
+  const migrated = adopted.payrollExtras[0];
+  assert.equal(migrated.days.length, 12, 'les journées sont ramenées à douze valeurs');
+  assert.equal(migrated.dailyGross.length, 12, 'les montants aussi');
+  assert.equal(migrated.days[0], 4);
+  assert.equal(migrated.days[1], 3, 'une valeur numérique en texte est acceptée');
+  assert.equal(migrated.days[2], 0, 'un négatif devient zéro');
+  assert.equal(migrated.days[3], 0, 'un texte illisible devient zéro, jamais NaN');
+  assert.equal(migrated.dailyGross[6], 0, 'une série trop courte est complétée par des zéros');
+  assert.equal(migrated.employerRate, 0.42, 'un taux illisible retombe sur le défaut');
+
+  // Un état sans la clé du tout (toutes les sauvegardes d'avant le 08/10/2026).
+  const bare = app.adoptState({ companies: raw.companies.slice(), activeCompany: 'xtr_mig', lines: [] });
+  assert.deepEqual(bare.payrollExtras, [], 'la clé est créée vide plutôt que de faire échouer le chargement');
+
+  // Déclarée dans le périmètre serveur, au même titre que les collaborateurs.
+  assert.ok(app.SERVER_COMPANY_ARRAYS.includes('payrollExtras'),
+    'les extras doivent être déclarés comme tableau rattaché à une société (sinon traités en élément commun)');
+
+  const saved = {
+    companies: app.state.companies.slice(), active: app.state.activeCompany,
+    lines: app.state.lines.slice(), extras: (app.state.payrollExtras || []).slice(),
+    employees: (app.state.employees || []).slice(),
+  };
+  try {
+    const { company } = payrollFixture();
+    app.state.employees = [];
+    app.state.payrollExtras = [];
+    app.resetStateIndexes();
+    const extra = app.addPayrollExtra();
+    app.setPayrollExtraName(extra.id, 'Extra salle');
+    app.setPayrollExtraMonth(extra.id, 'days', 0, '4');
+    app.setPayrollExtraMonth(extra.id, 'dailyGross', 0, '130');
+
+    // Duplication avec un coefficient : les besoins suivent, le tarif de la
+    // journée est indexé, les journées restent celles de la source.
+    const copy = app.duplicateCompany(company.id, 'Extras Copie', 2027, 10, false);
+    const copied = app.payrollExtrasOf(copy.id);
+    assert.equal(copied.length, 1, 'les extras doivent suivre une duplication de société');
+    assert.notEqual(copied[0].id, extra.id, 'la copie a son propre identifiant');
+    assert.equal(copied[0].name, 'Extra salle', 'le besoin garde son nom');
+    assert.equal(copied[0].days[0], 4, 'les journées sont reprises telles quelles');
+    assert.equal(copied[0].dailyGross[0], 143, 'le tarif de la journée est indexé de 10 % (130 → 143)');
+    assert.equal(app.payrollExtrasOf(company.id).length, 1, 'la source garde les siens');
+
+    // Duplication « nouvel exercice » : la structure seule, à compléter.
+    const blank = app.duplicateCompany(company.id, 'Extras Vierge', 2028, 0, true);
+    const blanked = app.payrollExtrasOf(blank.id);
+    assert.equal(blanked.length, 1, 'le besoin est repris');
+    assert.equal(blanked[0].dailyGross[0], 0, 'mais sans tarif');
+    assert.equal(blanked[0].days[0], 0,
+      'et sans journées : un nombre de journées en face d’un tarif vide serait trompeur');
+
+    // Suppression de la société : ses extras partent avec elle.
+    app.purgeCompanyData(company.id);
+    assert.deepEqual(app.payrollExtrasOf(company.id), [],
+      'les extras d’une société supprimée ne doivent pas rester orphelins dans l’état');
+  } finally {
+    app.state.companies = saved.companies; app.state.activeCompany = saved.active;
+    app.state.lines = saved.lines; app.state.payrollExtras = saved.extras;
+    app.state.employees = saved.employees;
+    app.resetStateIndexes();
+    app.render();
+  }
+});
 
 check('Payroll : décomposition brut / charges patronales / salariales / coût employeur', () => {
   const saved = {
@@ -9179,7 +9653,8 @@ check('Payroll : le report vers la Saisie est automatique, sans clic manuel', ()
     app.state.employees = [];
     app.__setTab('payroll');
     app.openEmployeeEditor('new');
-    document.getElementById('employee-name').value = 'Nina Costa';
+    document.getElementById('employee-first-name').value = 'Nina';
+    document.getElementById('employee-last-name').value = 'Costa';
     document.getElementById('employee-role-select').value = '';
     document.getElementById('employee-center').value = 'F&B';
     document.getElementById('employee-net').value = '1404';
@@ -9301,7 +9776,8 @@ check('Payroll : enregistrer un poste « Autre » conserve le libellé saisi lib
     app.state.employees = [];
     app.__setTab('payroll');
     app.openEmployeeEditor('new');
-    document.getElementById('employee-name').value = 'Léo Fabre';
+    document.getElementById('employee-first-name').value = 'Léo';
+    document.getElementById('employee-last-name').value = 'Fabre';
     document.getElementById('employee-role-select').value = '__autre__';
     document.getElementById('employee-role-custom').value = 'Chef de rang polyvalent';
     document.getElementById('employee-center').value = 'F&B';
@@ -9350,14 +9826,17 @@ check('Payroll V2 : la fiche est horizontale, avec un seul champ « Nom Prénom 
 
     assert.ok(html.includes('modal-box-horizontal'),
       'la fiche doit utiliser la mise en page horizontale, pas la fenêtre étroite d’origine');
-    assert.ok(html.includes('>Nom Prénom<'), 'le champ unique doit s’appeler « Nom Prénom »');
+    assert.ok(html.includes('>Prénom<') && html.includes('>Nom<'),
+      'la fiche doit porter DEUX étiquettes distinctes, « Prénom » puis « Nom »');
+    assert.ok(!html.includes('>Nom Prénom<'),
+      'l’ancien champ unique « Nom Prénom » ne doit plus exister');
     assert.ok(!html.includes('employee-count'),
       'le champ « Nombre de postes identiques à créer » doit avoir disparu');
     assert.ok(!html.includes('employee-contract-type-1'),
       'les lignes de contrat par poste (création en masse) doivent avoir disparu');
     // Les champs essentiels restent tous là : retirer la création en masse
     // ne doit rien avoir emporté d'autre au passage.
-    for (const id of ['employee-name', 'employee-role-select', 'employee-center',
+    for (const id of ['employee-first-name', 'employee-last-name', 'employee-role-select', 'employee-center',
       'employee-contract-type', 'employee-net', 'employee-employer-rate',
       'employee-employee-rate', 'employee-start', 'employee-end',
       'employee-raise-net', 'employee-bonus-amount']) {
@@ -9394,7 +9873,8 @@ check('Payroll V2 : un nom laissé vide reprend le poste, et « CDD Saisonnier �
     app.resetStateIndexes();
     app.__setTab('payroll');
     app.openEmployeeEditor('new');
-    document.getElementById('employee-name').value = ''; // volontairement vide
+    document.getElementById('employee-first-name').value = ''; // volontairement vides
+    document.getElementById('employee-last-name').value = '';
     document.getElementById('employee-role-select').value = 'Commis de salle';
     document.getElementById('employee-center').value = 'F&B';
     document.getElementById('employee-contract-type').value = 'CDD Saisonnier';
@@ -9422,6 +9902,135 @@ check('Payroll V2 : un nom laissé vide reprend le poste, et « CDD Saisonnier �
     app.__setTab(savedTab);
     app.render();
   }
+});
+
+check('Payroll : Prénom et Nom se saisissent dans deux cases, le poste reste le repli', () => {
+  // Alexis, 07/10/2026 : « passer la case nom prénom en deux cases une
+  // Prénom puis une Nom distinctement, tout en laissant l'intitulé du poste
+  // par défaut si ces deux dernières sont vides ».
+  const savedTab = app.__getTab();
+  const saved = {
+    lines: app.state.lines.slice(), companies: app.state.companies.slice(),
+    active: app.state.activeCompany, employees: (app.state.employees || []).slice(),
+  };
+  try {
+    // Le libellé lui-même : « Prénom Nom », puis le poste, puis le dernier
+    // recours. Une seule des deux cases suffit à faire un libellé.
+    assert.equal(app.employeeLabel('Marie', 'Dupont', 'Chef de rang'), 'Marie Dupont',
+      'les deux cases remplies donnent « Prénom Nom », dans cet ordre');
+    assert.equal(app.employeeLabel('Marie', '', 'Chef de rang'), 'Marie',
+      'un prénom seul suffit : on ne retombe pas sur le poste');
+    assert.equal(app.employeeLabel('', 'Dupont', 'Chef de rang'), 'Dupont',
+      'un nom seul suffit aussi');
+    assert.equal(app.employeeLabel('  ', '  ', 'Chef de rang'), 'Chef de rang',
+      'deux cases vides (espaces compris) reprennent l’intitulé du poste');
+    assert.equal(app.employeeLabel('', '', ''), 'Poste sans nom',
+      'sans poste non plus, il reste un libellé plutôt qu’une ligne anonyme');
+
+    // La fiche porte bien deux champs distincts, et plus l'ancien.
+    payrollFixture();
+    app.state.employees = [];
+    app.resetStateIndexes();
+    app.__setTab('payroll');
+    app.openEmployeeEditor('new');
+    const html = app.employeeEditorHtml();
+    assert.ok(html.includes('id="employee-first-name"') && html.includes('id="employee-last-name"'),
+      'la fiche doit offrir deux champs, « employee-first-name » puis « employee-last-name »');
+    assert.ok(!html.includes('id="employee-name"'),
+      'l’ancien champ unique « employee-name » ne doit plus exister');
+    assert.ok(html.indexOf('id="employee-first-name"') < html.indexOf('id="employee-last-name"'),
+      'le prénom se saisit AVANT le nom, comme demandé');
+
+    // Enregistrement : les deux cases sont stockées séparément, `name` reste
+    // le libellé calculé que lisent la matrice et les exports.
+    document.getElementById('employee-first-name').value = 'Marie';
+    document.getElementById('employee-last-name').value = 'Dupont';
+    document.getElementById('employee-role-select').value = 'Chef de rang';
+    document.getElementById('employee-center').value = 'F&B';
+    document.getElementById('employee-net').value = '1800';
+    document.getElementById('employee-employer-rate').value = '42';
+    document.getElementById('employee-employee-rate').value = '22';
+    app.saveEmployeeFromForm();
+    assert.equal(app.state.employees.length, 1, 'une seule fiche créée');
+    const kept = app.state.employees[0];
+    assert.equal(kept.firstName, 'Marie', 'le prénom doit être conservé à part');
+    assert.equal(kept.lastName, 'Dupont', 'le nom doit être conservé à part');
+    assert.equal(kept.name, 'Marie Dupont', 'le libellé reste « Prénom Nom »');
+
+    // Rouvrir la fiche réaffiche chaque moitié dans SA case : sans cela, un
+    // simple aller-retour viderait le nom de la personne.
+    app.openEmployeeEditor(kept.id);
+    const reopened = app.employeeEditorHtml();
+    assert.ok(reopened.includes('id="employee-first-name" value="Marie"'),
+      'le prénom enregistré doit revenir dans la case Prénom');
+    assert.ok(reopened.includes('id="employee-last-name" value="Dupont"'),
+      'le nom enregistré doit revenir dans la case Nom');
+
+    // Vider les deux cases d'une fiche déjà nommée la fait retomber sur le
+    // poste, sans rien bloquer.
+    document.getElementById('employee-first-name').value = '';
+    document.getElementById('employee-last-name').value = '';
+    document.getElementById('employee-role-select').value = 'Chef de rang';
+    document.getElementById('employee-center').value = 'F&B';
+    document.getElementById('employee-net').value = '1800';
+    document.getElementById('employee-employer-rate').value = '42';
+    document.getElementById('employee-employee-rate').value = '22';
+    app.saveEmployeeFromForm();
+    assert.equal(app.employeeById(kept.id).name, 'Chef de rang',
+      'deux cases vidées : le libellé repasse à l’intitulé du poste');
+    assert.equal(app.employeeById(kept.id).firstName, '', 'et la case Prénom reste bien vide');
+  } finally {
+    app.state.lines = saved.lines; app.state.companies = saved.companies;
+    app.state.activeCompany = saved.active; app.state.employees = saved.employees;
+    app.resetStateIndexes();
+    app.__setTab(savedTab);
+    app.render();
+  }
+});
+
+check('Payroll : une fiche enregistrée avant les deux cases garde son nom (migration)', () => {
+  // Les fiches d'avant le 07/10/2026 ne connaissent que le libellé `name`.
+  // Sans découpage à la relecture, rouvrir l'une d'elles afficherait deux
+  // cases vides et l'enregistrer remplacerait le nom de la personne par son
+  // poste — une perte silencieuse.
+  const raw = {
+    companies: [{ id: 'mig_nom', name: 'Mig Nom', currency: 'EUR', year: 2026, groupId: null }],
+    activeCompany: 'mig_nom', lines: [],
+    employees: [
+      { id: 'mig_nom_e1', companyId: 'mig_nom', name: 'Marie Dupont', role: 'Chef de rang',
+        center: 'F&B', grossMonthly: 2000, employerRate: 0.42, employeeRate: 0.22,
+        startDate: '', endDate: '', raises: [], bonuses: [] },
+      // Nom composé : seul le PREMIER mot est le prénom, le reste reste entier.
+      { id: 'mig_nom_e2', companyId: 'mig_nom', name: 'Jean Pierre De La Tour', role: 'Serveur(euse)',
+        center: 'F&B', grossMonthly: 2000, employerRate: 0.42, employeeRate: 0.22,
+        startDate: '', endDate: '', raises: [], bonuses: [] },
+      // Libellé qui n'est que le repli sur le poste : il doit RESTER un
+      // repli, pas devenir le nom d'une personne.
+      { id: 'mig_nom_e3', companyId: 'mig_nom', name: 'Commis de cuisine', role: 'Commis de cuisine',
+        center: 'F&B', grossMonthly: 2000, employerRate: 0.42, employeeRate: 0.22,
+        startDate: '', endDate: '', raises: [], bonuses: [] },
+    ],
+  };
+  const adopted = app.adoptState(JSON.parse(JSON.stringify(raw)));
+  const byId = {};
+  for (const e of adopted.employees) byId[e.id] = e;
+
+  assert.equal(byId.mig_nom_e1.firstName, 'Marie', 'le premier mot devient le prénom');
+  assert.equal(byId.mig_nom_e1.lastName, 'Dupont', 'le reste devient le nom');
+  assert.equal(byId.mig_nom_e1.name, 'Marie Dupont', 'le libellé affiché ne change pas');
+
+  assert.equal(byId.mig_nom_e2.firstName, 'Jean', 'un seul mot pour le prénom');
+  assert.equal(byId.mig_nom_e2.lastName, 'Pierre De La Tour', 'un nom composé n’est pas tronqué');
+
+  assert.equal(byId.mig_nom_e3.firstName, '', 'un libellé qui reprend le poste ne devient pas un prénom');
+  assert.equal(byId.mig_nom_e3.lastName, '', 'ni un nom');
+  assert.equal(byId.mig_nom_e3.name, 'Commis de cuisine', 'et le repli sur le poste reste affiché');
+
+  // Rejouée sur un état déjà migré, elle ne redécoupe rien.
+  const again = app.adoptState(JSON.parse(JSON.stringify(adopted)));
+  const re = again.employees.find(function (e) { return e.id === 'mig_nom_e1'; });
+  assert.equal(re.firstName, 'Marie', 'migration jouée une seule fois');
+  assert.equal(re.lastName, 'Dupont', 'migration jouée une seule fois');
 });
 
 check('Payroll V2 : un taux figé par les CDG s’applique à tous, grise la case et survit à un enregistrement', () => {
@@ -9472,7 +10081,8 @@ check('Payroll V2 : un taux figé par les CDG s’applique à tous, grise la cas
     // que le champ, désactivé, est vide à la lecture.
     app.__setTab('payroll');
     app.openEmployeeEditor('lock_e1');
-    document.getElementById('employee-name').value = 'Ana';
+    document.getElementById('employee-first-name').value = 'Ana';
+    document.getElementById('employee-last-name').value = '';
     document.getElementById('employee-role-select').value = 'Serveur(euse)';
     document.getElementById('employee-center').value = 'F&B';
     document.getElementById('employee-contract-type').value = 'CDI';
@@ -10214,6 +10824,108 @@ check('Fenêtres : la fermeture ignore un clic né d’une sélection qui débor
   }
 });
 
+check('Saisie simultanée : la personne arrivée ensuite est en lecture seule, et sait qui a la main', () => {
+  // Alexis, 08/10/2026 : « lorsque deux personnes édite le même budget en
+  // même temps → indiquer à la personne qui s'est connecté la dernière que
+  // les modifications sont impossibles et indiquer la personne qui a la
+  // main ». La main se prend société par société (voir presence.mjs) ; ici
+  // on vérifie ce que l'application en fait à l'écran.
+  const savedServerData = app.__getServerData ? app.__getServerData() : null;
+  const saved = {
+    companies: app.state.companies.slice(), active: app.state.activeCompany,
+    lines: app.state.lines.slice(), tab: app.__getTab(),
+  };
+  try {
+    const company = { id: 'main_c', name: 'Palm Beach', currency: 'EUR', year: 2026, groupId: null };
+    app.state.companies = [company];
+    app.state.activeCompany = company.id;
+    app.state.lines = [{
+      id: 'main_l1', companyId: company.id, account: '60103100', name: 'Achat F&B',
+      note: '', amounts: months(100),
+    }];
+    app.resetStateIndexes();
+
+    const base = {
+      ready: true, revision: 4, empty: false, access: { unrestricted: true, shared: true },
+      updatedAt: null, updatedBy: null, error: null, sending: false, lastSentJson: null,
+      localCopy: null, retryTimer: null, hand: null,
+    };
+
+    // 1. La main est à moi : rien ne change, aucune bannière.
+    app.__setServerData(Object.assign({}, base, {
+      hand: { company: company.id, mine: true, holder: { account: 'a.porrati', name: 'Alexis Porrati' } },
+    }));
+    assert.equal(app.budgetHandHeldByOther(), false, 'celui qui a la main n’est pas en lecture seule');
+    assert.equal(app.budgetHandBannerHtml(), '', 'et ne voit aucune bannière');
+
+    // 2. La main est à quelqu'un d'autre.
+    app.__setServerData(Object.assign({}, base, {
+      hand: { company: company.id, mine: false, holder: { account: 'j.quere', name: 'Jean Quéré' } },
+    }));
+    assert.equal(app.budgetHandHeldByOther(), true);
+    assert.equal(app.budgetHandHolderName(), 'Jean Quéré');
+
+    const banner = app.budgetHandBannerHtml();
+    assert.ok(banner.includes('Lecture seule'), 'la bannière doit dire que les modifications sont impossibles');
+    assert.ok(banner.includes('Jean Quéré'), 'et nommer la personne qui a la main');
+    assert.ok(banner.includes('Palm Beach'), 'et la société concernée');
+
+    // La bannière est en tête de TOUS les onglets : `viewPage` est le seul
+    // endroit instrumenté, la lecture seule valant pour le budget entier.
+    for (const tabId of ['saisie', 'ca', 'payroll', 'pnl']) {
+      app.__setTab(tabId);
+      app.render();
+      const rendered = document.getElementById('view').innerHTML;
+      assert.ok(rendered.includes('hand-banner'), 'la bannière doit s’afficher sur l’onglet ' + tabId);
+      assert.ok(rendered.includes('Jean Quéré'), 'avec le nom du détenteur sur l’onglet ' + tabId);
+    }
+
+    // Les montants de la Saisie passent en lecture seule, et la structure
+    // du budget se ferme : le message n'est pas qu'un avertissement.
+    app.__setTab('saisie');
+    app.__setCenter('F&B');
+    app.render();
+    const saisie = document.getElementById('view').innerHTML;
+    assert.ok(saisie.includes('Achat F&amp;B'), 'la ligne reste visible : c’est de la lecture seule, pas un masquage');
+    assert.ok(saisie.includes('a la main sur ce budget — lecture seule'),
+      'les douze cases doivent être verrouillées, et dire pourquoi');
+    assert.ok(!saisie.includes('data-add-line='), 'aucun ajout de ligne tant qu’on n’a pas la main');
+    assert.ok(!saisie.includes('data-delete='), 'aucune suppression non plus');
+    assert.equal(app.canEditLineStructure(), false, 'la structure du budget est fermée');
+
+    // 3. Une main sur une AUTRE société ne verrouille pas celle-ci.
+    app.__setServerData(Object.assign({}, base, {
+      hand: { company: 'autre_c', mine: false, holder: { account: 'j.quere', name: 'Jean Quéré' } },
+    }));
+    assert.equal(app.budgetHandHeldByOther(), false,
+      'la main est par société : un autre établissement ne bloque pas celui-ci');
+    assert.equal(app.budgetHandBannerHtml(), '', 'et n’affiche aucune bannière ici');
+
+    // 4. Hors mode serveur (fichier local, une seule personne) : jamais de main.
+    app.__setServerData(null);
+    assert.equal(app.budgetHand(), null, 'sans serveur, la question ne se pose pas');
+    assert.equal(app.budgetHandHeldByOther(), false);
+    assert.equal(app.canEditLineStructure(), true, 'et rien n’est verrouillé');
+
+    // Le battement doit rester plus court que l'expiration du serveur
+    // (PRESENCE_TTL_MS = 70 s), sinon la main sauterait toute seule.
+    assert.ok(app.BUDGET_HAND_BEAT_MS <= 30000,
+      'le battement doit tenir dans le délai d’expiration du serveur, deux fois au moins');
+
+    // Le chemin doit être autorisé par le SAS réseau, sinon l'appel est
+    // refusé avant même de partir (« Sortie réseau interdite »).
+    assert.ok(appSource.includes('donnees(\\/(revision|main))?'),
+      'le SAS réseau doit laisser passer /api/donnees/main');
+  } finally {
+    app.state.companies = saved.companies; app.state.activeCompany = saved.active;
+    app.state.lines = saved.lines;
+    app.resetStateIndexes();
+    app.__setServerData(savedServerData);
+    app.__setTab(saved.tab);
+    app.render();
+  }
+});
+
 check('Autorisations : une connexion est réclamée sur le seul chemin obligatoire (render)', () => {
   // Déverrouillage d'un fichier chiffré, restauration d'une sauvegarde
   // contenant des comptes, expiration de session : chacun laissait sinon
@@ -10377,6 +11089,144 @@ await checkAsync('Autorisations : seul le statut administrateur ouvre l’onglet
   }
 });
 
+await checkAsync('CA : un directeur LIT la ventilation de son chiffre d’affaires, sans pouvoir toucher aux pourcentages', async () => {
+  // Alexis, 07/10/2026 : « dans le CA il faut que les directeurs puissent
+  // voir comment est ventilé le CA, sans pour autant pouvoir modifier les
+  // pourcentages ».
+  //
+  // Le panneau est appelé directement plutôt que lu dans le rendu complet :
+  // `applyPagePermissions()` élague le vrai DOM, que le harness ne simule
+  // pas (`querySelectorAll` y rend un tableau vide). La VISIBILITÉ se
+  // vérifie donc par `canAccessPage`, et le CONTENU par le panneau lui-même.
+  const saved = {
+    users: (app.state.users || []).slice(), authLog: (app.state.authLog || []).slice(),
+    companies: app.state.companies.slice(), active: app.state.activeCompany,
+    lines: app.state.lines.slice(), caLines: (app.state.caLines || []).slice(),
+    matrix: app.state.serviceMatrix,
+    ventilation: JSON.parse(JSON.stringify(app.state.caVentilation || {})),
+    categoryVentilation: JSON.parse(JSON.stringify(app.state.caCategoryVentilation || {})),
+    tab: app.__getTab(),
+  };
+  try {
+    authFixture();
+    const company = { id: 'vent_ro_c', name: 'Ventilation Lecture', currency: 'EUR', year: 2026, groupId: null };
+    app.state.companies = [company];
+    app.state.activeCompany = company.id;
+    app.state.lines = [];
+    app.state.caLines = [];
+    app.state.serviceMatrix = {};
+    app.state.caVentilation = {};
+    app.state.caCategoryVentilation = {};
+    app.resetStateIndexes();
+
+    // Un CA à ventiler (5 000 € en janvier), deux comptes de produits, et
+    // des pourcentages posés : 70 % Food, 30 % Beverage.
+    app.setServiceMatrixValue(company.id, 'covers', 'lunch', '2026-01-05', 100);
+    app.setServiceMatrixValue(company.id, 'ticket', 'lunch', '2026-01-05', 50);
+    const food = app.addCaLine(company.id, '70101100', 'Nourriture');
+    app.setCaCategory(food.id, 'food');
+    const bev = app.addCaLine(company.id, '70102100', 'Boissons');
+    app.setCaCategory(bev.id, 'beverage');
+    app.setCaCategoryVentilationPercent(company.id, 'food', 70);
+    app.setCaCategoryVentilationPercent(company.id, 'beverage', 30);
+    app.setCaVentilationPercent(company.id, food.account, 100);
+    app.setCaVentilationPercent(company.id, bev.account, 100);
+
+    await app.createUser({ username: 'vent_cdg', role: 'controleur', password: 'MotDePasse1!xyz', isAdmin: true });
+    const directeur = await app.createUser({ username: 'vent_dir', role: 'directeur', password: 'MotDePasse1!xyz' });
+    app.setUserScope(directeur.id, null, ['F&B']);
+
+    // La rubrique est OUVERTE au directeur, les deux autres réglages non.
+    assert.ok(app.canAccessPage(directeur, 'ca', 'ca-ventilation'),
+      'la ventilation doit être visible par un directeur');
+    for (const page of ['ca-comptes', 'ca-ponderation']) {
+      assert.ok(!app.canAccessPage(directeur, 'ca', page),
+        '« ' + page + ' » reste hors du périmètre d’un directeur');
+    }
+
+    // --- Le contrôle de gestion : tout est réglable. -------------------
+    await app.signIn('vent_cdg', 'MotDePasse1!xyz');
+    app.__setTab('ca');
+    const cdgPanel = app.caVentilationPanel(company);
+    assert.equal(app.canEditCaVentilation(), true, 'le contrôle de gestion règle la ventilation');
+    assert.ok(cdgPanel.includes('data-ca-category-ventilation="food"'),
+      'le contrôleur doit avoir une case pour la part de catégorie');
+    assert.ok(cdgPanel.includes('data-ca-ventilation="' + food.account + '"'),
+      'et une case pour la part du compte dans sa catégorie');
+    assert.ok(cdgPanel.includes('data-apply-ca-ventilation='),
+      'et le bouton « Appliquer aux comptes »');
+    assert.ok(cdgPanel.includes('data-delete-ca-account="' + food.id + '"'),
+      'et le bouton « retirer » de chaque compte');
+
+    // --- Le directeur : la même rubrique, en lecture. -----------------
+    app.signOut();
+    await app.signIn('vent_dir', 'MotDePasse1!xyz');
+    app.__setTab('ca');
+    const dirPanel = app.caVentilationPanel(company);
+    assert.equal(app.canEditCaVentilation(), false, 'un directeur ne règle pas la ventilation');
+
+    // Elle montre bien la répartition — c'est tout l'objet de la demande :
+    // pourcentages en clair, comptes nommés, montants mois par mois,
+    // lignes de contrôle.
+    assert.ok(dirPanel.includes('70 %') && dirPanel.includes('30 %'),
+      'les parts de catégorie doivent se lire en clair (70 % / 30 %)');
+    assert.ok(dirPanel.includes('Nourriture') && dirPanel.includes('Boissons'),
+      'les comptes entre lesquels le CA est réparti doivent être nommés');
+    assert.ok(dirPanel.includes('Total catégories') && dirPanel.includes('Total ventilé'),
+      'les lignes de contrôle restent affichées : elles disent si tout le CA est réparti');
+    assert.ok(dirPanel.includes(app.money(3500)),
+      'le montant ventilé du mois doit s’afficher (70 % de 5 000 € = 3 500 €)');
+
+    // Mais rien n'y est modifiable.
+    assert.ok(!dirPanel.includes('<input'),
+      'aucune case de saisie dans la ventilation vue par un directeur');
+    assert.ok(!dirPanel.includes('data-ca-category-ventilation='),
+      'aucune case de part de catégorie pour un directeur');
+    assert.ok(!dirPanel.includes('data-ca-ventilation='),
+      'aucune case de part de compte pour un directeur');
+    assert.ok(!dirPanel.includes('data-apply-ca-ventilation='),
+      'pas de bouton « Appliquer aux comptes » pour un directeur');
+    assert.ok(!dirPanel.includes('data-delete-ca-account='),
+      'pas de bouton « retirer » : un directeur ne retire pas un compte suivi');
+    // La consigne ne doit pas lui parler de cases qui n'existent pas.
+    assert.ok(!dirPanel.includes('Vous choisissez d’abord la part'),
+      'la consigne du contrôleur ne doit pas s’afficher à un directeur');
+    assert.ok(dirPanel.includes('vous ne les modifiez pas'),
+      'le directeur doit lire qui pose ces pourcentages');
+
+    // Les deux tableaux gardent une largeur cohérente : la colonne
+    // d'actions disparaît avec les boutons, en-tête comprise (sinon les
+    // lignes de titre de catégorie, en `colspan`, décaleraient le tableau).
+    const dirSpans = (dirPanel.match(/colspan="(\d+)"/g) || []);
+    assert.ok(dirSpans.length > 0, 'le panneau doit comporter des lignes de titre en colspan');
+    assert.ok(dirSpans.every((c) => c === 'colspan="15"'),
+      'en lecture seule, les lignes pleine largeur couvrent 15 colonnes (compte + part + 12 mois + année), trouvé : ' +
+      dirSpans.join(', '));
+    assert.ok((cdgPanel.match(/colspan="16"/g) || []).length > 0,
+      'avec la colonne d’actions, elles en couvrent 16');
+
+    // Garde côté action, en plus de l'interface : le geste est refusé même
+    // atteint autrement (même principe que `canEditLineStructure`).
+    for (const branch of ['caCategoryVentilation', 'caVentilation', 'applyCaVentilation']) {
+      const at = appSource.indexOf('dataset.' + branch + ' !== undefined');
+      assert.ok(at > 0, 'branche « ' + branch + ' » introuvable dans les gestionnaires');
+      assert.ok(appSource.slice(at, at + 700).includes('canEditCaVentilation()'),
+        'la branche « ' + branch + ' » doit refuser le geste sans le droit de régler la ventilation');
+    }
+  } finally {
+    app.signOut();
+    app.state.users = saved.users; app.state.authLog = saved.authLog;
+    app.state.companies = saved.companies; app.state.activeCompany = saved.active;
+    app.state.lines = saved.lines; app.state.caLines = saved.caLines;
+    app.state.serviceMatrix = saved.matrix;
+    app.state.caVentilation = saved.ventilation;
+    app.state.caCategoryVentilation = saved.categoryVentilation;
+    app.resetStateIndexes();
+    app.__setTab(saved.tab);
+    app.render();
+  }
+});
+
 await checkAsync('Autorisations : la matrice ouvre onglet par onglet et rubrique par rubrique', async () => {
   const saved = { users: (app.state.users || []).slice(), authLog: (app.state.authLog || []).slice() };
   try {
@@ -10391,10 +11241,15 @@ await checkAsync('Autorisations : la matrice ouvre onglet par onglet et rubrique
       'un onglet hors périmètre reste fermé par défaut');
 
     // Périmètre arrêté le 19/08/2026 : le directeur voit son CA mais pas
-    // les réglages de l'onglet qui relèvent du contrôle de gestion.
+    // les réglages de l'onglet qui relèvent du contrôle de gestion. Depuis
+    // le 07/10/2026 la VENTILATION fait exception : il la voit, en lecture
+    // seule (Alexis : « qu'ils puissent voir comment est ventilé le CA,
+    // sans pour autant pouvoir modifier les pourcentages »).
     assert.ok(app.canAccessPage(directeur, 'ca', 'ca-couverts'),
       'la matrice couverts × ticket moyen est à lui');
-    for (const page of ['ca-comptes', 'ca-ponderation', 'ca-ventilation']) {
+    assert.ok(app.canAccessPage(directeur, 'ca', 'ca-ventilation'),
+      'la ventilation du CA est désormais ouverte par défaut à un directeur, en lecture seule');
+    for (const page of ['ca-comptes', 'ca-ponderation', 'ca-migration']) {
       assert.ok(!app.canAccessPage(directeur, 'ca', page),
         `« ${page} » relève du contrôle de gestion, pas du directeur`);
     }
@@ -11318,7 +12173,8 @@ check('Payroll : type de contrat (CDI par défaut, liste couvrant CDD/alternance
     // Enregistrer avec un type autre que le défaut doit le conserver.
     app.state.employees = [];
     app.openEmployeeEditor('new');
-    document.getElementById('employee-name').value = 'Apprenti Cuisine';
+    document.getElementById('employee-first-name').value = 'Apprenti';
+    document.getElementById('employee-last-name').value = 'Cuisine';
     document.getElementById('employee-role-select').value = 'Commis de cuisine';
     document.getElementById('employee-contract-type').value = 'Alternance';
     document.getElementById('employee-center').value = 'F&B';
@@ -11480,13 +12336,15 @@ check('Payroll : l’onglet affiche l’équipe, la matrice, les congés et les 
 
 /* --- 4 ter. Économie de mémoire et propreté de l'état ------------------ */
 
-check('l’historique d’annulation reste borné en mémoire, pas seulement en étapes', () => {
+check('l’historique d’annulation garde ses quarante étapes sur un budget volumineux, pour quelques octets', () => {
   const savedLines = app.state.lines.slice();
   const savedCompanies = app.state.companies.slice();
   const savedActive = app.state.activeCompany;
 
-  // Un budget volumineux : chaque instantané pèse lourd, donc le plafond
-  // en octets doit se déclencher avant le plafond en nombre d'étapes.
+  // Un budget volumineux : avant le 07/10/2026 chaque étape était une COPIE
+  // COMPLÈTE de l'état, et le plafond mémoire comptait aussi l'instantané de
+  // référence — sur un gros budget la pile était ramenée à une poignée
+  // d'étapes, voire à UNE SEULE (voir le contrôle suivant).
   const company = { id: 'mem_c', name: 'Mémoire', currency: 'EUR', year: 2026, groupId: null };
   app.state.companies = [company];
   app.state.activeCompany = company.id;
@@ -11507,13 +12365,20 @@ check('l’historique d’annulation reste borné en mémoire, pas seulement en 
       app.__forceUndoStep();
     }
     const bytes = app.__undoHistoryBytes();
+    const snapshot = app.__undoSnapshotBytes();
+    assert.ok(snapshot > 200000,
+      'le jeu d’essai doit bien produire un état volumineux (' + snapshot + ' caractères)');
+    assert.equal(app.__getUndoDepth().undo, app.__UNDO_MAX(),
+      'les quarante étapes promises doivent toutes être là, quelle que soit la taille du budget');
     assert.ok(bytes <= app.__UNDO_MAX_BYTES(),
-      'la pile d’annulation devrait respecter son plafond mémoire (' + bytes + ' > ' + app.__UNDO_MAX_BYTES() + ')');
-    assert.ok(app.__getUndoDepth().undo >= 1,
-      'même sous plafond, il doit toujours rester au moins une étape annulable');
+      'l’historique devrait respecter son plafond mémoire (' + bytes + ' > ' + app.__UNDO_MAX_BYTES() + ')');
+    // Et de très loin : un montant corrigé ne change que quelques
+    // caractères. Quarante étapes doivent coûter moins qu'UNE copie de
+    // l'état — c'est tout l'intérêt des écarts.
+    assert.ok(bytes < snapshot,
+      'quarante écarts (' + bytes + ') doivent peser moins qu’une seule copie de l’état (' + snapshot + ')');
 
-    // Une modification qui ne change rien ne doit pas empiler une copie
-    // complète de l'état pour rien.
+    // Une modification qui ne change rien ne doit pas empiler d'étape.
     const before = app.__getUndoDepth().undo;
     app.save();
     app.__forceUndoStep();
@@ -11528,6 +12393,131 @@ check('l’historique d’annulation reste borné en mémoire, pas seulement en 
     app.resetUndoHistory();
     app.render();
   }
+});
+
+check('Correctif : annuler et refaire restent utilisables autant de fois qu’il y a eu de modifications, même sur un budget de production', () => {
+  // Alexis, 07/10/2026 : « l'option de retour en arrière et de retour en
+  // avant ne sont pas fonctionnel → le retour en arrière est limité à une
+  // seule utilisation ». Le budget de production pèse 2,2 Mo sérialisé ;
+  // chaque étape étant alors une copie complète, le plafond mémoire de 4 Mo
+  // (qui comptait aussi l'instantané de référence) ramenait la pile à UNE
+  // étape et vidait le « rétablir » dans le `trimUndoHistory()` que
+  // `undo()` appelait juste après l'avoir rempli.
+  const savedLines = app.state.lines.slice();
+  const savedCompanies = app.state.companies.slice();
+  const savedActive = app.state.activeCompany;
+
+  const company = { id: 'undo_big_c', name: 'Gros Budget', currency: 'EUR', year: 2026, groupId: null };
+  app.state.companies = [company];
+  app.state.activeCompany = company.id;
+  app.state.lines = [];
+  // Assez de lignes pour dépasser le plafond de 4 Mo dès la deuxième étape
+  // avec l'ancien mécanisme — l'ordre de grandeur du budget réel.
+  for (let i = 0; i < 9000; i++) {
+    app.state.lines.push({
+      id: 'undo_big_l' + i, companyId: company.id, account: '70105100',
+      name: 'Ligne de chiffre d’affaires numéro ' + i, note: 'commentaire de remplissage',
+      amounts: months(1000 + i),
+    });
+  }
+  const target = app.state.lines[0];
+
+  try {
+    app.resetUndoHistory();
+    const snapshot = app.__undoSnapshotBytes();
+    assert.ok(snapshot > app.__UNDO_MAX_BYTES() / 3,
+      'le jeu d’essai doit atteindre l’ordre de grandeur du budget de production (' + snapshot + ' caractères)');
+
+    // Douze modifications bien distinctes : 100, 200, … 1200.
+    const steps = 12;
+    for (let i = 1; i <= steps; i++) {
+      target.amounts[0] = i * 100;
+      app.save();
+      app.__forceUndoStep();
+    }
+    assert.equal(app.__getUndoDepth().undo, steps,
+      'les douze modifications doivent donner douze étapes annulables, pas une seule');
+
+    // On remonte toute la pile, une valeur à la fois.
+    const line = function () { return app.state.lines.find((l) => l.id === 'undo_big_l0'); };
+    for (let i = steps - 1; i >= 1; i--) {
+      assert.equal(app.undo(), true, 'annuler devrait encore être possible à l’étape ' + i);
+      assert.equal(line().amounts[0], i * 100,
+        'annuler devrait ramener à ' + (i * 100) + ', pas s’arrêter en route');
+    }
+    assert.equal(app.undo(), true, 'une dernière annulation ramène à la valeur d’origine');
+    assert.equal(line().amounts[0], 1000, 'la valeur d’origine de la ligne doit être retrouvée');
+    assert.equal(app.undo(), false, 'et là, plus rien à annuler');
+
+    // Puis on redescend : « rétablir » doit être tout aussi utilisable.
+    assert.equal(app.__getUndoDepth().redo, steps,
+      'les douze étapes doivent être rétablissables — c’est ce que l’ancien trim effaçait');
+    for (let i = 1; i <= steps; i++) {
+      assert.equal(app.redo(), true, 'rétablir devrait encore être possible à l’étape ' + i);
+      assert.equal(line().amounts[0], i * 100, 'rétablir devrait avancer à ' + (i * 100));
+    }
+    assert.equal(app.redo(), false, 'et là, plus rien à rétablir');
+
+    // L'historique n'a jamais été tronqué en route : `rebaseUndoHistory`
+    // vide les deux piles si la référence se décale, ce qui se verrait ici.
+    assert.equal(app.__getUndoDepth().undo, steps,
+      'aucune étape ne doit avoir été perdue pendant l’aller-retour (référence restée fidèle)');
+  } finally {
+    app.state.lines = savedLines;
+    app.state.companies = savedCompanies;
+    app.state.activeCompany = savedActive;
+    app.resetUndoHistory();
+    app.render();
+  }
+});
+
+check('Historique d’annulation : l’écart entre deux états est exact, et ignore ce qui ne regarde pas le budget', () => {
+  // Les écarts remplacent les copies complètes depuis le 07/10/2026 : leur
+  // exactitude est ce qui fait tenir tout l'historique.
+  const cases = [
+    ['identique', 'abc', 'abc'],
+    ['un caractère au milieu', 'a{"x":1}z', 'a{"x":9}z'],
+    ['plus long', '{"a":1}', '{"a":1,"b":2}'],
+    ['plus court', '{"a":1,"b":2}', '{"a":1}'],
+    ['changement au tout début', 'xbc', 'abc'],
+    ['changement à la toute fin', 'abx', 'abc'],
+    ['tout change', 'abc', 'xyz'],
+    ['vers une chaîne vide', 'abc', ''],
+    ['depuis une chaîne vide', '', 'abc'],
+    ['répétitions trompeuses', 'aaaaa', 'aaa'],
+  ];
+  for (const [label, from, to] of cases) {
+    const delta = app.makeUndoDelta(from, to);
+    assert.equal(app.applyUndoDelta(from, delta), to, 'écart inexact : ' + label);
+  }
+
+  // Un montant corrigé dans un état volumineux ne doit coûter qu'une
+  // poignée de caractères : c'est la propriété qui rend l'historique viable.
+  const big = JSON.stringify({ lines: Array.from({ length: 2000 }, (_, i) => ({ id: 'l' + i, a: 1000 + i })) });
+  const bigChanged = big.replace('"a":1500', '"a":1501');
+  assert.notEqual(bigChanged, big, 'le jeu d’essai doit bien contenir une modification');
+  assert.ok(app.makeUndoDelta(big, bigChanged).text.length < 20,
+    'un chiffre corrigé dans un gros état ne doit tenir que sur quelques caractères');
+
+  // Ce que l'historique ignore : comptes, journaux, horodatage et choix
+  // d'affichage. Deux états qui n'en diffèrent que par là sont, pour
+  // l'historique, le même état — sinon chaque case saisie (qui allonge
+  // `editLog`) ou chaque sauvegarde (qui réécrit `lastSavedAt`) décalerait
+  // la référence des écarts.
+  for (const key of ['users', 'authLog', 'editLog', 'lastSavedAt', 'activeCompany',
+    'activeEnvironmentId', 'activeScenario']) {
+    assert.ok(app.UNDO_IGNORED_KEYS.includes(key), key + ' doit rester hors de l’historique');
+  }
+  const base = { companies: [], lines: [{ id: 'l1', amounts: [1] }] };
+  const a = app.undoSerialize(Object.assign({}, base, {
+    editLog: [{ at: 'hier' }], lastSavedAt: '2026-10-07T10:00:00Z', activeCompany: 'c1',
+  }));
+  const b = app.undoSerialize(Object.assign({}, base, {
+    editLog: [{ at: 'hier' }, { at: 'aujourd’hui' }], lastSavedAt: '2026-10-07T11:00:00Z', activeCompany: 'c2',
+  }));
+  assert.equal(a, b, 'journal, horodatage et société affichée ne doivent pas entrer dans l’historique');
+  const c = app.undoSerialize(Object.assign({}, base, { lines: [{ id: 'l1', amounts: [2] }] }));
+  assert.notEqual(a, c, 'un montant, lui, doit bien y entrer');
 });
 
 check('supprimer une société emporte son réalisé quotidien', () => {
@@ -16163,6 +17153,16 @@ check('Vue téléphone : la matrice se saisit par cartes de jour, mêmes cases q
   assert.equal((phone.match(/class="matrix-day-card/g) || []).length, keys.length,
     'une carte par jour du mois');
   for (const service of app.MATRIX_SERVICES) {
+    if (service.direct) {
+      // Event : une seule case, son montant global du jour (07/10/2026).
+      assert.ok(phone.includes('data-matrix-input="amount|' + service.id + '|' + keys[0] + '"'),
+        'le montant global du service ' + service.id + ' doit être saisissable');
+      assert.ok(!phone.includes('data-matrix-input="covers|' + service.id + '|' + keys[0] + '"'),
+        'le service ' + service.id + ' ne doit plus avoir de case de couverts');
+      assert.ok(!phone.includes('data-matrix-input="ticket|' + service.id + '|' + keys[0] + '"'),
+        'le service ' + service.id + ' ne doit plus avoir de case de prix moyen');
+      continue;
+    }
     assert.ok(phone.includes('data-matrix-input="covers|' + service.id + '|' + keys[0] + '"'),
       'les couverts du service ' + service.id + ' doivent être saisissables');
     assert.ok(phone.includes('data-matrix-input="ticket|' + service.id + '|' + keys[0] + '"'),
@@ -18127,16 +19127,15 @@ check('CA : la bande d’événements est rendue au-dessus de la ligne des jours
     // sur le seul en-tête se perd dès qu'on lit une ligne du bas.
     assert.ok(rendered.includes('matrix-event-col'),
       'la colonne d’un jour d’événement doit être teintée sur toute la hauteur du tableau');
-    // Quatre jours couverts × (2 services couverts + 2 services ticket +
-    // 2 services CA + 2 lignes de total) : la teinte doit descendre bien
-    // au-delà de la seule ligne d'en-tête.
-    // 4 jours couverts × 14 cellules de colonne (saisie des couverts et des
-    // tickets par service, CA calculé, lignes de total) = 56. Le seuil est
-    // posé au-dessus de ce que donnerait la seule moitié « cellules
-    // calculées » (24) : retirer la teinte des cases de SAISIE doit faire
-    // échouer ce contrôle, pas passer inaperçu.
+    // 4 jours couverts × 9 cellules de colonne = 36 : par jour, 2 cases de
+    // couverts + 2 de prix moyen (midi, soir) + 3 lignes de CA (midi et
+    // soir calculés, Event saisi en montant global depuis le 07/10/2026) +
+    // les 2 lignes de total. Le seuil est posé au-dessus de ce que
+    // donnerait l'une ou l'autre moitié seule — 16 pour les cellules
+    // calculées, 20 pour les cases de saisie : perdre la teinte d'un des
+    // deux groupes doit faire échouer ce contrôle, pas passer inaperçu.
     const tinted = (rendered.match(/matrix-event-col/g) || []).length;
-    assert.ok(tinted >= 40,
+    assert.ok(tinted >= 30,
       'la teinte doit couvrir les cellules de saisie ET les cellules calculées, pas seulement une partie (trouvé : ' + tinted + ')');
     assert.ok(rendered.includes('matrix-event-dot'),
       'une pastille doit marquer le jour sous son numéro');

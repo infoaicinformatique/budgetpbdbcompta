@@ -31,7 +31,7 @@ export class DataError extends Error {
 }
 
 /* Tableaux dont chaque élément appartient à une société (`companyId`). */
-export const COMPANY_ARRAYS = ['lines', 'versions', 'employees', 'caLines', 'objectives', 'editLog'];
+export const COMPANY_ARRAYS = ['lines', 'versions', 'employees', 'payrollExtras', 'caLines', 'objectives', 'editLog'];
 
 /* Dictionnaires indexés par identifiant de société — `COMPANY_KEYED_STATE`
    dans budget-app.html. */
