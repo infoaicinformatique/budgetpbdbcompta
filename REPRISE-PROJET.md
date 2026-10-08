@@ -77,6 +77,34 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Export Excel du P&L : couverts, ticket moyen et ETP (08/10/2026)
+
+Demande : « Sur l'export excel il manque le nombre de couverts, le ticket
+moyen et le nombre d'ETP, comme présents sur l'onglet P&L. »
+
+- `pnlActivityOf(companies)` : couverts et ticket moyen
+  (`matrixMonthlySeries`) et effectif (`payrollHeadcountMonths`) des
+  sociétés exportées — mêmes sources que l'onglet P&L, sans scénario
+  (l'export reste le budget, comme ses montants).
+- `styledPnlSheet` (feuille Synthèse) reçoit ces indicateurs en 4e
+  paramètre facultatif : « Couverts » et « Ticket moyen » en tête, avant
+  Food Revenue, puis une ligne vide ; « Effectif (ETP) » juste sous Payroll
+  et son ratio. Colonne Year : couverts additionnés, ticket moyen
+  **recalculé** (CA au couvert ÷ couverts de l'année), ETP en moyenne des
+  douze mois. Nouveau style Excel `decimal` (`#,##0.00`) pour le ticket et
+  l'ETP. Le CSV ne change pas.
+- Constaté au passage, non corrigé : à l'écran, la colonne Année du ticket
+  moyen est la **somme** des tickets mensuels (`row` → `total(months)`),
+  pas une moyenne pondérée.
+
+`APP_BUILD` : `2026-10-08.19`.
+
+Contrôle : « export Excel du P&L : couverts, ticket moyen et ETP » —
+classeur réellement produit par « Synthèse P&L (Excel) » relu : places des
+trois lignes, couverts de l'année et du mois, ticket pondéré (85 € pour
+3 000 × 100 € et 1 000 × 40 €, pas 140), ETP moyen. Vérifié en échec sans
+les lignes en tête, sans l'ETP, et avec un ticket annuel additionné.
+
 ### Export P&L : Event Revenue et Other Revenue comme à l'écran (08/10/2026)
 
 Signalement : « dans les P&L l'export Event Revenue et Other revenue ne
@@ -12045,7 +12073,7 @@ function answerConfirmations(value) { app.__setConfirmHandler(() => value); }
 const app = await importApp(
   (
     `${data}\n${budgetData}\n${emasphereData}\n${appSource}\n` +
-    'export { render, handleExport, state, detailRows, pnlRows, exportPnlSummary,\n' +
+    'export { render, handleExport, state, detailRows, pnlRows, exportPnlSummary, pnlActivityOf,\n' +
     '  encryptState, decryptPayload, deriveKey, showLock, submitLock, lockNow,\n' +
     '  isProtected, persist, addCompanyFromForm, openCompany, deleteCompany,\n' +
     '  seedBudgetForCompany, reloadCompanyBudgetFromSeed,\n' +
@@ -18845,6 +18873,56 @@ check('PnL : Food Revenue + Beverage Revenue retombent exactement sur Couverts �
       Math.round(impliedTotal) + ')');
   } finally {
     app.state.serviceMatrix = saved;
+  }
+});
+
+await checkAsync('export Excel du P&L : couverts, ticket moyen et ETP, placés comme dans l’onglet P&L', async () => {
+  // Alexis, 08/10/2026 : « sur l'export excel il manque le nombre de
+  // couverts, le ticket moyen et le nombre d'ETP, comme présents sur
+  // l'onglet P&L ».
+  const company = app.state.companies.find((c) => app.payrollHeadcountMonths([c]).some((v) => v > 0))
+    || app.state.companies[0];
+  const savedMatrix = JSON.parse(JSON.stringify(app.state.serviceMatrix || {}));
+  try {
+    app.state.serviceMatrix = {};
+    const year = Number(company.year);
+    // Janvier : 3 000 couverts à 100 € ; mars : 1 000 couverts à 40 €.
+    app.setServiceMatrixValue(company.id, 'covers', 'lunch', year + '-01-05', '3000');
+    app.setServiceMatrixValue(company.id, 'ticket', 'lunch', year + '-01-05', '100');
+    app.setServiceMatrixValue(company.id, 'covers', 'lunch', year + '-03-10', '1000');
+    app.setServiceMatrixValue(company.id, 'ticket', 'lunch', year + '-03-10', '40');
+
+    const activity = app.pnlActivityOf([company]);
+    assert.equal(activity.coversYear, 4000, 'couverts de l’année : 3 000 + 1 000');
+    assert.equal(activity.ticketYear, 85, 'ticket moyen de l’année : 340 000 € ÷ 4 000 couverts, pas 100 + 40');
+    const headcount = app.payrollHeadcountMonths([company]);
+    assert.deepEqual(activity.headcount, headcount, 'ETP : même source que l’onglet P&L');
+
+    dom.blobs.length = 0;
+    app.__setTab('export');
+    app.setExportSelection([company.id]);
+    app.handleExport('pnl-xlsx');
+    assert.equal(dom.blobs.length, 1, 'aucun fichier produit');
+    const temp = join(tmpdir(), 'budget-export-activite.xlsx');
+    writeFileSync(temp, Buffer.from(await dom.blobs[0].arrayBuffer()));
+    const sheet = readWorkbook(temp).get('Synthèse');
+    const at = (label) => sheet.findIndex((row) => row[0] === label);
+    const num = (v) => Number(String(v).replace(',', '.'));
+    const covers = at('Couverts');
+    const ticket = at('Ticket moyen');
+    const etp = at('Effectif (ETP)');
+    assert.ok(covers > 3 && ticket === covers + 1, 'Couverts puis Ticket moyen, juste sous l’en-tête');
+    assert.ok(ticket < at('Food Revenue'), 'Couverts et Ticket moyen avant le détail du CA, comme à l’écran');
+    assert.equal(num(sheet[covers][1]), 4000, 'Excel : couverts de l’année');
+    assert.equal(num(sheet[covers][2]), 3000, 'Excel : couverts de janvier');
+    assert.equal(num(sheet[ticket][1]), 85, 'Excel : ticket moyen de l’année (pondéré)');
+    assert.equal(num(sheet[ticket][4]), 40, 'Excel : ticket moyen de mars');
+    assert.equal(etp, at('Payroll Ratio') + 1, 'Effectif (ETP) juste sous Payroll et son ratio, comme à l’écran');
+    const average = Math.round((headcount.reduce((a, b) => a + b, 0) / 12) * 100) / 100;
+    assert.ok(Math.abs(num(sheet[etp][1]) - average) < 0.005, 'Excel : ETP de l’année = moyenne des douze mois');
+  } finally {
+    app.state.serviceMatrix = savedMatrix;
+    app.setExportSelection(app.state.companies.map((c) => c.id));
   }
 });
 

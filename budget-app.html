@@ -3498,7 +3498,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-08.18';
+const APP_BUILD = '2026-10-08.19';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -25892,7 +25892,33 @@ function pnlRows(summary, label) {
    ================================================================== */
 
 /** `subtitle` : texte libre affiché en petit sous le titre (période, date, société…). */
-function styledPnlSheet(summary, title, subtitle) {
+/**
+ * Indicateurs d'activité de la synthèse P&L exportée — Alexis, 08/10/2026 :
+ * « sur l'export excel il manque le nombre de couverts, le ticket moyen et
+ * le nombre d'ETP, comme présents sur l'onglet P&L ». Mêmes sources que
+ * l'écran (`matrixMonthlySeries`, `payrollHeadcountMonths`), sur les
+ * sociétés exportées, sans scénario (l'export reste le budget, comme ses
+ * montants). Colonne « Year » : couverts additionnés ; ticket moyen
+ * recalculé (CA au couvert ÷ couverts de l'année), jamais la somme de
+ * douze tickets ; ETP en moyenne des douze mois, comme à l'écran.
+ */
+function pnlActivityOf(companies) {
+  const series = matrixMonthlySeries(companies);
+  const coversYear = total(series.covers);
+  const coversRevenueYear = series.covers.reduce(function (sum, c, i) { return sum + c * series.ticket[i]; }, 0);
+  const headcount = payrollHeadcountMonths(companies);
+  return {
+    covers: series.covers,
+    coversYear: coversYear,
+    ticket: series.ticket,
+    ticketYear: coversYear ? coversRevenueYear / coversYear : 0,
+    headcount: headcount,
+    headcountYear: total(headcount) / MONTHS,
+  };
+}
+
+/** `activity` (facultatif, voir `pnlActivityOf`) : couverts, ticket moyen et ETP, placés comme dans l'onglet P&L. */
+function styledPnlSheet(summary, title, subtitle, activity) {
   const monthCols = MONTH_LABELS.length;
   const totalCols = 2 + monthCols; // Rubrique + Année + 12 mois
   const lastCol = columnName(totalCols - 1);
@@ -25920,8 +25946,23 @@ function styledPnlSheet(summary, title, subtitle) {
     rows.push([xc(line.label, XLSX_STYLE.subtitle), xc(line.value, XLSX_STYLE.percent)]
       .concat(line.months.map(function (v) { return xc(v, XLSX_STYLE.percent); })));
   }
+  function activityRow(label, months, yearValue, style) {
+    const round = style === XLSX_STYLE.decimal
+      ? function (v) { return Math.round((Number(v) || 0) * 100) / 100; }
+      : function (v) { return Math.round(Number(v) || 0); };
+    rows.push([xc(label, XLSX_STYLE.normal), xc(round(yearValue), style)]
+      .concat(months.map(function (v) { return xc(round(v), style); })));
+  }
   const ratioById = {};
   for (const line of summary.ratioRows) ratioById[line.id] = line;
+
+  // Couverts et ticket moyen en tête, avant le CA qu'ils expliquent —
+  // comme dans l'onglet P&L, séparés du détail du CA par une ligne vide.
+  if (activity) {
+    activityRow('Couverts', activity.covers, activity.coversYear, XLSX_STYLE.money);
+    activityRow('Ticket moyen', activity.ticket, activity.ticketYear, XLSX_STYLE.decimal);
+    rows.push([]);
+  }
 
   // Le détail du CA précède son total, comme pour les charges F&B ; une
   // simple ligne vide sépare ensuite Produits de Charges.
@@ -25940,6 +25981,8 @@ function styledPnlSheet(summary, title, subtitle) {
       // Masse salariale : même place qu'à l'écran et dans le CSV (voir `pnlRows`).
       dataRow('Payroll', summary.payroll || emptyMonths());
       if (ratioById.payroll) ratioDataRow(ratioById.payroll);
+      // Effectif juste sous Payroll et son ratio, comme à l'écran.
+      if (activity) activityRow('Effectif (ETP)', activity.headcount, activity.headcountYear, XLSX_STYLE.decimal);
       dataRow('Operational expenses', summary.foodBeverage.other);
       ratioDataRow(ratioById['other-fnb']);
       continue;
@@ -27884,7 +27927,10 @@ const XLSX_STYLE = {
   mxColCa: 32,
   mxDisabled: 33,
   mxText: 34,
-  mxHeading: 35
+  mxHeading: 35,
+  // Nombre à deux décimales (ticket moyen, effectif en ETP) : ni un
+  // montant arrondi à l'euro, ni un pourcentage.
+  decimal: 36
 };
 
 function stylesXml() {
@@ -27934,7 +27980,7 @@ function stylesXml() {
     '<top style="thin"><color rgb="FF808080"/></top><bottom style="double"><color rgb="FF000000"/></bottom><diagonal/></border>' + /* 4 matrice : total, double trait bas */
     '</borders>' +
     '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
-    '<cellXfs count="36">' +
+    '<cellXfs count="37">' +
     '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +                                                        /* 0 normal */
     '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +                                         /* 1 titre */
     '<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +                                         /* 2 sous-titre */
@@ -27971,6 +28017,7 @@ function stylesXml() {
     '<xf numFmtId="0" fontId="5" fillId="9" borderId="2" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>' + /* 33 jour inexistant */
     '<xf numFmtId="0" fontId="5" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>' + /* 34 texte */
     '<xf numFmtId="0" fontId="6" fillId="6" borderId="0" xfId="0" applyFont="1" applyFill="1"/>' + /* 35 intertitre */
+    '<xf numFmtId="4" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>' + /* 36 décimal (#,##0.00) */
     '</cellXfs>' +
     '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>' +
     '</styleSheet>';
@@ -32176,7 +32223,7 @@ function handleExport(kind, companiesOverride) {
     // P&L SYNTHESE, puis H&R, A&G, Mat erial…), pas un unique tableau plat.
     const sheets = [
       Object.assign({ name: sheetName('Synthèse') }, styledPnlSheet(exportPnlSummary(selectedLines),
-        'Palm Beach Cannes · Compte de résultat — ' + selectionLabel, generatedOn))
+        'Palm Beach Cannes · Compte de résultat — ' + selectionLabel, generatedOn, pnlActivityOf(selected)))
     ];
     const produitLines = selectedLines.filter(function (l) {
       const account = resolveAccountForLine(l);
