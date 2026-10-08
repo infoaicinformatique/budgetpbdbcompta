@@ -3498,7 +3498,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-08.21';
+const APP_BUILD = '2026-10-08.22';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -21118,8 +21118,14 @@ function restaurantPositionRank(role) {
  * calcul (brut, charges, provision CP…), au même titre que le poste — un
  * champ à part entière pourra s'en servir plus tard si besoin (ex. exonérer
  * les stages de charges patronales), mais ce n'est pas demandé ici.
+ *
+ * « Extra » n'y figure plus depuis le 08/10/2026 (Alexis : « comme il y a
+ * un onglet spécialement pour les extras, peut-être retirer les extras de
+ * la liste déroulante des types de contrats ») : un extra se budgète dans
+ * la rubrique Extras, à la journée. Une fiche déjà enregistrée en « Extra »
+ * garde ce type — voir `employeeEditorHtml`.
  */
-const CONTRACT_TYPES = ['CDI', 'CDD', 'CDD Saisonnier', 'Alternance', 'Stage', 'Intérim', 'Extra'];
+const CONTRACT_TYPES = ['CDI', 'CDD', 'CDD Saisonnier', 'Alternance', 'Stage', 'Intérim'];
 const PAYROLL_DEFAULT_CONTRACT_TYPE = 'CDI';
 
 /* ---------------- Taux figés par les CDG (par société) ----------------- */
@@ -22209,8 +22215,16 @@ function employeeEditorHtml() {
         c.code + '. ' + escapeHtml(c.label) + '</option>';
     }).join('');
   const contractType = employee.contractType || PAYROLL_DEFAULT_CONTRACT_TYPE;
-  const contractTypeOptions = CONTRACT_TYPES.map(function (t) {
-    return '<option value="' + t + '"' + (contractType === t ? ' selected' : '') + '>' + t + '</option>';
+  // Un type sorti de la liste (« Extra », retiré le 08/10/2026) reste
+  // proposé pour la fiche qui le porte, et seulement pour elle : sans cela,
+  // le menu afficherait « CDI » et un simple « Enregistrer » changerait le
+  // contrat en silence.
+  const contractTypeChoices = CONTRACT_TYPES.indexOf(contractType) >= 0
+    ? CONTRACT_TYPES
+    : CONTRACT_TYPES.concat([contractType]);
+  const contractTypeOptions = contractTypeChoices.map(function (t) {
+    return '<option value="' + escapeHtml(t) + '"' + (contractType === t ? ' selected' : '') + '>' +
+      escapeHtml(t) + '</option>';
   }).join('');
   // Saisie principale = NET (Alexis : « remplacer le brut par le net »).
   // Le brut stocké reste la source de vérité pour la masse salariale ; on

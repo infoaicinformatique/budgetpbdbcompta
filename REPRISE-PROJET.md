@@ -77,6 +77,28 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Payroll : « Extra » retiré des types de contrat (08/10/2026)
+
+Demande : « Comme il y a un onglet spécialement pour les extras, peut-être
+retirer les extras de la liste déroulante des types de contrats. »
+
+- `CONTRACT_TYPES` : CDI, CDD, CDD Saisonnier, Alternance, Stage, Intérim —
+  plus « Extra » : un extra se budgète dans la rubrique Extras, à la
+  journée, pas comme un collaborateur au mois.
+- Fiche collaborateur déjà enregistrée en « Extra » : le menu lui propose
+  encore ce type, présélectionné, et à elle seule. Sans cela, le menu
+  affichait CDI et un simple « Enregistrer » changeait le contrat en
+  silence. Aucune donnée n'est migrée (le type est purement informatif).
+- Livré avec l'entrée suivante (repli du calcul des extras), restée hors de
+  la PR #45 : celle-ci avait été fusionnée avant que le commit n'y arrive.
+
+`APP_BUILD` : `2026-10-08.22`.
+
+Contrôle : le contrôle du type de contrat vérifie la liste sans « Extra »,
+son absence du menu d'une fiche vierge, et son maintien présélectionné sur
+une fiche « Extra » existante. Vérifié en échec avec l'ancienne liste et
+sans le maintien.
+
 ### Payroll › Extras : masquer le calcul, comme pour les autres postes (08/10/2026)
 
 Demande : « Dans le Payroll, sur l'onglet Extras, s'il est possible de
@@ -24504,17 +24526,20 @@ await checkAsync('Autorisations : périmètre centre de coûts — Saisie et Pay
   }
 });
 
-check('Payroll : type de contrat (CDI par défaut, liste couvrant CDD/alternance/stage/intérim/extra)', () => {
+check('Payroll : type de contrat (CDI par défaut, liste couvrant CDD/alternance/stage/intérim, sans extra)', () => {
   const savedTab = app.__getTab();
   const saved = {
     lines: app.state.lines.slice(), companies: app.state.companies.slice(),
     active: app.state.activeCompany, employees: (app.state.employees || []).slice(),
   };
   try {
+    // « Extra » retiré le 08/10/2026 (Alexis : « comme il y a un onglet
+    // spécialement pour les extras, peut-être retirer les extras de la liste
+    // déroulante des types de contrats »).
     assert.deepEqual(app.CONTRACT_TYPES,
-      ['CDI', 'CDD', 'CDD Saisonnier', 'Alternance', 'Stage', 'Intérim', 'Extra'],
+      ['CDI', 'CDD', 'CDD Saisonnier', 'Alternance', 'Stage', 'Intérim'],
       'la liste doit couvrir les principaux contrats de la restauration, ' +
-      '« CDD Saisonnier » compris (demandé en réunion supérieurs)');
+      '« CDD Saisonnier » compris (demandé en réunion supérieurs), sans « Extra » (rubrique Extras)');
     assert.equal(app.PAYROLL_DEFAULT_CONTRACT_TYPE, 'CDI', 'CDI est le contrat par défaut');
 
     const { company } = payrollFixture();
@@ -24528,6 +24553,20 @@ check('Payroll : type de contrat (CDI par défaut, liste couvrant CDD/alternance
     app.CONTRACT_TYPES.forEach(function (t) {
       assert.ok(newHtml.includes('<option value="' + t + '"'), 'le type ' + t + ' doit figurer dans le menu');
     });
+    assert.ok(!newHtml.includes('<option value="Extra"'),
+      '« Extra » ne doit plus être proposé : les extras ont leur propre rubrique');
+    app.closeEmployeeEditor();
+
+    // Une fiche déjà enregistrée en « Extra » le garde : le menu le
+    // présélectionne pour elle, au lieu d'afficher CDI et de changer le
+    // contrat au prochain « Enregistrer ».
+    const legacyExtra = Object.assign(app.newEmployee(company.id), { name: 'Ancien extra', contractType: 'Extra' });
+    app.state.employees = [legacyExtra];
+    app.resetStateIndexes();
+    app.openEmployeeEditor(legacyExtra.id);
+    const legacyExtraHtml = app.viewPayroll();
+    assert.ok(legacyExtraHtml.includes('<option value="Extra" selected>'),
+      'une fiche « Extra » existante doit garder son type, présélectionné');
     app.closeEmployeeEditor();
 
     // Enregistrer avec un type autre que le défaut doit le conserver.
