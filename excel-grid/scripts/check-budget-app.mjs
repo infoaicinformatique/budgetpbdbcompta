@@ -18166,6 +18166,13 @@ await checkAsync('Accueil : chacun range ses sociétés dans l’ordre qu’il v
     app.moveCompanyInUserOrder(app.welcomeCompanyIdsShown(), 'multi_a', 'multi_b');
     assert.deepEqual(order(app.welcomeCompanyCardsHtml()), ['multi_c', 'multi_b', 'multi_a']);
 
+    // Même ordre dans la recherche rapide (Ctrl+K), seule autre liste de
+    // sociétés ouverte depuis n'importe quel écran : sans recherche, elle
+    // n'en montre que cinq, autant que ce soient les premières de la personne.
+    const paletteCompanies = app.commandPaletteResults('').filter((r) => r.kind === 'company').map((r) => r.id);
+    assert.deepEqual(paletteCompanies.filter((id) => id.startsWith('multi_')), ['multi_c', 'multi_b', 'multi_a'],
+      'la palette suit l’ordre choisi sur l’accueil');
+
     // Un autre compte garde son propre ordre : rien de partagé.
     const mine = app.userPreferencesKey();
     app.state.userPreferences = { [mine]: { companyOrder: ['multi_b'] }, autre_compte: { companyOrder: ['multi_c', 'multi_a', 'multi_b'] } };

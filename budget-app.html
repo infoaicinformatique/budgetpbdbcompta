@@ -3489,7 +3489,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-08.7';
+const APP_BUILD = '2026-10-08.8';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -15002,7 +15002,10 @@ function commandPaletteResults(query) {
     return !needle || String(text || '').toLowerCase().indexOf(needle) >= 0;
   };
   const companies = [];
-  for (const company of visibleCompanies()) {
+  // Dans l'ordre que la personne a choisi sur l'accueil (08/10/2026) : sans
+  // recherche, la palette n'en montre que cinq — ce sont alors ses cinq
+  // premières, pas les cinq premières créées.
+  for (const company of sortCompaniesByUserOrder(visibleCompanies())) {
     if (!matches(company.name + ' ' + company.year)) continue;
     companies.push({
       kind: 'company', id: company.id,

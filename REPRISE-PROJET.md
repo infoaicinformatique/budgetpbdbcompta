@@ -77,6 +77,26 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Ordre des sociétés : aussi dans la recherche rapide (Ctrl+K) (08/10/2026)
+
+Demande : « applique aussi l'ordre des sociétés à la barre du haut ».
+
+Constat : la barre du haut n'a **pas de liste de sociétés** — son bouton
+(environnement — société) rouvre l'accueil, dont les cartes suivent déjà
+l'ordre choisi depuis l'entrée précédente. Le récapitulatif de cette entrée
+parlait à tort d'une « liste des sociétés de la barre du haut ». La seule
+autre liste de sociétés qu'on ouvre de n'importe où est la recherche rapide
+(Ctrl+K, `commandPaletteResults`), qui suivait l'ordre de création ; sans
+recherche, elle n'en montre que cinq. Elle trie désormais par
+`sortCompaniesByUserOrder` : les cinq affichées sont les cinq premières de
+la personne.
+
+`APP_BUILD` : `2026-10-08.8`.
+
+Contrôle : dans le test de l'ordre des sociétés de l'accueil, la palette
+doit rendre les sociétés dans l'ordre choisi (vérifié : échoue si l'on
+retire le tri).
+
 ### Paramètres › Préférences d'affichage : taille du texte, densité, animations et seize palettes, par personne (08/10/2026)
 
 Demandes : « une partie dans les préférences qui gère les paramètres visuels
@@ -29607,6 +29627,13 @@ await checkAsync('Accueil : chacun range ses sociétés dans l’ordre qu’il v
     // Vers la droite : A déposé sur B passe derrière B.
     app.moveCompanyInUserOrder(app.welcomeCompanyIdsShown(), 'multi_a', 'multi_b');
     assert.deepEqual(order(app.welcomeCompanyCardsHtml()), ['multi_c', 'multi_b', 'multi_a']);
+
+    // Même ordre dans la recherche rapide (Ctrl+K), seule autre liste de
+    // sociétés ouverte depuis n'importe quel écran : sans recherche, elle
+    // n'en montre que cinq, autant que ce soient les premières de la personne.
+    const paletteCompanies = app.commandPaletteResults('').filter((r) => r.kind === 'company').map((r) => r.id);
+    assert.deepEqual(paletteCompanies.filter((id) => id.startsWith('multi_')), ['multi_c', 'multi_b', 'multi_a'],
+      'la palette suit l’ordre choisi sur l’accueil');
 
     // Un autre compte garde son propre ordre : rien de partagé.
     const mine = app.userPreferencesKey();
