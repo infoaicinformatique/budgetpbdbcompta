@@ -3429,7 +3429,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-08.2';
+const APP_BUILD = '2026-10-08.3';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -8489,6 +8489,23 @@ function canEditLineStructure() {
   return !directorModeActive();
 }
 
+/**
+ * Peut-on créer une ligne de charge vide (« + ajouter une ligne ») sur un
+ * centre de coûts ? Demande du 08/10/2026 : « il faut que les directeurs
+ * puissent ajouter des lignes de charges tout comme les contrôleurs de
+ * gestion », dans les centres dont ils ont la modification. Seul l'AJOUT
+ * d'une ligne saisie à la main s'ouvre : supprimer, déplacer, dupliquer,
+ * détacher et créer une ligne calculée (multiplicateur, poste) restent au
+ * contrôle de gestion (`canEditLineStructure`).
+ */
+function canAddLineInCenter(centerId) {
+  if (canEditLineStructure()) return true;
+  if (budgetHandHeldByOther() || !directorModeActive()) return false;
+  // Un directeur n'ajoute que dans un vrai centre de son périmètre : jamais
+  // sur un compte sans centre (à classer) ni sur les produits.
+  return Boolean(centerId) && centerId !== 'PRODUITS' && isCenterAllowed(currentUser(), centerId);
+}
+
 /** Centres de coûts visibles pour la personne connectée, dans l'ordre de `COST_CENTERS`. */
 function visibleCostCenters() {
   if (!authEnabled()) return COST_CENTERS;
@@ -12687,7 +12704,9 @@ function viewSaisie() {
   //    seule, montants compris) ;
   //  - la personne peut-elle créer ou supprimer une charge (voir
   //    `canEditLineStructure`) — non pour un directeur, y compris sur son
-  //    propre centre, où il reste libre de remplir les montants.
+  //    propre centre, où il reste libre de remplir les montants. Seule
+  //    exception (08/10/2026) : « + ajouter une ligne », ouvert au
+  //    directeur sur ses centres (`canAddLineInCenter`).
   // Deux raisons de ne pas pouvoir écrire dans un centre : il est hors de
   // votre périmètre, ou quelqu'un d'autre a la main sur ce budget. Le
   // rendu est le même (`readonly` sur les douze cases, actions masquées) —
@@ -12696,6 +12715,7 @@ function viewSaisie() {
     || (currentCenter !== 'PRODUITS' && !isCenterAllowed(saisieUser, currentCenter));
   const canStructure = canEditLineStructure();
   const canAddHere = canStructure && !centerReadOnly;
+  const canAddLineHere = !centerReadOnly && canAddLineInCenter(currentCenter);
 
   const companyAccounts = accountsForPlan(company.planId);
   const accounts = currentCenter === 'PRODUITS' ? revenueAccounts(companyAccounts) : accountsOfCenter(currentCenter, companyAccounts);
@@ -12726,7 +12746,8 @@ function viewSaisie() {
           // « + ajouter ici », sans avoir à viser le bouton.
           // Sans droit de création, la ligne de résultat reste un simple
           // repère de recherche : ni double-clic, ni bouton d'ajout.
-          return '<tr' + (canStructure ? ' data-dblclick-add-line="' + account.account +
+          const canAddResult = canAddLineInCenter(account.center);
+          return '<tr' + (canAddResult ? ' data-dblclick-add-line="' + account.account +
             '" title="Double-clic : ajouter une ligne sur ce compte"' : '') + '>' +
             '<td style="width:100px">' + account.account + '</td>' +
             '<td>' + escapeHtml(account.label) + '</td>' +
@@ -12734,7 +12755,7 @@ function viewSaisie() {
               ? '<span class="badge">' + center.code + '. ' + escapeHtml(center.label) + '</span>'
               : (account.kind === 'produit' ? '<span class="badge">Produits</span>'
                                             : '<span class="badge">à classer</span>')) + '</td>' +
-            '<td style="width:150px">' + (canStructure
+            '<td style="width:150px">' + (canAddResult
               ? '<button class="action" data-add-line="' + account.account + '">+ ajouter ici</button>'
               : '<span class="muted">lecture seule</span>') + '</td></tr>';
         }).join('') + '</tbody></table>'
@@ -12762,13 +12783,16 @@ function viewSaisie() {
       (currentCenter === 'PRODUITS'
         ? '<span class="muted" style="font-size:12px">Le CA se renseigne désormais jour par jour — ' +
           '<button class="mini" data-goto-ca-tab="1">ouvrir l’onglet CA</button></span>'
-        // Créer une charge (ligne vide, multiplicateur, poste salarial) :
-        // réservé à qui a le droit de structure, et jamais sur un centre
-        // hors périmètre. « ajuster » reste, lui, une modification de
-        // montants — donc ouvert au directeur sur ses propres centres.
-        : (canAddHere
-            ? '<button class="mini mini-primary" data-add-line="' + account.account + '">+ ajouter une ligne</button>' +
-              '<button class="mini" data-open-ratelink-modal="' + account.account +
+        // Créer une charge : la ligne vide est ouverte au directeur sur ses
+        // centres (`canAddLineInCenter`) ; multiplicateur et poste salarial
+        // restent à qui a le droit de structure. Jamais sur un centre hors
+        // périmètre. « ajuster » reste, lui, une modification de montants —
+        // donc ouvert au directeur sur ses propres centres.
+        : (canAddLineHere
+            ? '<button class="mini mini-primary" data-add-line="' + account.account + '">+ ajouter une ligne</button>'
+            : '') +
+          (canAddHere
+            ? '<button class="mini" data-open-ratelink-modal="' + account.account +
               '" title="Calculer automatiquement un montant chaque mois, en multipliant un autre compte">+ multiplicateur</button>' +
               (isPayrollAccount(account.account)
                 ? '<button class="mini" data-open-payroll-modal="' + account.account +
@@ -12802,7 +12826,7 @@ function viewSaisie() {
 
     if (!accountLines.length) {
       rows += '<tr><td class="sticky-col muted">—</td><td colspan="' + (MONTHS + 2) + '" class="muted">' +
-        (canAddHere
+        (canAddLineHere
           ? 'Aucune ligne pour l’instant. Un montant global sur le compte est interdit : créez une ligne nommée.'
           : 'Aucune ligne sur ce compte.') + '</td></tr>';
       continue;
@@ -28212,9 +28236,11 @@ function addLine(accountNumber) {
   // Garde-fou au point d'écriture, pas seulement à l'affichage : les boutons
   // d'ajout disparaissent déjà pour un directeur (voir `viewSaisie`), mais
   // un double-clic sur un résultat de recherche, une commande de la palette
-  // ou l'assistant ne doivent pas les contourner.
-  if (!canEditLineStructure()) return null;
+  // ou l'assistant ne doivent pas les contourner. Un directeur ajoute
+  // seulement dans ses centres (`canAddLineInCenter`).
   const account = findAccount(accountNumber, accountIndexForPlan(activeCompany().planId));
+  // Un directeur n'ajoute que sur un compte d'un centre de son périmètre.
+  if (!canEditLineStructure() && !(account && canAddLineInCenter(account.center))) return null;
   const line = {
     id: uid('lig'),
     companyId: activeCompany().id,

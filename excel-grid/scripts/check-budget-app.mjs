@@ -502,7 +502,7 @@ const app = await importApp(
     '  clearSignInAttempts, randomBytes, randomHex, exportedPayloadIsEncrypted };\n' +
     'export { setUserScope, allowedCompanyIds, allowedCostCenterIds, isCompanyAllowed,\n' +
     '  visibleCompanies, enforceCompanyPermission, rawLinesOf,\n' +
-    '  isCenterAllowed, visibleCostCenters, canEditLineStructure, canEditCaVentilation,\n' +
+    '  isCenterAllowed, visibleCostCenters, canEditLineStructure, canAddLineInCenter, canEditCaVentilation,\n' +
     '  scopeCenterRowsHtml, applyRoleDefaultCentersToEditor, DIRECTEUR_DEFAULT_COST_CENTERS,\n' +
     '  companyIdsInSuperGroupRaw, companyIdsInEnvironments, userEnvironmentIds, environmentById,\n' +
     '  availableEnvironments, canSeeAllEnvironments, activeEnvironmentId, setActiveEnvironment,\n' +
@@ -12076,8 +12076,10 @@ await checkAsync('Autorisations : périmètre centre de coûts — Saisie et Pay
     assert.ok(!rendered.includes('data-bulk-center='),
       'pas d’ajustement en masse sur un centre hors périmètre');
 
-    // Son propre centre (F&B) : les montants redeviennent saisissables,
-    // mais créer ou supprimer une charge reste interdit à un directeur.
+    // Son propre centre (F&B) : les montants redeviennent saisissables, et
+    // depuis le 08/10/2026 il peut AJOUTER une ligne saisie à la main ; le
+    // reste de la structure (supprimer, dupliquer, ligne calculée) lui reste
+    // fermé.
     app.__setCenter('F&B');
     app.render();
     rendered = document.getElementById('view').innerHTML;
@@ -12085,8 +12087,8 @@ await checkAsync('Autorisations : périmètre centre de coûts — Saisie et Pay
     assert.ok(rendered.includes('Achat F&amp;B'), 'la ligne du centre autorisé reste visible');
     assert.ok(!rendered.includes('Centre hors périmètre — lecture seule'),
       'les montants du centre autorisé restent saisissables');
-    assert.ok(!rendered.includes('data-add-line='),
-      'un directeur ne crée pas de ligne, même sur son propre centre');
+    assert.ok(rendered.includes('data-add-line="60101100">+ ajouter une ligne<'),
+      'un directeur doit pouvoir ajouter une ligne sur son propre centre (08/10/2026)');
     assert.ok(!rendered.includes('data-open-ratelink-modal='),
       'un directeur ne crée pas de ligne calculée (multiplicateur)');
     assert.ok(!rendered.includes('data-delete='),
@@ -12096,13 +12098,21 @@ await checkAsync('Autorisations : périmètre centre de coûts — Saisie et Pay
     assert.ok(rendered.includes('data-bulk-account=') || rendered.includes('data-bulk-center='),
       'ajuster des MONTANTS reste permis sur son propre centre');
     assert.equal(app.canEditLineStructure(), false, 'un directeur n’a pas la main sur la structure');
+    assert.equal(app.canAddLineInCenter('F&B'), true, 'mais il ajoute des lignes dans son centre');
+    assert.equal(app.canAddLineInCenter('AG'), false, 'jamais dans un centre hors périmètre');
+    assert.equal(app.canAddLineInCenter(null), false, 'ni sur un compte sans centre');
 
     // Garde-fou au point d'écriture : même appelées directement, les
-    // fonctions de structure refusent.
+    // fonctions de structure refusent — sauf l'ajout dans son centre.
     const beforeCount = app.state.lines.length;
-    assert.equal(app.addLine('60101100'), null, 'addLine() doit refuser pour un directeur');
+    assert.equal(app.addLine('60610700'), null, 'addLine() doit refuser un compte hors périmètre (AG)');
     assert.equal(app.duplicateLine('centerui_l1'), null, 'duplicateLine() doit refuser pour un directeur');
     assert.equal(app.state.lines.length, beforeCount, 'aucune ligne créée malgré les appels directs');
+    const added = app.addLine('60101100');
+    assert.ok(added && added.account === '60101100', 'addLine() crée la ligne dans son propre centre');
+    assert.equal(app.state.lines.length, beforeCount + 1, 'exactement une ligne créée');
+    app.state.lines = app.state.lines.filter((l) => l !== added);
+    app.__setCenter('F&B');
 
     // P&L, depuis le 20/08/2026 (Alexis : « ils ont quand même une visu sur
     // les autres centres de coûts sans pouvoir les remplir ») : la ligne

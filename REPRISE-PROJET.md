@@ -77,6 +77,45 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Les directeurs peuvent ajouter des lignes de charges dans leurs centres (08/10/2026)
+
+Demande : « Il faut que les directeurs puissent ajouter des lignes de charges
+tout comme les contrôleurs de gestion, actuellement ils ne peuvent que
+modifier les charges déjà existantes. […] le bouton ajouter une ligne doit
+également être présent dans l'onglet saisie des directeurs dans les centres de
+coûts dont ils ont le droit de modification. »
+
+Depuis le 18/09/2026, `canEditLineStructure()` fermait toute la structure du
+budget au directeur, ajout compris. Une nouvelle règle, `canAddLineInCenter(centre)`,
+ouvre **le seul ajout d'une ligne saisie à la main** :
+
+- vrai pour qui a déjà la structure (contrôle de gestion) ;
+- pour un directeur : vrai seulement sur un centre de coûts de son périmètre
+  (`isCenterAllowed`), jamais sur un compte sans centre ni sur les produits,
+  et jamais quand quelqu'un d'autre a la main sur le budget.
+
+Dans la Saisie, « + ajouter une ligne » réapparaît pour le directeur sur ses
+centres (avec le message « créez une ligne nommée » des comptes vides), ainsi
+que « + ajouter ici » et le double-clic dans les résultats de recherche de
+compte. `addLine()` applique la même règle au point d'écriture (palette,
+Entrée dans la recherche, double-clic) : un compte hors périmètre est refusé.
+
+Ce qui **ne change pas** : supprimer, déplacer, dupliquer, détacher une ligne,
+créer un multiplicateur ou un poste salarial restent au contrôle de gestion ;
+l'import de budget ne crée toujours pas de ligne pour un directeur
+(`skipped-structure`) — il met à jour les lignes existantes de son périmètre.
+Conséquence à connaître : une ligne ajoutée par erreur par un directeur ne
+peut être supprimée que par le contrôle de gestion.
+
+`APP_BUILD` : `2026-10-08.3`.
+
+Contrôles (`check-budget-app.mjs`, test du directeur à périmètre F&B, 545
+contrôles au total) : le bouton « + ajouter une ligne » doit figurer sur son
+centre et rester absent du centre hors périmètre ; `canAddLineInCenter` vrai
+sur F&B, faux sur AG et sans centre ; `addLine()` refuse un compte AG et crée
+la ligne sur un compte F&B ; multiplicateur, suppression et duplication
+restent absents.
+
 ### Les six changements du 07–08/10/2026 ont été livrés ensemble
 
 Les six entrées qui suivent ont d'abord été préparées en six branches
