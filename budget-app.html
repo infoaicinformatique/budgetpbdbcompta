@@ -3489,7 +3489,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-08.9';
+const APP_BUILD = '2026-10-08.10';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -12867,7 +12867,8 @@ function companiesInGroupFilter(filter) {
  * réellement à choisir. Porte le nom de l'environnement et, s'il diffère
  * d'une simple formalité (plusieurs sociétés dedans), celui de la société
  * active — ce qui le rend aussi utile en simple rappel de « où je suis ».
- * Masqué seulement quand il n'y a strictement rien à choisir.
+ * Masqué seulement quand aucune société n'est ouverte (depuis le
+ * 08/10/2026 ; avant : dès qu'il n'y avait rien à choisir).
  */
 function renderEnvironmentButton() {
   const button = document.getElementById('environment-button');
@@ -12878,8 +12879,15 @@ function renderEnvironmentButton() {
   const showAll = canSeeAllEnvironments(user);
   const hasEnvironmentChoice = available.length + (showAll ? 1 : 0) >= 2;
   const hasCompanyChoice = pickableCompanies().length >= 2;
-  button.hidden = !hasEnvironmentChoice && !hasCompanyChoice;
+  // Affiché dès qu'une société est ouverte, même sans rien à choisir
+  // (08/10/2026 : « affiche aussi le bouton du haut quand il n'y a qu'une
+  // société ») : il sert alors de rappel « où je suis », et son clic ouvre
+  // l'accueil (rappel des chiffres). Masqué seulement sans aucune société.
+  button.hidden = !activeCompany() && !hasEnvironmentChoice && !hasCompanyChoice;
   if (button.hidden) return;
+  button.title = hasEnvironmentChoice || hasCompanyChoice
+    ? 'Revenir à l’écran d’accueil pour changer d’environnement ou de société'
+    : 'Environnement et société affichés — aucun autre choix ouvert à votre compte';
 
   const environment = environmentById(activeEnvironmentId());
   // Toujours « Environnement — Société », même quand la société est seule
