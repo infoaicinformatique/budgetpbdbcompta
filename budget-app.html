@@ -3498,7 +3498,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-08.15';
+const APP_BUILD = '2026-10-08.16';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -3854,6 +3854,14 @@ function summarize(lines, resolveAccount) {
       value: ratio(total(byCenter[center.id]), totalRevenue)
     });
   }
+  // Ratios des trois lignes de résultat, sur le CA total comme les ratios
+  // de centre — Alexis, 08/10/2026 : « il manque le ratio sur le total
+  // Expenses, le GOP et l'EBITDA ». Affichés sous leur ligne, en bas du P&L.
+  ratioRows.push(
+    { id: 'charges', label: 'Total Expenses Ratio', months: ratioMonths(charges, produits), value: ratio(total(charges), totalRevenue) },
+    { id: 'gop', label: 'GOP Ratio', months: ratioMonths(gop, produits), value: ratio(total(gop), totalRevenue) },
+    { id: 'ebitda', label: 'EBITDA Ratio', months: ratioMonths(ebitda, produits), value: ratio(total(ebitda), totalRevenue) }
+  );
 
   return {
     produits: produits, charges: charges, chargesGop: chargesGop, otherTaxes: otherTaxes,
@@ -14154,11 +14162,16 @@ function pnlTable(summary, title, isolateFilter, drillCompanies, compare, fullsc
     body += ratioRow(ratioById[center.id], centerReadOnly);
   }
   body += row('Total Expenses', summary.charges, 'total', 'charges');
+  // Chaque ligne de résultat est suivie de son ratio sur le CA, comme les
+  // centres de coûts (Alexis, 08/10/2026).
+  body += ratioRow(ratioById.charges);
   // GOP et EBITDA sont les deux résultats de la cascade, pas des sommes
   // intermédiaires comme Revenue ou Total Expenses : ils prennent le cran
   // de lecture supérieur (voir `tr.grand-total`).
   body += row('GOP', summary.gop, 'total grand-total', 'gop');
+  body += ratioRow(ratioById.gop);
   body += row('EBITDA', summary.ebitda, 'total grand-total', 'ebitda');
+  body += ratioRow(ratioById.ebitda);
 
   // Ratios définis par l'utilisateur, groupés en bas : ils traversent
   // souvent plusieurs rubriques, les glisser au milieu du P&L brouillerait
@@ -25852,8 +25865,11 @@ function pnlRows(summary, label) {
     pushRatio(ratioById[center.id]);
   }
   push('Total Expenses', summary.charges);
+  pushRatio(ratioById.charges);
   push('GOP', summary.gop);
+  pushRatio(ratioById.gop);
   push('EBITDA', summary.ebitda);
+  pushRatio(ratioById.ebitda);
   rows.push([]);
   rows.push(['Gross Margin', percent(summary.ratios.grossMargin)]);
   // Ratios définis par l'utilisateur : à la suite, comme à l'écran.
@@ -25928,8 +25944,11 @@ function styledPnlSheet(summary, title, subtitle) {
     ratioDataRow(ratioById[center.id]);
   }
   dataRow('Total Expenses', summary.charges, 'total');
+  ratioDataRow(ratioById.charges);
   dataRow('GOP', summary.gop, 'total');
+  ratioDataRow(ratioById.gop);
   dataRow('EBITDA', summary.ebitda, 'total');
+  ratioDataRow(ratioById.ebitda);
 
   rows.push([]);
   rows.push([xc('Gross Margin', XLSX_STYLE.labelBold), xc(summary.ratios.grossMargin, XLSX_STYLE.percent)]);

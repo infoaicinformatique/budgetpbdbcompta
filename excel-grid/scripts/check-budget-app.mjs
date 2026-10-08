@@ -6089,7 +6089,9 @@ check('Food et Bev sont isolés des autres charges F&B, avec un ratio par poste'
   // centre restant (8 autres centres — jamais le centre F&B lui-même,
   // remplacé par les trois premiers), plus le ratio charges opérationnelles
   // hors F&B.
-  assert.equal(summary.ratioRows.length, 3 + ts.COST_CENTERS.length - 1 + 1, 'nombre de lignes de ratio inattendu');
+  // Plus les trois lignes de résultat (Total Expenses, GOP, EBITDA) depuis
+  // le 08/10/2026.
+  assert.equal(summary.ratioRows.length, 3 + ts.COST_CENTERS.length - 1 + 1 + 3, 'nombre de lignes de ratio inattendu');
   assert.equal(summary.ratioRows[0].id, 'food');
   assert.equal(summary.ratioRows[1].id, 'beverage');
   assert.ok(summary.ratioRows.some((r) => r.id === 'payroll'), 'la ligne de ratio Payroll est absente');
@@ -6151,6 +6153,64 @@ check('Food et Bev sont isolés des autres charges F&B, avec un ratio par poste'
   const foodRatioIdx = csv.findIndex((row) => row[0] === 'Food Cost Ratio');
   assert.ok(foodIdx >= 0 && foodRatioIdx === foodIdx + 1, 'le ratio Food Cost devrait suivre immédiatement la ligne Food Cost dans le CSV');
   assert.ok(!csv.some((row) => row[0] === 'Ratios'), 'l’ancien bloc « Ratios » à part ne devrait plus exister dans le CSV');
+});
+
+check('P&L : ratio sur le CA de Total Expenses, du GOP et de l’EBITDA, chacun sous sa ligne', () => {
+  // Alexis, 08/10/2026 : « Dans l’onglet P&L il manque le ratio sur le
+  // total Expenses, le GOP et l’EBITDA ».
+  const company = app.state.companies.find((c) => c.name === 'Palm Beach Test');
+  const lines = app.state.lines.filter((l) => l.companyId === company.id);
+  const summary = ts.summarize(lines);
+  const revenue = ts.total(summary.produits);
+  assert.ok(revenue > 0, 'la société de test doit avoir du CA');
+  const expected = { charges: ['Total Expenses Ratio', summary.charges], gop: ['GOP Ratio', summary.gop], ebitda: ['EBITDA Ratio', summary.ebitda] };
+  for (const [id, [label, months]] of Object.entries(expected)) {
+    const line = summary.ratioRows.find((r) => r.id === id);
+    assert.ok(line, `ratio ${label} absent du moteur`);
+    assert.equal(line.label, label);
+    assert.ok(Math.abs(line.value - ts.total(months) / revenue) < 1e-9, `${label} faux sur l’année`);
+    for (let m = 0; m < 12; m++) {
+      const want = summary.produits[m] === 0 ? null : months[m] / summary.produits[m];
+      if (want === null) assert.equal(line.months[m], null, `${label} au mois ${m} : pas de CA, pas de ratio`);
+      else assert.ok(Math.abs(line.months[m] - want) < 1e-9, `${label} faux au mois ${m}`);
+    }
+  }
+
+  // À l'écran : chaque ratio suit sa ligne, dans l'ordre de la cascade.
+  const savedActive = app.state.activeCompany;
+  const savedTab = app.__getTab();
+  app.state.activeCompany = company.id;
+  app.__setTab('pnl');
+  app.render();
+  const html = document.getElementById('view').innerHTML;
+  app.state.activeCompany = savedActive;
+  app.__setTab(savedTab);
+  app.render();
+  const tableStart = html.indexOf('<table');
+  const at = (text, from) => html.indexOf(text, from);
+  const totalIdx = at('>Total Expenses<', tableStart);
+  const totalRatioIdx = at('Total Expenses Ratio', totalIdx);
+  const gopIdx = at('>GOP<', totalIdx);
+  const gopRatioIdx = at('GOP Ratio', gopIdx);
+  const ebitdaIdx = at('>EBITDA<', gopIdx);
+  const ebitdaRatioIdx = at('EBITDA Ratio', ebitdaIdx);
+  assert.ok(totalIdx >= 0 && totalRatioIdx > totalIdx && totalRatioIdx < gopIdx,
+    'le ratio Total Expenses doit suivre sa ligne, avant le GOP');
+  assert.ok(gopRatioIdx > gopIdx && gopRatioIdx < ebitdaIdx, 'le ratio GOP doit suivre sa ligne, avant l’EBITDA');
+  assert.ok(ebitdaRatioIdx > ebitdaIdx, 'le ratio EBITDA doit suivre sa ligne');
+
+  // CSV et Excel : même place, juste sous chaque ligne.
+  const csv = app.pnlRows(summary, 'Test');
+  for (const [name, ratioName] of [['Total Expenses', 'Total Expenses Ratio'], ['GOP', 'GOP Ratio'], ['EBITDA', 'EBITDA Ratio']]) {
+    const idx = csv.findIndex((row) => row[0] === name);
+    assert.ok(idx >= 0 && csv[idx + 1][0] === ratioName, `${ratioName} doit suivre ${name} dans le CSV`);
+  }
+  const sheet = app.styledPnlSheet(summary, 'Test', '');
+  const labels = sheet.rows.map((r) => r && r[0] && (r[0].v !== undefined ? r[0].v : r[0]));
+  for (const [name, ratioName] of [['Total Expenses', 'Total Expenses Ratio'], ['GOP', 'GOP Ratio'], ['EBITDA', 'EBITDA Ratio']]) {
+    const idx = labels.indexOf(name);
+    assert.ok(idx >= 0 && labels[idx + 1] === ratioName, `${ratioName} doit suivre ${name} dans l’Excel`);
+  }
 });
 
 check('le chiffre d’affaires se ventile en Food/Bev/Autres, et le ratio « Operational expenses » est celui de sa propre ligne', () => {
