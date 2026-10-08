@@ -77,6 +77,24 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Accueil : pastille « EN COURS » en blanc sous une palette personnelle (08/10/2026)
+
+Demande : « mets la pastille « EN COURS » en blanc ».
+
+Avec une teinte par environnement, la carte en cours peut prendre la couleur
+d'accent de la palette — celle de la pastille dorée (`--gold`), qui s'y
+fondait (vu en « Vert comptable » sur la deuxième carte). Sous une palette
+personnelle (`html[data-palette]` autre que `charte`), la pastille passe en
+blanc, texte sombre et légère ombre : elle se détache de toute teinte. La
+charte garde l'or (dessin d'Alexis), et la carte claire « Tous les
+environnements » aussi (du blanc sur blanc ne se verrait pas).
+
+`APP_BUILD` : `2026-10-08.12`.
+
+Vérifié dans Chromium : pastille blanche sur la carte couleur d'accent en
+« Vert comptable », dorée avec la charte. Contrôle : la règle CSS doit
+exister, bornée aux palettes personnelles et aux cartes colorées.
+
 ### Palettes : une teinte distincte par environnement (08/10/2026)
 
 Demande : « garde une couleur distincte par environnement avec les
@@ -29867,6 +29885,14 @@ await checkAsync('Paramètres › Préférences d’affichage : propres à chaqu
     assert.deepEqual(app.normalizeUserPreferencesMap({ a: { display: { textSize: 'x', motion: 'reduites' } }, b: 3, c: [] }),
       { a: { companyOrder: [], display: { textSize: 'normal', density: 'normale', motion: 'reduites', palette: 'charte' } } });
     assert.deepEqual(app.normalizeUserPreferencesMap('n’importe quoi'), {});
+
+    // Pastille « EN COURS » en blanc sous une palette personnelle, sauf sur
+    // la carte claire « Tous les environnements » ; la charte garde l'or.
+    {
+      const cssText = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
+      assert.ok(/html\[data-palette\]:not\(\[data-palette="charte"\]\) \.welcome-env-card\.current:not\(\.all-environments-card\)::after \{[^}]*background: #fff/.test(cssText),
+        'la pastille « EN COURS » doit passer en blanc sous une palette personnelle');
+    }
 
     // La feuille de style porte bien les trois réglages.
     const css = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));

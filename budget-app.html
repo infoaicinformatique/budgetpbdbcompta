@@ -2635,6 +2635,15 @@
     border-color: var(--gold);
     box-shadow: 0 0 0 3px rgba(184,150,63,.55), 0 14px 30px rgba(0,0,0,.22);
   }
+  /* Pastille « EN COURS » sous une palette personnelle (08/10/2026) : la
+     carte peut prendre la couleur d'accent de la palette (teinte distincte
+     par environnement), la même que la pastille dorée, qui s'y fondait. En
+     blanc, elle se détache de toute teinte de carte. La charte garde l'or,
+     et la carte claire « Tous les environnements » aussi (du blanc sur
+     blanc ne se verrait pas). */
+  html[data-palette]:not([data-palette="charte"]) .welcome-env-card.current:not(.all-environments-card)::after {
+    background: #fff; color: var(--text); box-shadow: 0 1px 4px rgba(0,0,0,.28);
+  }
   /* Rangement des cartes de sociétés (glisser-déposer, 08/10/2026) : la
      carte saisie s'estompe, celle qui recevra le dépôt s'entoure d'un trait
      pointillé. */
@@ -3489,7 +3498,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-08.11';
+const APP_BUILD = '2026-10-08.12';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },

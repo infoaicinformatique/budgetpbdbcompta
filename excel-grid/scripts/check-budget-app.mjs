@@ -18324,6 +18324,14 @@ await checkAsync('Paramètres › Préférences d’affichage : propres à chaqu
       { a: { companyOrder: [], display: { textSize: 'normal', density: 'normale', motion: 'reduites', palette: 'charte' } } });
     assert.deepEqual(app.normalizeUserPreferencesMap('n’importe quoi'), {});
 
+    // Pastille « EN COURS » en blanc sous une palette personnelle, sauf sur
+    // la carte claire « Tous les environnements » ; la charte garde l'or.
+    {
+      const cssText = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
+      assert.ok(/html\[data-palette\]:not\(\[data-palette="charte"\]\) \.welcome-env-card\.current:not\(\.all-environments-card\)::after \{[^}]*background: #fff/.test(cssText),
+        'la pastille « EN COURS » doit passer en blanc sous une palette personnelle');
+    }
+
     // La feuille de style porte bien les trois réglages.
     const css = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
     assert.ok(/html\[data-text-size="grand"\] \{[^}]*--text-base:/.test(css), 'la taille du texte agit sur l’échelle typographique');
