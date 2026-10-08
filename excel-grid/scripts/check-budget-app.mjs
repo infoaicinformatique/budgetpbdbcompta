@@ -7574,6 +7574,29 @@ check('en-tête : ni liste de sociétés ni filtre de groupe — le changement p
     assert.strictEqual(button.hidden, false, 'deux environnements : le bouton reste visible');
     assert.ok(button.innerHTML.includes('Nammos — Nammos'),
       'la société seule de son environnement doit être nommée : « Nammos — Nammos » (lu : « ' + button.innerHTML + ' »)');
+
+    // Un seul environnement, une seule société : rien à choisir, mais le
+    // bouton reste affiché en rappel (08/10/2026), avec une info-bulle
+    // qui ne promet pas de choix.
+    app.state.superGroups = [{ id: 'solo_env', name: 'Nammos', period: '2027' }];
+    app.state.groups = [{ id: 'solo_grp', name: 'Nammos', period: '2027', superGroupId: 'solo_env' }];
+    app.state.companies = [{ id: 'solo_co', name: 'Nammos', currency: 'EUR', year: 2027, groupId: 'solo_grp' }];
+    app.resetStateIndexes();
+    app.render();
+    assert.strictEqual(button.hidden, false, 'une seule société : le bouton reste affiché');
+    assert.ok(button.innerHTML.includes('Nammos — Nammos'), 'avec le même libellé');
+
+    // Strictement rien à choisir (aucun environnement, une société) :
+    // avant, le bouton disparaissait ; il reste, sans promettre de choix.
+    app.state.superGroups = [];
+    app.state.groups = [];
+    app.state.companies = [{ id: 'solo_co', name: 'Nammos', currency: 'EUR', year: 2027, groupId: null }];
+    app.state.activeEnvironmentId = null;
+    app.resetStateIndexes();
+    app.render();
+    assert.strictEqual(button.hidden, false, 'rien à choisir : le bouton reste affiché en rappel');
+    assert.ok(button.innerHTML.includes('Nammos'), 'il nomme la société ouverte');
+    assert.ok(/aucun autre choix/.test(button.title), 'son info-bulle ne promet pas de choix');
   } finally {
     app.state.superGroups = savedSuperGroups;
     app.state.activeEnvironmentId = savedEnvironment;

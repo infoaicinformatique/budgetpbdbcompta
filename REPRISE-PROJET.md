@@ -77,6 +77,25 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### En-tête : le bouton reste affiché même quand il n'y a qu'une société (08/10/2026)
+
+Demande : « affiche aussi le bouton du haut quand il n'y a qu'une société ».
+
+Le bouton « Environnement — Société » de l'en-tête était masqué dès qu'il n'y
+avait rien à choisir (un seul environnement possible, une seule société) —
+règle d'Alexis du temps où il servait surtout à changer de contexte. Il est
+désormais affiché dès qu'une société est ouverte : il sert de rappel « où je
+suis ». Sans choix possible, son info-bulle le dit (« aucun autre choix
+ouvert à votre compte ») et son clic ouvre l'accueil, qui montre alors le
+rappel des chiffres et se ferme d'un clic. Masqué seulement sans aucune
+société ouverte.
+
+`APP_BUILD` : `2026-10-08.10`.
+
+Contrôle : aucun environnement et une seule société — le bouton doit être
+visible, nommer la société et ne pas promettre de choix (vérifié : échoue
+avec l'ancienne règle).
+
 ### En-tête : « Environnement — Société » même quand la société est seule (08/10/2026)
 
 Demande : « si dans l'environnement il n'y a qu'une entité, il est important
@@ -19057,6 +19076,29 @@ check('en-tête : ni liste de sociétés ni filtre de groupe — le changement p
     assert.strictEqual(button.hidden, false, 'deux environnements : le bouton reste visible');
     assert.ok(button.innerHTML.includes('Nammos — Nammos'),
       'la société seule de son environnement doit être nommée : « Nammos — Nammos » (lu : « ' + button.innerHTML + ' »)');
+
+    // Un seul environnement, une seule société : rien à choisir, mais le
+    // bouton reste affiché en rappel (08/10/2026), avec une info-bulle
+    // qui ne promet pas de choix.
+    app.state.superGroups = [{ id: 'solo_env', name: 'Nammos', period: '2027' }];
+    app.state.groups = [{ id: 'solo_grp', name: 'Nammos', period: '2027', superGroupId: 'solo_env' }];
+    app.state.companies = [{ id: 'solo_co', name: 'Nammos', currency: 'EUR', year: 2027, groupId: 'solo_grp' }];
+    app.resetStateIndexes();
+    app.render();
+    assert.strictEqual(button.hidden, false, 'une seule société : le bouton reste affiché');
+    assert.ok(button.innerHTML.includes('Nammos — Nammos'), 'avec le même libellé');
+
+    // Strictement rien à choisir (aucun environnement, une société) :
+    // avant, le bouton disparaissait ; il reste, sans promettre de choix.
+    app.state.superGroups = [];
+    app.state.groups = [];
+    app.state.companies = [{ id: 'solo_co', name: 'Nammos', currency: 'EUR', year: 2027, groupId: null }];
+    app.state.activeEnvironmentId = null;
+    app.resetStateIndexes();
+    app.render();
+    assert.strictEqual(button.hidden, false, 'rien à choisir : le bouton reste affiché en rappel');
+    assert.ok(button.innerHTML.includes('Nammos'), 'il nomme la société ouverte');
+    assert.ok(/aucun autre choix/.test(button.title), 'son info-bulle ne promet pas de choix');
   } finally {
     app.state.superGroups = savedSuperGroups;
     app.state.activeEnvironmentId = savedEnvironment;
