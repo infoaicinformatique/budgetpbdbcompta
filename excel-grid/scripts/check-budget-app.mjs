@@ -9601,6 +9601,62 @@ check('Payroll : le calcul d’un extra se masque, comme celui d’un collaborat
   }
 });
 
+check('Payroll : les extras retombent dans la matrice de la masse salariale', () => {
+  // Alexis, 08/10/2026 : « et faire retomber les extras dans la Matrice de
+  // la masse salariale ».
+  const saved = {
+    lines: app.state.lines.slice(), companies: app.state.companies.slice(),
+    active: app.state.activeCompany, employees: (app.state.employees || []).slice(),
+    extras: (app.state.payrollExtras || []).slice(),
+  };
+  try {
+    const { company } = payrollFixture();
+    app.state.payrollExtras = [];
+    app.resetStateIndexes();
+    const extra = app.addPayrollExtra();
+    app.setPayrollExtraName(extra.id, 'Extra salle');
+    app.setPayrollExtraMonth(extra.id, 'days', 0, '6');
+    app.setPayrollExtraMonth(extra.id, 'dailyGross', 0, '100');
+    const extraMonths = app.payrollExtraMonths(app.payrollExtraById(extra.id));
+    assert.ok(extraMonths.employerCost[0] > 600, 'janvier : 600 € de brut plus les charges patronales');
+
+    const matrix = app.payrollMatrix(company.id);
+    const html = app.payrollMatrixPanel(company, matrix);
+    // Une ligne nommée pour l'extra, sous les collaborateurs.
+    assert.ok(html.includes('>Extra salle<'), 'l’extra doit avoir sa ligne dans la matrice');
+    assert.ok(html.indexOf('>Marie Dupont<') < html.indexOf('>Extra salle<'), 'les extras suivent les collaborateurs');
+    assert.ok(html.includes('Extra · '), 'la ligne dit que c’est un extra, et son centre');
+    // Le coût employeur total de janvier comprend l'extra.
+    const janCost = matrix.totals.employerCost[0] + extraMonths.employerCost[0];
+    const costRow = html.slice(html.indexOf('Coût employeur</strong>'));
+    assert.ok(costRow.includes('<strong>' + app.money(janCost) + '</strong>'),
+      'le total « Coût employeur » de janvier doit comprendre l’extra');
+    // L'effectif ne compte pas les extras, et le dit.
+    assert.ok(html.includes('Effectif (ETP) — hors extras'), 'l’effectif est hors extras, et l’affiche');
+
+    // Détail déplié : brut payé et charges patronales comprennent l'extra.
+    app.togglePayrollMatrixDetail();
+    const detail = app.payrollMatrixPanel(company, matrix);
+    app.togglePayrollMatrixDetail();
+    const janGross = matrix.totals.paidGross[0] + extraMonths.gross[0];
+    const grossRow = detail.slice(detail.indexOf('>Brut payé<'), detail.indexOf('</tr>', detail.indexOf('>Brut payé<')));
+    assert.ok(grossRow.includes(app.money(janGross)), 'le brut payé de janvier doit comprendre l’extra');
+    assert.ok(detail.includes('Net versé (hors extras)'), 'le net, calculé sans les extras, le dit');
+
+    // Sans collaborateur, la matrice s'affiche quand même pour les extras.
+    app.state.employees = [];
+    app.resetStateIndexes();
+    const onlyExtras = app.payrollMatrixPanel(company, app.payrollMatrix(company.id));
+    assert.ok(onlyExtras.includes('>Extra salle<'), 'une société sans collaborateur mais avec des extras a sa matrice');
+  } finally {
+    app.state.lines = saved.lines; app.state.companies = saved.companies;
+    app.state.activeCompany = saved.active; app.state.employees = saved.employees;
+    app.state.payrollExtras = saved.extras;
+    app.resetStateIndexes();
+    app.render();
+  }
+});
+
 check('Payroll : les extras suivent leur société — migration, duplication, suppression', () => {
   // Une donnée rattachée à une société doit être déclarée partout : sinon
   // elle survit à sa suppression, ne suit pas une duplication, ou part au

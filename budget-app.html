@@ -3498,7 +3498,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-08.22';
+const APP_BUILD = '2026-10-08.23';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -22801,11 +22801,24 @@ function payrollExtrasPanel(company) {
 }
 
 function payrollMatrixPanel(company, matrix) {
-  if (!matrix.rows.length) return '';
   // Même périmètre que le panneau Équipe : un collaborateur hors centres
   // autorisés ne doit pas apparaître nommément dans cette matrice non plus.
   const scopedRows = payrollVisibleRows(matrix);
-  if (!scopedRows.length) return '';
+  // Les extras retombent dans la matrice — Alexis, 08/10/2026 : « et faire
+  // retomber les extras dans la Matrice de la masse salariale ». Une ligne
+  // par extra visible (même filtre que la rubrique Extras), et leur coût
+  // dans les totaux : ils partent sur les mêmes 6411/6451 que les
+  // salaires, la matrice dit donc la même masse salariale que le bandeau
+  // « Coût employeur année » et que la ligne Payroll du P&L.
+  const user = authEnabled() ? currentUser() : null;
+  const scopedExtras = payrollExtrasOf(company.id)
+    .filter(function (extra) { return isCenterAllowed(user, extra.center); });
+  if (!scopedRows.length && !scopedExtras.length) return '';
+  // Totaux sur toutes les lignes, comme `matrix.totals` pour les
+  // collaborateurs (et comme le bandeau du haut de l'onglet).
+  const extraTotals = payrollExtraTotals(company.id);
+  const hasExtras = extraTotals.employerCost.some(function (v) { return v; }) || scopedExtras.length > 0;
+  const plus = function (a, b) { return a.map(function (v, i) { return v + b[i]; }); };
 
   const headerMonths = MONTH_LABELS.map(function (label) {
     return '<th class="num">' + label + '</th>';
@@ -22820,6 +22833,19 @@ function payrollMatrixPanel(company, matrix) {
           (m.employerCost ? money(m.employerCost) : '<span class="muted">—</span>') + '</td>';
       }).join('') +
       '<td class="num"><strong>' + money(row.yearCost) + '</strong></td></tr>';
+  }).join('') + scopedExtras.map(function (extra) {
+    // Un extra : son coût employeur (brut + charges patronales) mois par
+    // mois, comme un collaborateur. Le détail jour par jour reste dans la
+    // rubrique Extras.
+    const months = payrollExtraMonths(extra);
+    const yearCost = months.employerCost.reduce(function (sum, v) { return sum + v; }, 0);
+    return '<tr class="payroll-matrix-extra">' +
+      '<td class="sticky-col"><strong>' + escapeHtml(payrollExtraLabel(extra)) + '</strong>' +
+      '<div class="muted" style="font-size:12px">Extra · ' + escapeHtml(costCenter(extra.center).label) + '</div></td>' +
+      months.employerCost.map(function (v) {
+        return '<td class="num">' + (v ? money(v) : '<span class="muted">—</span>') + '</td>';
+      }).join('') +
+      '<td class="num"><strong>' + money(yearCost) + '</strong></td></tr>';
   }).join('');
 
   const totalRow = function (label, values, strong) {
@@ -22854,27 +22880,34 @@ function payrollMatrixPanel(company, matrix) {
   // provision CP (compte 6412) « juste en dessous du brut payé », puis les
   // charges de CP sur les primes « APRÈS le brut payé, AVANT les charges
   // patronales », et seulement ensuite les charges patronales.
+  // Brut payé, charges patronales et coût employeur comprennent les
+  // extras. Pas les charges salariales ni le net : un extra se budgète en
+  // brut journalier, sans charges salariales calculées — ces deux lignes
+  // le disent plutôt que de laisser croire à un net complet. Ni les congés
+  // payés (pas de CP sur un extra), ni l'effectif (un ETP se compte en
+  // contrats, pas en journées — même règle que le bandeau du haut).
   const detailRows = payrollMatrixDetailOpen
-    ? totalRow('Brut payé', matrix.totals.paidGross) +
+    ? totalRow('Brut payé', plus(matrix.totals.paidGross, extraTotals.gross)) +
       totalRow('Congés payés (6412)', matrix.totals.leaveProvision) +
-      totalRow('Charges patronales', matrix.totals.employerCharges)
+      totalRow('Charges patronales', plus(matrix.totals.employerCharges, extraTotals.employerCharges))
     : '';
   const detailRowsAfter = payrollMatrixDetailOpen
-    ? totalRow('Charges salariales', matrix.totals.employeeCharges) +
-      totalRow('Net versé', matrix.totals.netBeforeTax)
+    ? totalRow('Charges salariales' + (hasExtras ? ' (hors extras)' : ''), matrix.totals.employeeCharges) +
+      totalRow('Net versé' + (hasExtras ? ' (hors extras)' : ''), matrix.totals.netBeforeTax)
     : '';
 
   return panel('payroll-matrice', 'Matrice de la masse salariale',
     '<p class="muted" style="margin:0 0 10px;font-size:13px">' +
-    'Coût employeur par collaborateur et par mois. ' +
-    '« Voir le calcul » dans l’Équipe déplie la décomposition complète d’un collaborateur.</p>' +
+    'Coût employeur par collaborateur et par mois' + (scopedExtras.length ? ', extras compris' : '') + '. ' +
+    '« Voir le calcul » dans l’Équipe déplie la décomposition complète d’un collaborateur' +
+    (scopedExtras.length ? ', la rubrique Extras celle d’un extra' : '') + '.</p>' +
     '<div class="table-wrap"><table><thead><tr>' +
     '<th class="sticky-col" style="width:' + colWidths.payrollCollaborateur + 'px">Collaborateur' +
     '<span class="col-resizer" data-col="payrollCollaborateur"></span></th>' + headerMonths + '<th class="num">Année</th>' +
     '</tr></thead><tbody>' + rows +
     detailRows +
-    totalRow('Coût employeur', matrix.totals.employerCost, true) +
-    headcountRow('Effectif (ETP)', matrix.totals.headcount) +
+    totalRow('Coût employeur', plus(matrix.totals.employerCost, extraTotals.employerCost), true) +
+    headcountRow('Effectif (ETP)' + (hasExtras ? ' — hors extras' : ''), matrix.totals.headcount) +
     detailRowsAfter +
     '</tbody></table></div>' +
     '<button class="mini" data-toggle-payroll-matrix-detail="1" style="margin-top:8px">' +

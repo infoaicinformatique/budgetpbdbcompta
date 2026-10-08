@@ -77,6 +77,35 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Payroll : les extras retombent dans la matrice de la masse salariale (08/10/2026)
+
+Demande : « Et faire retomber les extras dans la Matrice de la masse
+salariale. »
+
+- `payrollMatrixPanel` : une ligne par extra visible (même filtre de
+  centres que la rubrique Extras), sous les collaborateurs — son nom,
+  « Extra · centre », son coût employeur (brut + charges patronales) mois
+  par mois et sur l'année.
+- Totaux : « Coût employeur », et dans le détail « Brut payé » et
+  « Charges patronales », comprennent les extras (`payrollExtraTotals`) —
+  la matrice dit la même masse salariale que le bandeau « Coût employeur
+  année » et que la ligne Payroll du P&L. Ne les comprennent pas, et le
+  disent : « Charges salariales (hors extras) », « Net versé (hors
+  extras) » (un extra se budgète en brut journalier, sans charges
+  salariales calculées) et « Effectif (ETP) — hors extras » (même règle
+  que le bandeau). Congés payés inchangés (pas de CP sur un extra).
+- La matrice s'affiche aussi pour une société qui n'a que des extras.
+- Affichage seulement : `payrollMatrix` et les écritures 6411/6451 ne
+  changent pas.
+
+`APP_BUILD` : `2026-10-08.23`.
+
+Contrôle : « Payroll : les extras retombent dans la matrice » — ligne
+nommée après les collaborateurs, coût employeur et brut de janvier
+comprenant l'extra, mentions « hors extras », matrice sans collaborateur.
+Vérifié en échec sur la version précédente ; rendu vérifié dans Chromium
+(600 € + 252 € = 852 €).
+
 ### Payroll : « Extra » retiré des types de contrat (08/10/2026)
 
 Demande : « Comme il y a un onglet spécialement pour les extras, peut-être
@@ -21425,6 +21454,62 @@ check('Payroll : le calcul d’un extra se masque, comme celui d’un collaborat
     app.togglePayrollExtraDetail(extra.id);
     assert.ok(app.payrollExtrasPanel(company).includes('data-extra-input="dailyGross|' + extra.id + '|0"'),
       'voir le calcul rouvre les cases');
+  } finally {
+    app.state.lines = saved.lines; app.state.companies = saved.companies;
+    app.state.activeCompany = saved.active; app.state.employees = saved.employees;
+    app.state.payrollExtras = saved.extras;
+    app.resetStateIndexes();
+    app.render();
+  }
+});
+
+check('Payroll : les extras retombent dans la matrice de la masse salariale', () => {
+  // Alexis, 08/10/2026 : « et faire retomber les extras dans la Matrice de
+  // la masse salariale ».
+  const saved = {
+    lines: app.state.lines.slice(), companies: app.state.companies.slice(),
+    active: app.state.activeCompany, employees: (app.state.employees || []).slice(),
+    extras: (app.state.payrollExtras || []).slice(),
+  };
+  try {
+    const { company } = payrollFixture();
+    app.state.payrollExtras = [];
+    app.resetStateIndexes();
+    const extra = app.addPayrollExtra();
+    app.setPayrollExtraName(extra.id, 'Extra salle');
+    app.setPayrollExtraMonth(extra.id, 'days', 0, '6');
+    app.setPayrollExtraMonth(extra.id, 'dailyGross', 0, '100');
+    const extraMonths = app.payrollExtraMonths(app.payrollExtraById(extra.id));
+    assert.ok(extraMonths.employerCost[0] > 600, 'janvier : 600 € de brut plus les charges patronales');
+
+    const matrix = app.payrollMatrix(company.id);
+    const html = app.payrollMatrixPanel(company, matrix);
+    // Une ligne nommée pour l'extra, sous les collaborateurs.
+    assert.ok(html.includes('>Extra salle<'), 'l’extra doit avoir sa ligne dans la matrice');
+    assert.ok(html.indexOf('>Marie Dupont<') < html.indexOf('>Extra salle<'), 'les extras suivent les collaborateurs');
+    assert.ok(html.includes('Extra · '), 'la ligne dit que c’est un extra, et son centre');
+    // Le coût employeur total de janvier comprend l'extra.
+    const janCost = matrix.totals.employerCost[0] + extraMonths.employerCost[0];
+    const costRow = html.slice(html.indexOf('Coût employeur</strong>'));
+    assert.ok(costRow.includes('<strong>' + app.money(janCost) + '</strong>'),
+      'le total « Coût employeur » de janvier doit comprendre l’extra');
+    // L'effectif ne compte pas les extras, et le dit.
+    assert.ok(html.includes('Effectif (ETP) — hors extras'), 'l’effectif est hors extras, et l’affiche');
+
+    // Détail déplié : brut payé et charges patronales comprennent l'extra.
+    app.togglePayrollMatrixDetail();
+    const detail = app.payrollMatrixPanel(company, matrix);
+    app.togglePayrollMatrixDetail();
+    const janGross = matrix.totals.paidGross[0] + extraMonths.gross[0];
+    const grossRow = detail.slice(detail.indexOf('>Brut payé<'), detail.indexOf('</tr>', detail.indexOf('>Brut payé<')));
+    assert.ok(grossRow.includes(app.money(janGross)), 'le brut payé de janvier doit comprendre l’extra');
+    assert.ok(detail.includes('Net versé (hors extras)'), 'le net, calculé sans les extras, le dit');
+
+    // Sans collaborateur, la matrice s'affiche quand même pour les extras.
+    app.state.employees = [];
+    app.resetStateIndexes();
+    const onlyExtras = app.payrollMatrixPanel(company, app.payrollMatrix(company.id));
+    assert.ok(onlyExtras.includes('>Extra salle<'), 'une société sans collaborateur mais avec des extras a sa matrice');
   } finally {
     app.state.lines = saved.lines; app.state.companies = saved.companies;
     app.state.activeCompany = saved.active; app.state.employees = saved.employees;
