@@ -3498,7 +3498,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-08.17';
+const APP_BUILD = '2026-10-08.18';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -5882,10 +5882,21 @@ function summarizeForDisplay(lines) {
  */
 function withEventRevenueSplit(summary, lines) {
   const companyIds = Array.from(new Set((lines || []).map(function (l) { return l.companyId; }).filter(Boolean)));
-  const eventMonths = emptyMonths();
+  // `summary.byAccount` additionne déjà toutes les sociétés : un compte
+  // classé Event dans deux sociétés ne se lit qu'une fois, sinon son CA
+  // serait compté deux fois dans Event Revenue (et retiré deux fois
+  // d'Other Revenue) dès qu'on exporte ou consolide plusieurs sociétés.
+  const eventAccounts = new Set();
   for (const companyId of companyIds) {
-    const perCompany = eventRevenueMonths(companyId, summary);
-    for (let m = 0; m < MONTHS; m++) eventMonths[m] += perCompany[m];
+    for (const caLine of caLinesOf(companyId)) {
+      if (caCategoryOf(caLine) === 'event') eventAccounts.add(caLine.account);
+    }
+  }
+  const eventMonths = emptyMonths();
+  for (const account of eventAccounts) {
+    const series = summary.byAccount[account];
+    if (!series) continue;
+    for (let m = 0; m < MONTHS; m++) eventMonths[m] += Number(series[m]) || 0;
   }
   summary.revenueSplit = {
     food: summary.revenueSplit.food,
@@ -5894,18 +5905,6 @@ function withEventRevenueSplit(summary, lines) {
     other: summary.revenueSplit.other.map(function (v, i) { return v - eventMonths[i]; }),
   };
   return summary;
-}
-
-/** CA des comptes classés « Event » d'une société (voir `caCategoryOf`), lu dans les montants déjà agrégés par compte de `summary`. */
-function eventRevenueMonths(companyId, summary) {
-  const months = emptyMonths();
-  for (const caLine of caLinesOf(companyId)) {
-    if (caCategoryOf(caLine) !== 'event') continue;
-    const series = summary.byAccount[caLine.account];
-    if (!series) continue;
-    for (let m = 0; m < MONTHS; m++) months[m] += Number(series[m]) || 0;
-  }
-  return months;
 }
 
 /** Barre de choix du scénario, à côté de « Comparer avec ». */
@@ -32129,6 +32128,18 @@ function sheetName(name) {
   return (cleaned || 'Feuille').slice(0, 31);
 }
 
+/**
+ * Synthèse P&L des exports (CSV et Excel) : le CA Event y est isolé sur sa
+ * ligne « Event Revenue » et retiré d'« Other Revenue », exactement comme
+ * dans l'onglet P&L (`withEventRevenueSplit`). Sans cela, l'export
+ * laissait Event Revenue à 0 et le CA Event dans Other Revenue — deux
+ * lignes différentes de l'écran, pour un même total Revenue (Alexis,
+ * 08/10/2026).
+ */
+function exportPnlSummary(lines) {
+  return withEventRevenueSplit(summarize(lines, resolveAccountForLine), lines);
+}
+
 function handleExport(kind, companiesOverride) {
   // `companiesOverride` : export d'UNE société depuis sa ligne dans l'onglet
   // Sociétés (04/10/2026), sans toucher à la sélection de l'onglet Export —
@@ -32158,13 +32169,13 @@ function handleExport(kind, companiesOverride) {
         'Palm Beach Cannes · Détail budgétaire — ' + selectionLabel, generatedOn, exportColumns))
     ]);
   } else if (kind === 'pnl-csv') {
-    exportCsv('pnl_' + safeName + '_' + stamp + '.csv', pnlRows(summarize(selectedLines, resolveAccountForLine), selectionLabel));
+    exportCsv('pnl_' + safeName + '_' + stamp + '.csv', pnlRows(exportPnlSummary(selectedLines), selectionLabel));
   } else if (kind === 'pnl-xlsx') {
     // Une page de synthèse, puis une page par centre de coût (Produits
     // d'abord) — même plan que le classeur budgétaire du groupe (BUDGET EMA :
     // P&L SYNTHESE, puis H&R, A&G, Mat erial…), pas un unique tableau plat.
     const sheets = [
-      Object.assign({ name: sheetName('Synthèse') }, styledPnlSheet(summarize(selectedLines, resolveAccountForLine),
+      Object.assign({ name: sheetName('Synthèse') }, styledPnlSheet(exportPnlSummary(selectedLines),
         'Palm Beach Cannes · Compte de résultat — ' + selectionLabel, generatedOn))
     ];
     const produitLines = selectedLines.filter(function (l) {
