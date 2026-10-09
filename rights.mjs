@@ -7,7 +7,7 @@
  * Une fiche par identifiant canonique (voir `ldapAuthenticateEntry`) :
  *
  *   { role, isAdmin, permissions, allowedCompanies, allowedCostCenters,
- *     environmentIds, groupIds?, roleId?, updatedAt, updatedBy }
+ *     environmentIds, groupIds?, viewableCostCenters?, roleId?, updatedAt, updatedBy }
  *
  * Les champs ont la forme de ceux d'un compte de l'application
  * (`createUser` dans budget-app.html), pour que ses contrôles d'accès
@@ -148,6 +148,10 @@ export function sanitizeRights(input) {
   // d'une fiche qui n'en a pas, pour que les fiches existantes gardent leur forme.
   const groupIds = idList(input.groupIds, 'Groupes de sociétés') || [];
   if (groupIds.length) rights.groupIds = groupIds;
+  // Centres de coûts visibles (09/10/2026) : absent = tous visibles ; une
+  // liste, même vide, borne ce que la personne voit (vide : aucune charge).
+  const viewable = idList(input.viewableCostCenters, 'Centres de coûts visibles');
+  if (viewable) rights.viewableCostCenters = viewable;
   return rights;
 }
 

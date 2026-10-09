@@ -77,6 +77,56 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Centres de coûts visibles par personne, en plus des centres modifiables (09/10/2026)
+
+Demande : « En plus de sélectionner les centres de coûts modifiables,
+pouvoir sélectionner par utilisateur les centres de coûts visibles ; si
+aucun centre de coûts coché, aucune vue sur le contenu. »
+
+- **Fiche de droits** : nouveau champ `viewableCostCenters`. Absent (ou
+  `null`) : tous les centres sont visibles, comme avant. Liste, **même
+  vide** : seuls ces centres le sont — vide, aucune charge n'est visible.
+  `rights.mjs` le garde seulement quand il est renseigné (forme des fiches
+  existantes inchangée) ; `serverRightsPayload` aussi.
+- **Filtre** : `linesScopedToCostCenters`, point de passage de `linesOf`
+  vidé le 23/09/2026 et gardé « si une restriction de visibilité redevenait
+  nécessaire », est réactivé pour les seuls centres **visibles** (les
+  centres modifiables restent visibles, règle du 23/09 inchangée). Une ligne
+  reste si son compte est un produit (le CA n'a pas de centre) ou si son
+  centre est coché ; une charge sans centre ou un compte inconnu disparaît
+  sous restriction. Sans restriction, `linesOf` rend le tableau d'origine
+  (aucune copie). Tout ce qui passe par `linesOf` suit : totaux, GOP,
+  EBITDA, consolidation, exports, vue Directeur.
+- La **Saisie** et le **P&L d'une société** lisaient `rawLinesOf` exprès
+  (« visu complète », 18/09) : ils passent par `linesOf`. La barre des
+  centres de la Saisie omet les centres cachés (un centre caché affiché
+  retombe sur les Produits) ; `pnlTable` omet leurs rubriques.
+- `isCenterAllowed` : un centre non visible n'est jamais modifiable, quoi
+  que dise la liste des centres modifiables — ce qui retire aussi du
+  Payroll les équipes et extras de ces centres, de l'import et de la
+  recherche de comptes.
+- **Seul l'affichage est filtré** : `state.lines` reste entier, donc un
+  enregistrement par une personne restreinte ne supprime jamais les lignes
+  qu'elle ne voit pas. Comme les droits par onglet, cette restriction
+  s'applique dans l'application ; le serveur filtre toujours par société
+  (`scopeOf`), pas par centre.
+- **Écran** (Paramètres › Droits d'accès › Périmètre) : bascule « Choisir
+  les centres de coûts visibles » au-dessus de « Choisir les centres de
+  coûts modifiables » ; à la première activation tout est coché, on décoche
+  ce qu'on veut cacher. « Tout ouvrir » lève aussi cette restriction.
+
+`APP_BUILD` : `2026-10-09.3`.
+
+Contrôles : `check-budget-app.mjs` « Centres de coûts visibles par
+personne » (tableau d'origine sans restriction, F&B seul → CA + F&B, état
+intact, centre caché non modifiable, barre de la Saisie et retour aux
+Produits, liste vide → CA seul, rubrique cochée, enregistrement et « Tout
+ouvrir » branchés, Saisie et P&L via `linesOf`) ; le contrôle des groupes
+accepte la nouvelle signature de `setUserScope`. `test/rights.test.mjs` :
+forme de `viewableCostCenters` (liste vide gardée) — 61 tests serveur.
+Parcours vérifié dans Chromium : F&B seul coché, fiche enregistrée avec
+`viewableCostCenters: ["F&B"]`.
+
 ### Périmètre : choisir des groupes de sociétés, pas seulement des environnements (09/10/2026)
 
 Demande : « Au niveau des accès aux périmètres, on souhaiterait aussi
@@ -12540,6 +12590,8 @@ const app = await importApp(
     '  roleDraftError, saveRoleEditor, deleteCustomRole, roleRightsSummary, viewParametresServeur };\n' +
     // Groupes de sociétés dans le périmètre (09/10/2026).
     'export { userGroupIds, companyIdsInGroups, userScopeEnvironmentIds, scopeGroupRowsHtml };\n' +
+    // Centres de coûts visibles (09/10/2026).
+    'export { viewableCostCenterIds, isCenterViewable };\n' +
     'export function __setRoleEditor(v) { roleEditor = v; }\n' +
     'export function __getRoleEditor() { return roleEditor; }\n' +
     'export function __getServerRoles() { return serverRoles; }\n' +
@@ -30419,6 +30471,68 @@ function restoreEnvironmentFixture(saved) {
   app.signOut();
 }
 
+check('Centres de coûts visibles par personne : non cochés = aucune vue (09/10/2026)', () => {
+  // Alexis : « en plus de sélectionner les centres de coûts modifiables,
+  // pouvoir sélectionner par utilisateur les centres de coûts visibles ; si
+  // aucun centre de coûts coché, aucune vue sur le contenu ».
+  const savedTab = app.__getTab();
+  const savedCenter = app.__getCenter();
+  const companyId = app.state.activeCompany || app.state.companies[0].id;
+  const centerOf = (line) => { const a = app.resolveAccountForLine(line); return a ? (a.kind === 'produit' ? 'PRODUITS' : a.center || '') : '?'; };
+  const raw = app.rawLinesOf(companyId);
+  const centers = new Set(raw.map(centerOf));
+  const rights = (o) => Object.assign({ role: 'controleur', isAdmin: false, permissions: null,
+    allowedCompanies: null, allowedCostCenters: null, environmentIds: [] }, o);
+  try {
+    assert.ok(centers.has('PRODUITS') && centers.has('F&B') && [...centers].filter((c) => c && c !== 'PRODUITS').length > 1,
+      'la société de test doit porter des produits et plusieurs centres');
+
+    // Sans restriction : le même tableau, sans copie ni filtre.
+    app.adoptServerSession({ method: 'ldap', account: 'u', rights: rights({}) }, null);
+    assert.strictEqual(app.linesOf(companyId), raw, 'sans restriction, linesOf rend le tableau d’origine');
+    assert.ok(!('viewableCostCenters' in app.serverRightsPayload(app.currentUser())), 'fiche de forme inchangée');
+
+    // F&B seul : produits + F&B, rien d'autre ; l'état n'est pas touché.
+    app.adoptServerSession({ method: 'ldap', account: 'u', rights: rights({ viewableCostCenters: ['F&B'] }) }, null);
+    const me = app.currentUser();
+    const seen = new Set(app.linesOf(companyId).map(centerOf));
+    assert.deepEqual([...seen].sort(), ['F&B', 'PRODUITS'], 'seuls le CA et le centre coché restent');
+    assert.equal(app.rawLinesOf(companyId).length, raw.length, 'les lignes cachées restent dans l’état (rien n’est supprimé à l’enregistrement)');
+    assert.equal(app.isCenterViewable(me, 'AG'), false);
+    assert.equal(app.isCenterAllowed(me, 'AG'), false, 'un centre non visible n’est jamais modifiable');
+    assert.equal(app.isCenterAllowed(me, 'F&B'), true);
+    assert.deepEqual(app.serverRightsPayload(me).viewableCostCenters, ['F&B'], 'la restriction repart au serveur');
+
+    // Saisie : l'onglet du centre caché disparaît ; un centre caché affiché retombe sur les Produits.
+    app.__setTab('saisie');
+    app.__setCenter('AG');
+    app.render();
+    const saisie = document.getElementById('view').innerHTML;
+    assert.ok(saisie.includes('data-center="F&amp;B"') || saisie.includes('data-center="F&B"'), 'le centre visible reste dans la barre');
+    assert.ok(!saisie.includes('data-center="AG"'), 'le centre caché n’est pas dans la barre');
+    assert.equal(app.__getCenter(), 'PRODUITS', 'le centre caché affiché retombe sur les Produits');
+
+    // Aucun centre coché : aucune charge, seul le CA.
+    app.adoptServerSession({ method: 'ldap', account: 'u', rights: rights({ viewableCostCenters: [] }) }, null);
+    assert.deepEqual([...new Set(app.linesOf(companyId).map(centerOf))], ['PRODUITS'], 'aucun centre coché : aucune charge visible');
+    assert.equal(app.isCenterViewable(app.currentUser(), 'F&B'), false);
+
+    // Périmètre : la rubrique existe, s'enregistre et se lève avec « Tout ouvrir ».
+    const panelHtml = app.authScopePanelHtml(app.serverUserFromRights('bob', 'Bob', rights({ viewableCostCenters: ['AG'] }), ''));
+    assert.ok(/id="auth-scope-restrict-view-centers" checked/.test(panelHtml), 'bascule « centres visibles » cochée');
+    assert.ok(/data-auth-scope-view-center="AG" checked/.test(panelHtml) && /data-auth-scope-view-center="F&B"(?! checked)/.test(panelHtml));
+    assert.ok(/setUserScope\(saveScope\.dataset\.authSaveScope, companies, centers, environmentIds, groupIds, viewCenters\)/.test(html));
+    assert.ok(/setUserScope\(clearScope\.dataset\.authClearScope, null, null, \[\], \[\], null\)/.test(html));
+    assert.ok(/linesScopedToCostCenters\(rawLinesOf\(companyId\), companyId\)/.test(html), 'linesOf passe par le filtre');
+    assert.ok(/pnlTable\(summarizeForDisplay\(linesOf\(company\.id\)\)/.test(html), 'le P&L d’une société passe par linesOf');
+  } finally {
+    app.__clearServerSession();
+    app.__setCenter(savedCenter);
+    app.__setTab(savedTab);
+    app.render();
+  }
+});
+
 check('Périmètre : groupes de sociétés, seuls ou en plus des environnements (09/10/2026)', () => {
   // Alexis : « on souhaiterait aussi pouvoir sélectionner les groupes de
   // sociétés, donc soit sélectionner l'environnement, soit sélectionner le
@@ -30455,7 +30569,7 @@ check('Périmètre : groupes de sociétés, seuls ou en plus des environnements 
     assert.ok(panelHtml.includes('Groupes de sociétés accessibles'), 'rubrique dans le Périmètre');
     assert.ok(panelHtml.includes('data-scope-company-group="multi_grp_a"'), 'chaque société porte son groupe pour le filtre en direct');
     assert.ok(/data-auth-scope-group\]', 'authScopeGroup'\)/.test(html), 'cocher un groupe refiltre la liste des sociétés');
-    assert.ok(/setUserScope\(saveScope\.dataset\.authSaveScope, companies, centers, environmentIds, groupIds\)/.test(html),
+    assert.ok(/setUserScope\(saveScope\.dataset\.authSaveScope, companies, centers, environmentIds, groupIds[,)]/.test(html),
       'l’enregistrement du périmètre emporte les groupes');
   } finally {
     app.__clearServerSession();
