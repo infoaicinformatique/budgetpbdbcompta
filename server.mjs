@@ -39,7 +39,7 @@ import {
   ldapConfigFromEnv, describeLdapConfig, publicLdapInfo, ldapAuthenticateEntry, ldapListGroupMembers,
   LdapUnavailableError,
 } from './auth-ldap.mjs';
-import { createRightsStore, parseAdminList, normalizeAccount, RightsError } from './rights.mjs';
+import { createRightsStore, parseAdminList, normalizeAccount, normalizeRoleId, RightsError } from './rights.mjs';
 import { createDataStore, declarationOf, DataError } from './data.mjs';
 import { createPresenceStore, PRESENCE_TTL_MS } from './presence.mjs';
 import { createPreferencesStore, PreferencesError } from './preferences.mjs';
@@ -292,6 +292,11 @@ const DENIED = {
    GET    /api/droits            membres du groupe + toutes les fiches (administrateurs)
    PUT    /api/droits/<compte>   enregistre la fiche d'un compte (administrateurs)
    DELETE /api/droits/<compte>   retire l'accès d'un compte (administrateurs)
+   PUT    /api/droits/roles/<id> crée ou modifie un rôle personnalisé (administrateurs)
+   DELETE /api/droits/roles/<id> supprime un rôle personnalisé (administrateurs)
+
+   `/moi` et `/api/droits` rendent aussi `roles`, les rôles personnalisés :
+   leur nom s'affiche à chacun dans Paramètres.
 
    Administrateur : fiche marquée `isAdmin`, compte de RIGHTS_ADMINS, ou le
    compte local de secours (qui doit pouvoir tout rattraper si l'annuaire
@@ -370,7 +375,7 @@ async function handleApi(req, res, url, auth) {
     if (rest === '/moi' && req.method === 'GET') {
       return sendJson(res, 200, {
         method: auth.method, account: auth.account, displayName: auth.displayName || '',
-        mail: auth.mail || '', rights: own,
+        mail: auth.mail || '', rights: own, roles: rights.roles(),
       });
     }
     if (!own || own.isAdmin !== true) return sendJson(res, 403, { error: 'Réservé aux administrateurs des droits.' });
@@ -389,6 +394,25 @@ async function handleApi(req, res, url, auth) {
       return sendJson(res, 200, Object.assign(rights.all(), {
         groupDn: ldapConfig ? ldapConfig.groupDn : '', members: members, membersError: membersError,
       }));
+    }
+
+    const roleMatch = /^\/roles\/([^/]+)$/.exec(rest);
+    if (roleMatch) {
+      const roleId = normalizeRoleId(roleMatch[1]);
+      if (!roleId) return sendJson(res, 404, { error: 'Introuvable.' });
+      if (!sameOriginWrite(req)) return sendJson(res, 403, { error: 'Requête refusée : origine non vérifiée.' });
+      const by = auth.account || auth.username || '?';
+      if (req.method === 'PUT') {
+        const saved = rights.setRole(roleId, await readJsonBody(req), by);
+        console.log(`Rôle « ${saved.label} » enregistré par « ${by} »`);
+        return sendJson(res, 200, { id: roleId, role: saved });
+      }
+      if (req.method === 'DELETE') {
+        const result = rights.removeRole(roleId, by);
+        if (result.removed) console.log(`Rôle « ${roleId} » supprimé par « ${by} »`);
+        return sendJson(res, 200, Object.assign({ id: roleId }, result));
+      }
+      return sendJson(res, 405, { error: 'Méthode non prise en charge.' });
     }
 
     let requested = '';

@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createRightsStore, sanitizeRights, parseAdminList, normalizeAccount, RightsError } from '../rights.mjs';
+import { createRightsStore, sanitizeRights, sanitizeRole, normalizeRoleId, parseAdminList, normalizeAccount, RightsError } from '../rights.mjs';
 
 const tmpFile = () => join(mkdtempSync(join(tmpdir(), 'droits-')), 'sous-dossier', 'droits.json');
 const directeur = { role: 'directeur', isAdmin: false, permissions: { saisie: ['saisie-ajouter'], directeur: [] },
@@ -77,4 +77,50 @@ test('fichier illisible : erreur explicite, jamais un accès ouvert', () => {
   store.set('a', directeur, 'x');
   writeFileSync(file, '{ cassé');
   assert.throws(() => store.effective('a'), /illisible/);
+});
+
+const chefCuisine = { label: '  Chef   de cuisine ', description: 'Saisie des charges F&B', base: 'directeur',
+  permissions: { saisie: ['saisie-ajouter'], payroll: [] }, allowedCostCenters: ['F&B'] };
+
+test('rôles personnalisés : forme contrôlée, jamais à la place d’un rôle intégré', () => {
+  const clean = sanitizeRole(Object.assign({ extra: 'ignoré' }, chefCuisine));
+  assert.deepEqual(clean, { label: 'Chef de cuisine', description: 'Saisie des charges F&B', base: 'directeur',
+    permissions: { saisie: ['saisie-ajouter'], payroll: [] }, allowedCostCenters: ['F&B'] });
+  assert.throws(() => sanitizeRole(Object.assign({}, chefCuisine, { label: '  ' })), RightsError, 'nom obligatoire');
+  assert.throws(() => sanitizeRole(Object.assign({}, chefCuisine, { base: 'root' })), RightsError, 'vue de base inconnue');
+  assert.throws(() => sanitizeRole(Object.assign({}, chefCuisine, { label: 'x'.repeat(61) })), RightsError);
+  assert.throws(() => sanitizeRole(Object.assign({}, chefCuisine, { permissions: ['x'] })), RightsError);
+  assert.equal(normalizeRoleId('directeur'), '', 'un rôle intégré ne se remplace pas');
+  assert.equal(normalizeRoleId('role_ab12'), 'role_ab12');
+  assert.equal(normalizeRoleId('a/b'), '');
+  // Une fiche à rôle intégré garde sa forme exacte ; un rôle personnalisé ajoute `roleId`.
+  assert.ok(!('roleId' in sanitizeRights(directeur)));
+  assert.equal(sanitizeRights(Object.assign({ roleId: 'role_ab12' }, directeur)).roleId, 'role_ab12');
+  assert.throws(() => sanitizeRights(Object.assign({ roleId: 'directeur' }, directeur)), RightsError);
+});
+
+test('rôles personnalisés : créés, renommés, attribués, supprimés sans toucher aux droits', () => {
+  const file = tmpFile();
+  const store = createRightsStore(file, ['alexis']);
+  assert.deepEqual(store.roles(), {}, 'aucun rôle au départ');
+  store.setRole('role_chef', chefCuisine, 'alexis');
+  assert.equal(createRightsStore(file, []).roles().role_chef.label, 'Chef de cuisine', 'relu par une autre instance');
+  assert.equal(store.all().roles.role_chef.base, 'directeur');
+  assert.throws(() => store.setRole('role_autre', Object.assign({}, chefCuisine, { label: 'CHEF DE CUISINE' }), 'alexis'),
+    (err) => err instanceof RightsError && err.status === 409, 'deux rôles ne portent pas le même nom');
+  store.setRole('role_chef', Object.assign({}, chefCuisine, { label: 'Chef cuisine' }), 'alexis');
+  assert.equal(store.roles().role_chef.label, 'Chef cuisine', 'renommer son propre rôle est permis');
+
+  assert.throws(() => store.set('bob', Object.assign({ roleId: 'role_inconnu' }, directeur), 'alexis'),
+    (err) => err instanceof RightsError && err.status === 409, 'rôle inexistant refusé');
+  store.set('bob', Object.assign({ roleId: 'role_chef' }, directeur), 'alexis');
+  assert.equal(store.effective('bob').roleId, 'role_chef');
+  assert.ok(JSON.parse(readFileSync(file, 'utf8')).log[0].action.includes('Chef cuisine'), 'le journal nomme le rôle');
+
+  assert.deepEqual(store.removeRole('role_chef', 'alexis'), { removed: true, users: 1 });
+  assert.deepEqual(store.roles(), {});
+  const bob = store.effective('bob');
+  assert.ok(!('roleId' in bob), 'le nom du rôle disparaît de la fiche');
+  assert.deepEqual(bob.permissions, directeur.permissions, 'les droits restent');
+  assert.deepEqual(store.removeRole('role_chef', 'alexis'), { removed: false, users: 0 });
 });

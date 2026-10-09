@@ -3367,6 +3367,9 @@ let serverRequest = null;
    voir « Droits tenus par le serveur (annuaire) ». */
 let serverSession = null; // { method, account, user, error }
 let serverDirectory = null; // { loading, error, rows, list, groupDn, membersError }
+/* Rôles personnalisés tenus par le serveur (Paramètres › Rôles), par
+   identifiant : voir « Rôles personnalisés ». Vide hors mode serveur. */
+let serverRoles = {};
 /* Données tenues par le serveur : voir la section du même nom. `null` hors
    mode serveur (fichier ouvert en local, http simple) : l'application
    garde alors son stockage dans le navigateur. */
@@ -3376,7 +3379,7 @@ let serverData = null;
   const nativeFetch = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null;
   if (nativeFetch) {
     serverRequest = function (method, path, body) {
-      if (!/^\/api\/(droits(\/[A-Za-z0-9._@%-]+)?|donnees(\/(revision|main))?|preferences)$/.test(String(path))) {
+      if (!/^\/api\/(droits(\/roles)?(\/[A-Za-z0-9._@%-]+)?|donnees(\/(revision|main))?|preferences)$/.test(String(path))) {
         return Promise.reject(new Error('Sortie réseau interdite (' + path + ').'));
       }
       const options = { method: method, credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers: {} };
@@ -3498,7 +3501,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-08.24';
+const APP_BUILD = '2026-10-09.1';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -8327,6 +8330,129 @@ function roleLabel(roleId) {
   return role ? role.label : roleId;
 }
 
+/* ---------------- Rôles personnalisés ----------------
+
+   Alexis, 09/10/2026 : « il faut que l'on puisse créer des rôles
+   sélectionnables comme Directeur et Contrôleur de gestion, mais avoir une
+   interface pour créer un rôle et ses droits par défaut nous-même ».
+
+   Un rôle personnalisé (« Chef de cuisine », « Responsable F&B »…) a un nom,
+   une description, une VUE DE BASE — l'un des deux rôles intégrés, qui
+   décide de l'écran d'arrivée et de tout ce que l'application réserve au
+   contrôleur de gestion — et des droits par défaut : onglets, rubriques et
+   centres de coûts modifiables. Attribuer le rôle à une personne lui donne
+   ces droits de départ, qu'on affine ensuite pour elle seule, exactement
+   comme pour les rôles intégrés.
+
+   Les rôles vivent sur le serveur, dans le fichier des droits (rights.mjs,
+   `roles`), pour valoir sur tous les postes. La fiche d'une personne garde
+   `role` = la vue de base et y ajoute `roleId` : toutes les règles écrites
+   pour « contrôleur » et « directeur » s'appliquent donc telles quelles, le
+   rôle personnalisé n'apporte qu'un nom et un point de départ. Modifier les
+   droits par défaut d'un rôle ne touche pas aux personnes qui l'ont déjà :
+   ce ne sont que des droits de départ. Supprimer un rôle laisse à chacun
+   ses droits et le ramène au nom de sa vue de base. */
+
+/** Droits `{ onglet: [rubriques] }` bornés aux onglets et rubriques qui existent. */
+function knownPermissions(permissions) {
+  const clean = {};
+  for (const tabId of Object.keys(permissions || {})) {
+    if (!APP_PAGES.some(function (t) { return t.tab === tabId; })) continue;
+    const catalogue = pagesOfTab(tabId);
+    const pages = (Array.isArray(permissions[tabId]) ? permissions[tabId] : []).filter(function (pageId) {
+      return catalogue.indexOf(pageId) !== -1;
+    });
+    if (pages.length || !catalogue.length) clean[tabId] = pages;
+  }
+  return clean;
+}
+
+/** Installe le catalogue reçu du serveur (`/api/droits/moi`, `/api/droits`). */
+function setServerRoles(roles) {
+  const clean = {};
+  if (roles && typeof roles === 'object' && !Array.isArray(roles)) {
+    for (const id of Object.keys(roles)) {
+      const r = roles[id];
+      if (!r || typeof r !== 'object' || typeof r.label !== 'string' || !r.label) continue;
+      if (USER_ROLES.some(function (b) { return b.id === id; })) continue;
+      clean[id] = {
+        id: id,
+        label: r.label,
+        description: typeof r.description === 'string' ? r.description : '',
+        base: r.base === 'controleur' ? 'controleur' : 'directeur',
+        permissions: r.permissions && typeof r.permissions === 'object' ? r.permissions : {},
+        allowedCostCenters: Array.isArray(r.allowedCostCenters) ? r.allowedCostCenters.slice() : null,
+      };
+    }
+  }
+  serverRoles = clean;
+  return serverRoles;
+}
+
+/** Rôles personnalisés, par nom. */
+function customRoles() {
+  return Object.keys(serverRoles).map(function (id) { return serverRoles[id]; })
+    .sort(function (a, b) { return a.label.localeCompare(b.label, 'fr'); });
+}
+
+function customRoleById(id) {
+  return id && Object.prototype.hasOwnProperty.call(serverRoles, id) ? serverRoles[id] : null;
+}
+
+/** Rôle choisi pour une personne : son rôle personnalisé s'il existe encore, sinon son rôle intégré. */
+function roleChoiceOf(user) {
+  return user && customRoleById(user.roleId) ? user.roleId : (user ? user.role : 'directeur');
+}
+
+/** Nom du rôle d'une personne, personnalisé compris. */
+function userRoleLabel(user) {
+  const custom = user ? customRoleById(user.roleId) : null;
+  return custom ? custom.label : roleLabel(user ? user.role : '');
+}
+
+/**
+ * Droits de départ d'un rôle, intégré ou personnalisé :
+ * `{ role, roleId, permissions, allowedCostCenters }`. `allowedCostCenters`
+ * vaut `undefined` pour un rôle intégré (le périmètre de la personne est
+ * alors laissé tel quel, comme avant les rôles personnalisés).
+ */
+function defaultRightsForRole(choice) {
+  const custom = customRoleById(choice);
+  if (custom) {
+    return {
+      role: custom.base,
+      roleId: custom.id,
+      permissions: knownPermissions(custom.permissions),
+      allowedCostCenters: Array.isArray(custom.allowedCostCenters) ? custom.allowedCostCenters.slice() : null,
+    };
+  }
+  const role = choice === 'controleur' ? 'controleur' : 'directeur';
+  return { role: role, roleId: '', permissions: defaultPermissionsFor(role), allowedCostCenters: undefined };
+}
+
+/**
+ * Applique un rôle à une personne. Changer de rôle (ou recevoir son premier)
+ * repart des droits par défaut du rôle ; garder le même rôle ne touche à
+ * rien de ce qui a été affiné pour elle.
+ */
+function applyRoleChoice(user, choice) {
+  const defaults = defaultRightsForRole(choice);
+  const changed = roleChoiceOf(user) !== (defaults.roleId || defaults.role) || !user.configured;
+  if (changed) {
+    user.permissions = defaults.permissions;
+    if (defaults.allowedCostCenters !== undefined) user.allowedCostCenters = defaults.allowedCostCenters;
+  }
+  user.role = defaults.role;
+  user.roleId = defaults.roleId;
+  return changed;
+}
+
+/** Personnes de l'annuaire qui portent un rôle personnalisé. */
+function usersWithRole(roleId) {
+  const list = serverDirectory && Array.isArray(serverDirectory.list) ? serverDirectory.list : [];
+  return list.filter(function (u) { return u.configured && u.roleId === roleId; });
+}
+
 /** Toutes les pages d'un onglet, par son id. */
 function pagesOfTab(tabId) {
   const entry = APP_PAGES.find(function (t) { return t.tab === tabId; });
@@ -9574,9 +9700,14 @@ function isServerUserId(id) {
 function serverUserFromRights(account, displayName, rights, mail) {
   const r = rights && typeof rights === 'object' ? rights : null;
   const role = r && r.role === 'controleur' ? 'controleur' : 'directeur';
+  // Rôle personnalisé (Paramètres › Rôles) : gardé même s'il n'est plus au
+  // catalogue — le serveur l'efface des fiches quand le rôle est supprimé.
+  const roleId = r && typeof r.roleId === 'string' ? r.roleId : '';
   let permissions = {};
   if (r) {
-    permissions = r.permissions && typeof r.permissions === 'object' ? {} : defaultPermissionsFor(role);
+    permissions = r.permissions && typeof r.permissions === 'object' ? {}
+      : (customRoleById(roleId) && customRoleById(roleId).base === role
+        ? defaultRightsForRole(roleId).permissions : defaultPermissionsFor(role));
     if (r.permissions && typeof r.permissions === 'object') {
       for (const tabId of Object.keys(r.permissions)) {
         if (Array.isArray(r.permissions[tabId])) permissions[tabId] = r.permissions[tabId].slice();
@@ -9591,6 +9722,7 @@ function serverUserFromRights(account, displayName, rights, mail) {
     displayName: displayName || '',
     email: String(mail || '').trim().toLowerCase(),
     role: role,
+    roleId: roleId,
     isAdmin: Boolean(r && r.isAdmin === true),
     status: 'active',
     avatar: null,
@@ -9607,7 +9739,7 @@ function serverUserFromRights(account, displayName, rights, mail) {
 
 /** Ce qui part au serveur pour un compte de l'annuaire (forme de `sanitizeRights`, rights.mjs). */
 function serverRightsPayload(user) {
-  return {
+  const payload = {
     role: user.role,
     isAdmin: user.isAdmin === true,
     permissions: user.permissions || {},
@@ -9615,12 +9747,16 @@ function serverRightsPayload(user) {
     allowedCostCenters: Array.isArray(user.allowedCostCenters) ? user.allowedCostCenters.slice() : null,
     environmentIds: normalizeEnvironmentIds(user.environmentIds),
   };
+  // Rôle intégré : la fiche garde sa forme d'avant les rôles personnalisés.
+  if (user.roleId) payload.roleId = user.roleId;
+  return payload;
 }
 
 /** Installe la session à partir de la réponse de `/api/droits/moi` (ou d'une erreur). */
 function adoptServerSession(me, error) {
   const info = serverAuthInfo() || {};
   const account = (me && me.account) || info.username || '?';
+  setServerRoles(me && me.roles);
   serverSession = {
     method: (me && me.method) || info.method || 'ldap',
     account: account,
@@ -9660,6 +9796,7 @@ function serverLandingTab() {
  * qui change ses propres droits les voit s'appliquer aussitôt.
  */
 function buildServerDirectory(data) {
+  if (data && data.roles) setServerRoles(data.roles);
   const users = data && data.users && typeof data.users === 'object' ? data.users : {};
   const admins = Array.isArray(data && data.admins) ? data.admins : [];
   const rows = [];
@@ -9777,6 +9914,9 @@ function serverRightsSignature(user) {
 function applyRefreshedServerRights(me) {
   if (!serverSession) return false;
   const own = serverSession.user;
+  // Catalogue des rôles relu en même temps : un rôle renommé ailleurs
+  // s'affiche sous son nouveau nom sans recharger la page.
+  if (me && me.roles) setServerRoles(me.roles);
   const fresh = serverUserFromRights(serverSession.account,
     (me && me.displayName) || own.displayName, me ? me.rights : null,
     me ? me.mail : own.email);
@@ -24587,8 +24727,12 @@ function authPermissionsPanel() {
     '<button class="action ghost" data-auth-permissions-preset="all">Tout cocher</button>' +
     '<button class="action ghost" data-auth-permissions-preset="none">Tout décocher</button>' +
     '<button class="action ghost" data-auth-permissions-preset="default">Périmètre directeur par défaut</button>' +
+    (customRoleById(user.roleId)
+      ? '<button class="action ghost" data-auth-permissions-preset="role">Droits par défaut du rôle « ' +
+        escapeHtml(userRoleLabel(user)) + ' »</button>'
+      : '') +
     '</div>',
-    { open: true, meta: roleLabel(user.role) });
+    { open: true, meta: escapeHtml(userRoleLabel(user)) });
 }
 
 /**
@@ -25308,7 +25452,7 @@ function viewParametresServeur() {
     (user.displayName ? field('Nom', user.displayName) : '') +
     field('Identifiant', user.account) +
     field('Adresse de courrier', user.email || 'Non renseignée dans l’annuaire') +
-    field('Rôle', user.configured ? roleLabel(user.role) + (isAdminUser(user) ? ' · Administrateur' : '') : 'Aucun droit') +
+    field('Rôle', user.configured ? userRoleLabel(user) + (isAdminUser(user) ? ' · Administrateur' : '') : 'Aucun droit') +
     field('Connexion', serverSession.method === 'local' ? 'Compte local de secours' : 'Annuaire LDAP') +
     '</div>' +
     '<p class="muted" style="margin:14px 0 0;font-size:13px">Votre nom, votre adresse de courrier et votre mot de passe ' +
@@ -25331,7 +25475,7 @@ function viewParametresServeur() {
 function serverRightsSummary(user) {
   if (!user.configured) return 'Aucun droit';
   const tabs = APP_PAGES.filter(function (t) { return canAccessTab(user, t.tab) && t.tab !== 'autorisations'; }).length;
-  return roleLabel(user.role) + ' · ' + tabs + ' onglet' + (tabs > 1 ? 's' : '');
+  return userRoleLabel(user) + ' · ' + tabs + ' onglet' + (tabs > 1 ? 's' : '');
 }
 
 /**
@@ -25405,7 +25549,8 @@ function parametresDroitsPanels() {
   const selected = authPermissionsId && isServerUserId(authPermissionsId) ? userById(authPermissionsId) : null;
   return panel('parametres-droits', 'Droits d’accès', body,
     { open: true, meta: directory.rows ? members + ' membre' + (members > 1 ? 's' : '') + ' du groupe' : '' }) +
-    (selected ? serverRightsRolePanel(selected) + authPermissionsPanel() + authScopePanelHtml(selected) : '');
+    (selected ? serverRightsRolePanel(selected) + authPermissionsPanel() + authScopePanelHtml(selected) : '') +
+    parametresRolesPanel() + roleEditorPanel();
 }
 
 /**
@@ -25418,21 +25563,317 @@ function parametresDroitsPanels() {
  * donc en clair ici — c'est l'endroit où la question se pose désormais.
  */
 function serverRightsRolePanel(user) {
-  const roleOptions = USER_ROLES.map(function (r) {
-    return '<option value="' + r.id + '"' + (user.role === r.id ? ' selected' : '') + '>' + escapeHtml(r.label) + '</option>';
-  }).join('');
+  const choice = roleChoiceOf(user);
+  const option = function (id, label) {
+    return '<option value="' + escapeHtml(id) + '"' + (choice === id ? ' selected' : '') + '>' + escapeHtml(label) + '</option>';
+  };
+  const custom = customRoles();
+  // Rôles intégrés d'abord, puis ceux créés dans la rubrique Rôles.
+  const roleOptions = (custom.length ? '<optgroup label="Rôles intégrés">' : '') +
+    USER_ROLES.map(function (r) { return option(r.id, r.label); }).join('') +
+    (custom.length
+      ? '</optgroup><optgroup label="Rôles créés">' +
+        custom.map(function (r) { return option(r.id, r.label + ' (vue ' + (r.base === 'controleur' ? 'complète' : 'Directeur') + ')'); }).join('') +
+        '</optgroup>'
+      : '');
+  const chosen = customRoleById(choice);
   return panel('parametres-droits-role', 'Rôle — ' + (user.displayName || user.account),
     '<div class="field" style="margin-bottom:12px"><label for="server-rights-role">Rôle</label>' +
     '<select id="server-rights-role">' + roleOptions + '</select>' +
+    (chosen && chosen.description
+      ? '<p style="margin:6px 0 0;font-size:13px">' + escapeHtml(chosen.description) + '</p>' : '') +
     '<p class="muted" style="margin:6px 0 0;font-size:12px">Le rôle décide de la vue : un <strong>directeur</strong> ' +
     'arrive sur la vue Directeur (tableau de bord, saisie et résultats), un <strong>contrôleur de gestion</strong> sur ' +
-    'la vue complète. Il n’y a pas d’autre réglage ailleurs dans l’application. Changer de rôle repart des droits par ' +
+    'la vue complète ; un rôle créé dans la rubrique « Rôles » ci-dessous suit la vue de base qu’on lui a donnée. ' +
+    'Il n’y a pas d’autre réglage ailleurs dans l’application. Changer de rôle repart des droits par ' +
     'défaut de ce rôle, à affiner ensuite ci-dessous.</p></div>' +
     '<label class="auth-editor-toggle-row"><span class="grow">Administrateur (règle les droits de chacun dans Paramètres)</span>' +
     '<input type="checkbox" class="nice-check" id="server-rights-admin"' + (isAdminUser(user) ? ' checked' : '') + ' /></label>' +
     '<div class="row" style="margin-top:12px"><button class="action" data-server-rights-save-role="' + escapeHtml(user.id) + '">' +
     (user.configured ? 'Enregistrer le rôle' : 'Donner l’accès avec ce rôle') + '</button></div>',
-    { open: true, meta: user.configured ? roleLabel(user.role) : 'aucun droit' });
+    { open: true, meta: user.configured ? escapeHtml(userRoleLabel(user)) : 'aucun droit' });
+}
+
+/**
+ * Paramètres › Rôles (09/10/2026) : la liste des rôles — les deux intégrés,
+ * fixes, puis ceux créés ici — et la création d'un rôle avec ses droits par
+ * défaut. Voir « Rôles personnalisés » pour le modèle. Réservé aux
+ * administrateurs, comme le reste des droits.
+ */
+let roleEditor = null; // { id (null = nouveau), draft: { label, description, base, permissions, allowedCostCenters } }
+
+/** Onglets de la matrice d'un rôle : tous, sauf Autorisations (fermé en mode serveur). */
+function roleMatrixTabs() {
+  return APP_PAGES.filter(function (entry) { return entry.tab !== 'autorisations'; });
+}
+
+/** « 9 onglets · F&B seul » : ce qu'un rôle donne au départ. */
+function roleRightsSummary(permissions, centers) {
+  const clean = knownPermissions(permissions);
+  const tabs = roleMatrixTabs().filter(function (t) { return clean[t.tab]; }).length;
+  const centerLabel = Array.isArray(centers)
+    ? (centers.length
+      ? centers.map(function (id) {
+        const center = COST_CENTERS.find(function (c) { return c.id === id; });
+        return center ? center.label : id;
+      }).join(', ')
+      : 'aucun centre modifiable')
+    : 'tous les centres';
+  return tabs + ' onglet' + (tabs > 1 ? 's' : '') + ' · ' + centerLabel;
+}
+
+/** Brouillon de départ d'un nouveau rôle, copié d'un rôle existant (intégré ou créé). */
+function roleDraftFrom(sourceId) {
+  const custom = customRoleById(sourceId);
+  if (custom) {
+    return {
+      label: '', description: custom.description, base: custom.base,
+      permissions: knownPermissions(custom.permissions),
+      allowedCostCenters: Array.isArray(custom.allowedCostCenters) ? custom.allowedCostCenters.slice() : null,
+    };
+  }
+  const base = sourceId === 'controleur' ? 'controleur' : 'directeur';
+  return {
+    label: '', description: '', base: base,
+    permissions: defaultPermissionsFor(base),
+    allowedCostCenters: base === 'directeur' ? DIRECTEUR_DEFAULT_COST_CENTERS.slice() : null,
+  };
+}
+
+function openRoleEditor(roleId, sourceId) {
+  const custom = customRoleById(roleId);
+  roleEditor = custom
+    ? {
+      id: custom.id,
+      draft: {
+        label: custom.label, description: custom.description, base: custom.base,
+        permissions: knownPermissions(custom.permissions),
+        allowedCostCenters: Array.isArray(custom.allowedCostCenters) ? custom.allowedCostCenters.slice() : null,
+      },
+    }
+    : { id: null, draft: roleDraftFrom(sourceId) };
+  setPanelOpen('parametres-role-editeur', true);
+  render();
+  scrollPanelIntoView('parametres-role-editeur');
+}
+
+function parametresRolesPanel() {
+  const people = function (roleId, base) {
+    const list = serverDirectory && Array.isArray(serverDirectory.list) ? serverDirectory.list : [];
+    const count = list.filter(function (u) {
+      return u.configured && (roleId ? u.roleId === roleId : (!customRoleById(u.roleId) && u.role === base));
+    }).length;
+    return count ? count + ' personne' + (count > 1 ? 's' : '') : '<span class="muted">personne</span>';
+  };
+  const builtinRows = USER_ROLES.map(function (r) {
+    return '<tr><td><strong>' + escapeHtml(r.label) + '</strong> <span class="badge grey">intégré</span>' +
+      '<div class="muted" style="font-size:12px">' + escapeHtml(r.description) + '</div></td>' +
+      '<td>' + (r.id === 'controleur' ? 'Vue complète' : 'Vue Directeur') + '</td>' +
+      '<td class="muted">' + escapeHtml(roleRightsSummary(defaultPermissionsFor(r.id),
+        r.id === 'directeur' ? DIRECTEUR_DEFAULT_COST_CENTERS : null)) + '</td>' +
+      '<td>' + people(null, r.id) + '</td>' +
+      '<td><div class="row-actions"><button class="mini" data-role-new="' + r.id + '" ' +
+      'title="Nouveau rôle qui part des droits de celui-ci">copier</button></div></td></tr>';
+  }).join('');
+  const custom = customRoles();
+  const customRows = custom.map(function (r) {
+    return '<tr' + (roleEditor && roleEditor.id === r.id ? ' class="row-highlight"' : '') + '>' +
+      '<td><strong>' + escapeHtml(r.label) + '</strong>' +
+      (r.description ? '<div class="muted" style="font-size:12px">' + escapeHtml(r.description) + '</div>' : '') + '</td>' +
+      '<td>' + (r.base === 'controleur' ? 'Vue complète' : 'Vue Directeur') + '</td>' +
+      '<td class="muted">' + escapeHtml(roleRightsSummary(r.permissions, r.allowedCostCenters)) + '</td>' +
+      '<td>' + people(r.id) + '</td>' +
+      '<td><div class="row-actions">' +
+      '<button class="mini" data-role-edit="' + escapeHtml(r.id) + '">modifier</button>' +
+      '<button class="mini" data-role-new="' + escapeHtml(r.id) + '" title="Nouveau rôle qui part des droits de celui-ci">copier</button>' +
+      '<button class="mini" data-role-delete="' + escapeHtml(r.id) + '">supprimer</button>' +
+      '</div></td></tr>';
+  }).join('');
+  const body =
+    '<p class="muted" style="margin:0 0 12px;font-size:13px">Un rôle donne un nom et des droits de départ : ' +
+    'quand vous l’attribuez à une personne (rubrique « Rôle » ci-dessus, après « modifier » sur sa ligne), elle reçoit ' +
+    'ses onglets, ses rubriques et ses centres de coûts modifiables, que vous pouvez ensuite affiner pour elle seule. ' +
+    'Chaque rôle suit la vue de l’un des deux rôles intégrés : vue Directeur ou vue complète. Modifier un rôle ne change ' +
+    'pas les droits des personnes qui l’ont déjà ; le supprimer leur laisse leurs droits.</p>' +
+    '<div class="table-wrap"><table><thead><tr>' +
+    '<th style="min-width:200px">Rôle</th><th>Vue de base</th><th style="min-width:180px">Droits par défaut</th>' +
+    '<th>Attribué à</th><th></th>' +
+    '</tr></thead><tbody>' + builtinRows + customRows + '</tbody></table></div>' +
+    '<div class="row" style="margin-top:12px"><button class="action" data-role-new="directeur">Créer un rôle</button></div>';
+  return panel('parametres-roles', 'Rôles', body,
+    { open: true, meta: custom.length ? custom.length + ' rôle' + (custom.length > 1 ? 's' : '') + ' créé' + (custom.length > 1 ? 's' : '') : 'rôles intégrés seuls' });
+}
+
+/** Matrice onglets × rubriques d'un rôle, sur le modèle de `authPermissionsPanel`. */
+function roleMatrixHtml(permissions) {
+  return roleMatrixTabs().map(function (entry) {
+    const allowedPages = (permissions || {})[entry.tab] || [];
+    const tabOpen = Boolean((permissions || {})[entry.tab]);
+    const checkedCount = entry.pages.filter(function (p) { return allowedPages.indexOf(p.id) !== -1; }).length;
+    const all = entry.pages.length ? checkedCount === entry.pages.length : tabOpen;
+    const partial = checkedCount > 0 && checkedCount < entry.pages.length;
+    const sensitive = SENSITIVE_TABS.indexOf(entry.tab) !== -1;
+    const tabCell = '<label style="display:flex;align-items:center;gap:8px;cursor:pointer">' +
+      '<input type="checkbox" data-role-tab-check="' + escapeHtml(entry.tab) + '"' +
+      (all ? ' checked' : '') + (partial ? ' data-partial="1"' : '') + ' />' +
+      '<strong>' + escapeHtml(entry.label) + '</strong>' +
+      (sensitive ? '<span class="badge grey" title="Onglet sensible : à n’ouvrir qu’en connaissance de cause">sensible</span>' : '') +
+      '</label>';
+    const pageCells = entry.pages.map(function (page) {
+      return '<label style="display:inline-flex;align-items:center;gap:6px;margin:0 14px 6px 0;cursor:pointer">' +
+        '<input type="checkbox" data-role-page-check="' + escapeHtml(page.id) + '" ' +
+        'data-role-page-tab="' + escapeHtml(entry.tab) + '"' +
+        (allowedPages.indexOf(page.id) !== -1 ? ' checked' : '') + ' />' +
+        '<span>' + escapeHtml(page.label) + '</span></label>';
+    }).join('');
+    return '<tr><td style="vertical-align:top;min-width:220px">' + tabCell + '</td>' +
+      '<td>' + (pageCells || '<span class="muted" style="font-size:12px">Onglet sans sous-rubrique.</span>') + '</td></tr>';
+  }).join('');
+}
+
+function roleEditorPanel() {
+  if (!roleEditor) return '';
+  const draft = roleEditor.draft;
+  const restrictCenters = Array.isArray(draft.allowedCostCenters);
+  const baseOption = function (id, label) {
+    return '<option value="' + id + '"' + (draft.base === id ? ' selected' : '') + '>' + label + '</option>';
+  };
+  const body =
+    '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px">' +
+    '<div class="field" style="margin-bottom:0"><label for="role-editor-label">Nom du rôle</label>' +
+    '<input id="role-editor-label" maxlength="60" placeholder="Ex. Chef de cuisine" value="' + escapeHtml(draft.label) + '" /></div>' +
+    '<div class="field" style="margin-bottom:0"><label for="role-editor-base">Vue de base</label>' +
+    '<select id="role-editor-base">' +
+    baseOption('directeur', 'Vue Directeur (comme un directeur)') +
+    baseOption('controleur', 'Vue complète (comme un contrôleur de gestion)') +
+    '</select></div>' +
+    '</div>' +
+    '<div class="field" style="margin:12px 0 0"><label for="role-editor-description">Description (facultative)</label>' +
+    '<input id="role-editor-description" maxlength="300" placeholder="À quoi sert ce rôle, pour qui" value="' +
+    escapeHtml(draft.description) + '" /></div>' +
+    '<p class="muted" style="margin:6px 0 16px;font-size:12px">La vue de base décide de l’écran d’arrivée et de ce que ' +
+    'l’application réserve au contrôleur de gestion ; les cases ci-dessous décident des onglets et rubriques ouverts ' +
+    'au départ.</p>' +
+    '<p class="auth-editor-section-title" style="margin:0 0 8px">Onglets et rubriques par défaut</p>' +
+    '<div class="table-wrap"><table><thead><tr><th style="min-width:220px">Onglet</th><th>Rubriques</th></tr></thead>' +
+    '<tbody>' + roleMatrixHtml(draft.permissions) + '</tbody></table></div>' +
+    '<div class="row" style="margin-top:10px">' +
+    '<button class="action ghost" data-role-preset="all">Tout cocher</button>' +
+    '<button class="action ghost" data-role-preset="none">Tout décocher</button>' +
+    '<button class="action ghost" data-role-preset="directeur">Droits d’un directeur</button>' +
+    '<button class="action ghost" data-role-preset="controleur">Droits d’un contrôleur de gestion</button>' +
+    '</div>' +
+    '<div style="margin-top:18px">' +
+    '<label class="auth-editor-toggle-row"><span class="grow">Choisir les centres de coûts modifiables</span>' +
+    '<input type="checkbox" class="nice-check" id="role-editor-restrict-centers"' + (restrictCenters ? ' checked' : '') + ' /></label>' +
+    '<div id="role-editor-centers-list" style="margin-top:10px' + (restrictCenters ? '' : ';display:none') + '">' +
+    scopeCenterRowsHtml({ allowedCostCenters: draft.allowedCostCenters }, 'data-role-center') + '</div></div>' +
+    '<div class="row" style="margin-top:16px">' +
+    '<button class="action" data-role-save="1">' + (roleEditor.id ? 'Enregistrer le rôle' : 'Créer le rôle') + '</button>' +
+    '<button class="action ghost" data-role-cancel="1">Annuler</button>' +
+    '</div>';
+  return panel('parametres-role-editeur', roleEditor.id ? 'Rôle — ' + draft.label : 'Nouveau rôle', body,
+    { open: true, meta: roleEditor.id ? escapeHtml(usersWithRole(roleEditor.id).length + ' personne(s)') : 'pas encore enregistré' });
+}
+
+/** Lit l'éditeur de rôle à l'écran. */
+function readRoleEditorForm() {
+  const value = function (id) {
+    const el = document.getElementById(id);
+    return el ? String(el.value || '').trim() : '';
+  };
+  const permissions = {};
+  document.querySelectorAll('[data-role-tab-check]').forEach(function (box) {
+    if (box.checked && !pagesOfTab(box.dataset.roleTabCheck).length) permissions[box.dataset.roleTabCheck] = [];
+  });
+  document.querySelectorAll('[data-role-page-check]').forEach(function (box) {
+    if (!box.checked) return;
+    const tabId = box.dataset.rolePageTab;
+    if (!permissions[tabId]) permissions[tabId] = [];
+    permissions[tabId].push(box.dataset.rolePageCheck);
+  });
+  const restrict = document.getElementById('role-editor-restrict-centers');
+  return {
+    label: value('role-editor-label').replace(/\s+/g, ' '),
+    description: value('role-editor-description').replace(/\s+/g, ' '),
+    base: value('role-editor-base') === 'controleur' ? 'controleur' : 'directeur',
+    permissions: knownPermissions(permissions),
+    allowedCostCenters: restrict && restrict.checked
+      ? Array.from(document.querySelectorAll('[data-role-center]:checked')).map(function (b) { return b.dataset.roleCenter; })
+      : null,
+  };
+}
+
+/**
+ * Recopie l'éditeur à l'écran dans le brouillon, à chaque frappe et à chaque
+ * case : un réaffichage (relecture des droits, défilement, autre rubrique)
+ * repart du brouillon et effacerait sinon ce qui vient d'être saisi.
+ */
+function syncRoleEditorDraft() {
+  if (roleEditor && typeof document !== 'undefined' && document.getElementById('role-editor-label')) {
+    roleEditor.draft = readRoleEditorForm();
+  }
+}
+
+/** Pourquoi ce rôle ne peut pas être enregistré, ou `''`. */
+function roleDraftError(draft, roleId) {
+  if (!draft.label) return 'Donnez un nom au rôle.';
+  const name = draft.label.toLowerCase();
+  if (USER_ROLES.some(function (r) { return r.label.toLowerCase() === name; })) {
+    return '« ' + draft.label + ' » est déjà un rôle intégré.';
+  }
+  if (customRoles().some(function (r) { return r.id !== roleId && r.label.toLowerCase() === name; })) {
+    return 'Un rôle porte déjà le nom « ' + draft.label + ' ».';
+  }
+  if (!Object.keys(draft.permissions).length) return 'Cochez au moins un onglet : un rôle sans onglet n’ouvrirait rien.';
+  return '';
+}
+
+/** Enregistre le rôle de l'éditeur sur le serveur. */
+function saveRoleEditor() {
+  if (!roleEditor) return Promise.resolve();
+  const draft = readRoleEditorForm();
+  roleEditor.draft = draft;
+  const error = roleDraftError(draft, roleEditor.id);
+  if (error) { showToast(error, true); return Promise.resolve(); }
+  const id = roleEditor.id || 'role_' + randomHex(6);
+  return serverRequest('PUT', '/api/droits/roles/' + encodeURIComponent(id), draft)
+    .then(function (data) {
+      const roles = Object.assign({}, serverRoles);
+      roles[id] = data && data.role ? data.role : draft;
+      setServerRoles(roles);
+      roleEditor = null;
+      showToast('Rôle « ' + draft.label + ' » enregistré : il se choisit maintenant dans le rôle de chaque personne.');
+      render();
+    })
+    .catch(function (e) { showToast('Rôle non enregistré : ' + (e.message || e), true); })
+    .then(loadServerDirectory);
+}
+
+/** Supprime un rôle personnalisé ; ceux qui l'avaient gardent leurs droits. */
+function deleteCustomRole(roleId) {
+  const role = customRoleById(roleId);
+  if (!role) return Promise.resolve();
+  const holders = usersWithRole(roleId).length;
+  if (!confirmed({
+    key: 'role-delete-' + roleId,
+    title: 'Supprimer le rôle « ' + role.label + ' » ?',
+    body: holders
+      ? holders + ' personne' + (holders > 1 ? 's ont' : ' a') + ' ce rôle : ' + (holders > 1 ? 'elles gardent' : 'elle garde') +
+        ' ses droits actuels, sous le nom de sa vue de base (' + roleLabel(role.base) + ').'
+      : 'Personne n’a ce rôle. Il disparaîtra de la liste des rôles.',
+    confirmLabel: 'Supprimer le rôle',
+  }, function () { deleteCustomRole(roleId); })) return Promise.resolve();
+  if (roleEditor && roleEditor.id === roleId) roleEditor = null;
+  return serverRequest('DELETE', '/api/droits/roles/' + encodeURIComponent(roleId))
+    .then(function () {
+      const roles = Object.assign({}, serverRoles);
+      delete roles[roleId];
+      setServerRoles(roles);
+      showToast('Rôle « ' + role.label + ' » supprimé.');
+    })
+    .catch(function (e) { showToast('Rôle non supprimé : ' + (e.message || e), true); })
+    .then(loadServerDirectory);
 }
 
 /**
@@ -33077,18 +33518,63 @@ document.getElementById('view').addEventListener('click', async function (event)
   }
   const serverRevoke = target.closest('[data-server-rights-revoke]');
   if (serverRevoke) { revokeServerRights(serverRevoke.dataset.serverRightsRevoke); return; }
+  // Paramètres › Rôles : créer, modifier, supprimer un rôle personnalisé.
+  const roleNew = target.closest('[data-role-new]');
+  if (roleNew) { openRoleEditor(null, roleNew.dataset.roleNew); return; }
+  const roleEdit = target.closest('[data-role-edit]');
+  if (roleEdit) { openRoleEditor(roleEdit.dataset.roleEdit); return; }
+  if (target.closest('[data-role-cancel]')) { roleEditor = null; render(); return; }
+  if (target.closest('[data-role-save]')) { saveRoleEditor(); return; }
+  const roleDelete = target.closest('[data-role-delete]');
+  if (roleDelete) { deleteCustomRole(roleDelete.dataset.roleDelete); return; }
+  const roleTabCheck = target.closest('[data-role-tab-check]');
+  if (roleTabCheck) {
+    document.querySelectorAll('[data-role-page-tab="' + roleTabCheck.dataset.roleTabCheck + '"]').forEach(function (box) {
+      box.checked = roleTabCheck.checked;
+    });
+    return;
+  }
+  const rolePageCheck = target.closest('[data-role-page-check]');
+  if (rolePageCheck) {
+    const tabId = rolePageCheck.dataset.rolePageTab;
+    const boxes = Array.from(document.querySelectorAll('[data-role-page-tab="' + tabId + '"]'));
+    const parent = document.querySelector('[data-role-tab-check="' + tabId + '"]');
+    if (parent) parent.checked = boxes.every(function (b) { return b.checked; });
+    return;
+  }
+  if (target.id === 'role-editor-restrict-centers') {
+    const list = document.getElementById('role-editor-centers-list');
+    if (list) list.style.display = target.checked ? '' : 'none';
+    return;
+  }
+  const rolePreset = target.closest('[data-role-preset]');
+  if (rolePreset) {
+    const mode = rolePreset.dataset.rolePreset;
+    const defaults = mode === 'directeur' || mode === 'controleur' ? defaultPermissionsFor(mode) : null;
+    document.querySelectorAll('[data-role-page-check]').forEach(function (box) {
+      box.checked = defaults ? (defaults[box.dataset.rolePageTab] || []).indexOf(box.dataset.rolePageCheck) !== -1 : mode === 'all';
+    });
+    document.querySelectorAll('[data-role-tab-check]').forEach(function (box) {
+      const tabId = box.dataset.roleTabCheck;
+      const boxes = Array.from(document.querySelectorAll('[data-role-page-tab="' + tabId + '"]'));
+      box.checked = boxes.length ? boxes.every(function (b) { return b.checked; })
+        : (defaults ? Boolean(defaults[tabId]) : mode === 'all');
+    });
+    syncRoleEditorDraft();
+    return;
+  }
+
   const serverSaveRole = target.closest('[data-server-rights-save-role]');
   if (serverSaveRole) {
     const user = userById(serverSaveRole.dataset.serverRightsSaveRole);
     const roleSelect = document.getElementById('server-rights-role');
     const adminBox = document.getElementById('server-rights-admin');
     if (!user || !roleSelect || !adminBox) return;
-    const role = roleSelect.value === 'controleur' ? 'controleur' : 'directeur';
     // Même règle que la fiche d'un compte local : changer de rôle repart des
     // droits par défaut du nouveau rôle ; une personne encore sans fiche
-    // reçoit ceux de son rôle dès son premier enregistrement.
-    if (user.role !== role || !user.configured) user.permissions = defaultPermissionsFor(role);
-    user.role = role;
+    // reçoit ceux de son rôle dès son premier enregistrement. Un rôle
+    // personnalisé apporte aussi ses centres de coûts (`applyRoleChoice`).
+    applyRoleChoice(user, roleSelect.value);
     user.isAdmin = adminBox.checked;
     render();
     pushServerRights(user.id);
@@ -33160,7 +33646,10 @@ document.getElementById('view').addEventListener('click', async function (event)
   const preset = target.closest('[data-auth-permissions-preset]');
   if (preset) {
     const mode = preset.dataset.authPermissionsPreset;
-    const defaults = defaultPermissionsFor('directeur');
+    const presetUser = authPermissionsId ? userById(authPermissionsId) : null;
+    const defaults = mode === 'role' && presetUser
+      ? defaultRightsForRole(roleChoiceOf(presetUser)).permissions
+      : defaultPermissionsFor('directeur');
     document.querySelectorAll('[data-auth-page-check]').forEach(function (box) {
       const tabId = box.dataset.authPageTab;
       if (mode === 'all') box.checked = true;
@@ -33371,6 +33860,13 @@ document.getElementById('view').addEventListener('click', async function (event)
 
   const saveButton = target.closest('[data-save-auth]');
   if (saveButton) { await saveAuthUserFromForm(); return; }
+});
+
+/* Paramètres › Rôles : le brouillon suit l'éditeur (voir `syncRoleEditorDraft`). */
+['input', 'change'].forEach(function (type) {
+  document.getElementById('view').addEventListener(type, function (event) {
+    if (event.target.closest && event.target.closest('[data-panel="parametres-role-editeur"]')) syncRoleEditorDraft();
+  });
 });
 
 /* Statut administrateur et périmètre s'appliquent désormais à tous les rôles :
