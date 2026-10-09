@@ -131,3 +131,12 @@ test('groupes de sociétés du périmètre : contrôlés, absents d’une fiche 
   assert.deepEqual(sanitizeRights(Object.assign({ groupIds: ['grp_1', 'grp_1'] }, directeur)).groupIds, ['grp_1']);
   assert.throws(() => sanitizeRights(Object.assign({ groupIds: ['<x>'] }, directeur)), RightsError);
 });
+
+test('centres de coûts visibles : absents = tous, liste vide gardée (aucune charge visible)', () => {
+  assert.ok(!('viewableCostCenters' in sanitizeRights(directeur)));
+  assert.ok(!('viewableCostCenters' in sanitizeRights(Object.assign({ viewableCostCenters: null }, directeur))));
+  assert.deepEqual(sanitizeRights(Object.assign({ viewableCostCenters: [] }, directeur)).viewableCostCenters, [],
+    'une liste vide n’est pas « tous » : elle ne montre rien');
+  assert.deepEqual(sanitizeRights(Object.assign({ viewableCostCenters: ['F&B', 'AG'] }, directeur)).viewableCostCenters, ['F&B', 'AG']);
+  assert.throws(() => sanitizeRights(Object.assign({ viewableCostCenters: 'F&B' }, directeur)), RightsError);
+});

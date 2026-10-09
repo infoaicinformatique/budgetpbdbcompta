@@ -117,7 +117,7 @@ Invariants techniques :
 ## Commandes
 
 ```bash
-npm ci && npm test                     # serveur : LDAP, droits, données, main, préférences (60 tests)
+npm ci && npm test                     # serveur : LDAP, droits, données, main, préférences (61 tests)
 npm start                              # http://127.0.0.1:3000 (server.mjs)
 npm --prefix excel-grid install        # une fois (node_modules absent par défaut)
 npm run verify                         # check + test + check:app + check:markup + typecheck

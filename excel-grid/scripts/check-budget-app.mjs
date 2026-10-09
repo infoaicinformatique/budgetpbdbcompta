@@ -550,6 +550,8 @@ const app = await importApp(
     '  roleDraftError, saveRoleEditor, deleteCustomRole, roleRightsSummary, viewParametresServeur };\n' +
     // Groupes de sociétés dans le périmètre (09/10/2026).
     'export { userGroupIds, companyIdsInGroups, userScopeEnvironmentIds, scopeGroupRowsHtml };\n' +
+    // Centres de coûts visibles (09/10/2026).
+    'export { viewableCostCenterIds, isCenterViewable };\n' +
     'export function __setRoleEditor(v) { roleEditor = v; }\n' +
     'export function __getRoleEditor() { return roleEditor; }\n' +
     'export function __getServerRoles() { return serverRoles; }\n' +
@@ -18429,6 +18431,68 @@ function restoreEnvironmentFixture(saved) {
   app.signOut();
 }
 
+check('Centres de coûts visibles par personne : non cochés = aucune vue (09/10/2026)', () => {
+  // Alexis : « en plus de sélectionner les centres de coûts modifiables,
+  // pouvoir sélectionner par utilisateur les centres de coûts visibles ; si
+  // aucun centre de coûts coché, aucune vue sur le contenu ».
+  const savedTab = app.__getTab();
+  const savedCenter = app.__getCenter();
+  const companyId = app.state.activeCompany || app.state.companies[0].id;
+  const centerOf = (line) => { const a = app.resolveAccountForLine(line); return a ? (a.kind === 'produit' ? 'PRODUITS' : a.center || '') : '?'; };
+  const raw = app.rawLinesOf(companyId);
+  const centers = new Set(raw.map(centerOf));
+  const rights = (o) => Object.assign({ role: 'controleur', isAdmin: false, permissions: null,
+    allowedCompanies: null, allowedCostCenters: null, environmentIds: [] }, o);
+  try {
+    assert.ok(centers.has('PRODUITS') && centers.has('F&B') && [...centers].filter((c) => c && c !== 'PRODUITS').length > 1,
+      'la société de test doit porter des produits et plusieurs centres');
+
+    // Sans restriction : le même tableau, sans copie ni filtre.
+    app.adoptServerSession({ method: 'ldap', account: 'u', rights: rights({}) }, null);
+    assert.strictEqual(app.linesOf(companyId), raw, 'sans restriction, linesOf rend le tableau d’origine');
+    assert.ok(!('viewableCostCenters' in app.serverRightsPayload(app.currentUser())), 'fiche de forme inchangée');
+
+    // F&B seul : produits + F&B, rien d'autre ; l'état n'est pas touché.
+    app.adoptServerSession({ method: 'ldap', account: 'u', rights: rights({ viewableCostCenters: ['F&B'] }) }, null);
+    const me = app.currentUser();
+    const seen = new Set(app.linesOf(companyId).map(centerOf));
+    assert.deepEqual([...seen].sort(), ['F&B', 'PRODUITS'], 'seuls le CA et le centre coché restent');
+    assert.equal(app.rawLinesOf(companyId).length, raw.length, 'les lignes cachées restent dans l’état (rien n’est supprimé à l’enregistrement)');
+    assert.equal(app.isCenterViewable(me, 'AG'), false);
+    assert.equal(app.isCenterAllowed(me, 'AG'), false, 'un centre non visible n’est jamais modifiable');
+    assert.equal(app.isCenterAllowed(me, 'F&B'), true);
+    assert.deepEqual(app.serverRightsPayload(me).viewableCostCenters, ['F&B'], 'la restriction repart au serveur');
+
+    // Saisie : l'onglet du centre caché disparaît ; un centre caché affiché retombe sur les Produits.
+    app.__setTab('saisie');
+    app.__setCenter('AG');
+    app.render();
+    const saisie = document.getElementById('view').innerHTML;
+    assert.ok(saisie.includes('data-center="F&amp;B"') || saisie.includes('data-center="F&B"'), 'le centre visible reste dans la barre');
+    assert.ok(!saisie.includes('data-center="AG"'), 'le centre caché n’est pas dans la barre');
+    assert.equal(app.__getCenter(), 'PRODUITS', 'le centre caché affiché retombe sur les Produits');
+
+    // Aucun centre coché : aucune charge, seul le CA.
+    app.adoptServerSession({ method: 'ldap', account: 'u', rights: rights({ viewableCostCenters: [] }) }, null);
+    assert.deepEqual([...new Set(app.linesOf(companyId).map(centerOf))], ['PRODUITS'], 'aucun centre coché : aucune charge visible');
+    assert.equal(app.isCenterViewable(app.currentUser(), 'F&B'), false);
+
+    // Périmètre : la rubrique existe, s'enregistre et se lève avec « Tout ouvrir ».
+    const panelHtml = app.authScopePanelHtml(app.serverUserFromRights('bob', 'Bob', rights({ viewableCostCenters: ['AG'] }), ''));
+    assert.ok(/id="auth-scope-restrict-view-centers" checked/.test(panelHtml), 'bascule « centres visibles » cochée');
+    assert.ok(/data-auth-scope-view-center="AG" checked/.test(panelHtml) && /data-auth-scope-view-center="F&B"(?! checked)/.test(panelHtml));
+    assert.ok(/setUserScope\(saveScope\.dataset\.authSaveScope, companies, centers, environmentIds, groupIds, viewCenters\)/.test(html));
+    assert.ok(/setUserScope\(clearScope\.dataset\.authClearScope, null, null, \[\], \[\], null\)/.test(html));
+    assert.ok(/linesScopedToCostCenters\(rawLinesOf\(companyId\), companyId\)/.test(html), 'linesOf passe par le filtre');
+    assert.ok(/pnlTable\(summarizeForDisplay\(linesOf\(company\.id\)\)/.test(html), 'le P&L d’une société passe par linesOf');
+  } finally {
+    app.__clearServerSession();
+    app.__setCenter(savedCenter);
+    app.__setTab(savedTab);
+    app.render();
+  }
+});
+
 check('Périmètre : groupes de sociétés, seuls ou en plus des environnements (09/10/2026)', () => {
   // Alexis : « on souhaiterait aussi pouvoir sélectionner les groupes de
   // sociétés, donc soit sélectionner l'environnement, soit sélectionner le
@@ -18465,7 +18529,7 @@ check('Périmètre : groupes de sociétés, seuls ou en plus des environnements 
     assert.ok(panelHtml.includes('Groupes de sociétés accessibles'), 'rubrique dans le Périmètre');
     assert.ok(panelHtml.includes('data-scope-company-group="multi_grp_a"'), 'chaque société porte son groupe pour le filtre en direct');
     assert.ok(/data-auth-scope-group\]', 'authScopeGroup'\)/.test(html), 'cocher un groupe refiltre la liste des sociétés');
-    assert.ok(/setUserScope\(saveScope\.dataset\.authSaveScope, companies, centers, environmentIds, groupIds\)/.test(html),
+    assert.ok(/setUserScope\(saveScope\.dataset\.authSaveScope, companies, centers, environmentIds, groupIds[,)]/.test(html),
       'l’enregistrement du périmètre emporte les groupes');
   } finally {
     app.__clearServerSession();

@@ -3501,7 +3501,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-09.2';
+const APP_BUILD = '2026-10-09.3';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -8952,7 +8952,7 @@ function setUserPermissions(userId, permissions) {
  * réglage. Distinct de `permissions` (onglets/rubriques) pour que
  * l'enregistrement de l'un n'efface jamais l'autre.
  */
-function setUserScope(userId, companies, costCenters, environmentIds, groupIds) {
+function setUserScope(userId, companies, costCenters, environmentIds, groupIds, viewableCenters) {
   const user = userById(userId);
   if (!user) return null;
   user.allowedCompanies = Array.isArray(companies) ? companies.slice() : null;
@@ -8966,6 +8966,8 @@ function setUserScope(userId, companies, costCenters, environmentIds, groupIds) 
   // Groupes de sociétés (09/10/2026) : absents de l'appel = inchangés (la
   // fenêtre d'invitation ne les propose pas), tableau = remplacés.
   if (groupIds !== undefined) user.groupIds = normalizeEnvironmentIds(groupIds);
+  // Centres visibles (09/10/2026) : même convention, `null` = tous visibles.
+  if (viewableCenters !== undefined) user.viewableCostCenters = Array.isArray(viewableCenters) ? viewableCenters.slice() : null;
   logAuthEvent('scope-changed', 'Périmètre sociétés/centres de coûts modifié pour « ' + (user.username || user.email) + ' »');
   return user;
 }
@@ -9211,11 +9213,44 @@ function isCompanyAllowed(user, companyId) {
 }
 
 /**
+ * Centres de coûts VISIBLES d'un compte (09/10/2026), distincts des centres
+ * modifiables (`allowedCostCenters`). Alexis : « en plus de sélectionner les
+ * centres de coûts modifiables, pouvoir sélectionner par utilisateur les
+ * centres de coûts visibles ; si aucun centre de coûts coché, aucune vue
+ * sur le contenu ». `viewableCostCenters` à `null` : tout est visible
+ * (comportement d'avant) ; tableau, même vide : seuls ces centres le sont.
+ * Le chiffre d'affaires n'a pas de centre de coûts : il reste visible.
+ */
+function viewableCostCenterIds(user) {
+  if (!user) return null;
+  return Array.isArray(user.viewableCostCenters) ? new Set(user.viewableCostCenters) : null;
+}
+
+/**
+ * Un centre de coûts est-il visible ? Sous restriction, une charge sans
+ * centre (à classer) ne l'est pas : on ne montre que ce qui a été coché.
+ */
+function isCenterViewable(user, centerId) {
+  const viewable = viewableCostCenterIds(user);
+  if (!viewable) return true;
+  return Boolean(centerId) && viewable.has(centerId);
+}
+
+/** Restriction de visibilité de la personne connectée, ou `null`. */
+function currentViewableCostCenters() {
+  if (!authEnabled()) return null;
+  return viewableCostCenterIds(currentUser());
+}
+
+/**
  * Un centre de coûts précis (id de `COST_CENTERS`) est-il dans le
  * périmètre ? Un compte sans centre (charge non classée) n'est jamais
- * restreint — même règle que `linesScopedToCostCenters()`.
+ * restreint — même règle que `linesScopedToCostCenters()`. Un centre qu'on
+ * ne voit pas ne se modifie pas non plus (09/10/2026), quoi que dise la
+ * liste des centres modifiables.
  */
 function isCenterAllowed(user, centerId) {
+  if (centerId && !isCenterViewable(user, centerId)) return false;
   if (!centerId) return true;
   const allowed = allowedCostCenterIds(user);
   return !allowed || allowed.has(centerId);
@@ -9790,6 +9825,8 @@ function serverUserFromRights(account, displayName, rights, mail) {
       : DIRECTEUR_DEFAULT_COST_CENTERS.slice(),
     environmentIds: r ? normalizeEnvironmentIds(r.environmentIds) : [],
     groupIds: r ? normalizeEnvironmentIds(r.groupIds) : [],
+    // Centres visibles (09/10/2026) : `null` = tous.
+    viewableCostCenters: r && Array.isArray(r.viewableCostCenters) ? r.viewableCostCenters.slice() : null,
   };
 }
 
@@ -9808,6 +9845,8 @@ function serverRightsPayload(user) {
   // Groupes de sociétés : seulement s'il y en a, même raison.
   const groupIds = normalizeEnvironmentIds(user.groupIds);
   if (groupIds.length) payload.groupIds = groupIds;
+  // Centres visibles : seulement quand la visibilité est restreinte.
+  if (Array.isArray(user.viewableCostCenters)) payload.viewableCostCenters = user.viewableCostCenters.slice();
   return payload;
 }
 
@@ -10928,7 +10967,7 @@ function rawLinesOf(companyId) {
 }
 
 function linesOf(companyId) {
-  return linesScopedToCostCenters(rawLinesOf(companyId));
+  return linesScopedToCostCenters(rawLinesOf(companyId), companyId);
 }
 
 /**
@@ -10948,8 +10987,22 @@ function linesOf(companyId) {
  * jour. Le chiffre d'affaires (comptes « produit ») n'a de toute façon
  * jamais eu de centre de coûts dans le plan comptable.
  */
-function linesScopedToCostCenters(bucket) {
-  return bucket;
+function linesScopedToCostCenters(bucket, companyId) {
+  // Réactivé le 09/10/2026 pour les centres VISIBLES (`viewableCostCenters`),
+  // pas pour les centres modifiables, qui restent visibles comme décidé le
+  // 23/09/2026. Sans restriction de visibilité, rien ne change : le même
+  // tableau est rendu, sans copie. Seul l'affichage est filtré : l'état
+  // (`state.lines`) reste entier, donc un enregistrement ne supprime
+  // jamais les lignes que la personne ne voit pas.
+  const viewable = currentViewableCostCenters();
+  if (!viewable) return bucket;
+  const company = companyById(companyId);
+  const planIndex = accountIndexForPlan(company ? company.planId : undefined);
+  return bucket.filter(function (line) {
+    const account = findAccount(line.account, planIndex);
+    if (!account) return false;
+    return account.kind === 'produit' || (Boolean(account.center) && viewable.has(account.center));
+  });
 }
 
 /**
@@ -13458,7 +13511,8 @@ function viewSaisie() {
   // ou supprimer des charges ». Ce qui change d'un centre à l'autre, ce
   // n'est plus la visibilité mais le droit d'écrire : `centerReadOnly`
   // (plus bas) verrouille les montants d'un centre hors périmètre.
-  const lines = rawLinesOf(company.id);
+  // Centres visibles (09/10/2026) : `linesOf` retire ceux qu'on ne voit pas.
+  const lines = linesOf(company.id);
   const planIndex = accountIndexForPlan(company.planId);
   const summary = summarize(lines, resolveAccountForLine);
 
@@ -13519,6 +13573,8 @@ function viewSaisie() {
   const buttons = ['<button data-center="PRODUITS" class="' + (currentCenter === 'PRODUITS' ? 'active' : '') + '">' +
     'Produits ' + centerBadge('PRODUITS', total(summary.produits)) + '</button>'];
   for (const center of COST_CENTERS) {
+    // Centre non visible (09/10/2026) : absent de la barre, pas grisé.
+    if (!isCenterViewable(saisieUser, center.id)) continue;
     const readOnly = !isCenterAllowed(saisieUser, center.id);
     buttons.push('<button data-center="' + center.id + '" class="' + (currentCenter === center.id ? 'active' : '') +
       (readOnly ? ' is-readonly' : '') + '"' +
@@ -13542,6 +13598,12 @@ function viewSaisie() {
   // seule la raison affichée change.
   const centerReadOnly = budgetHandHeldByOther()
     || (currentCenter !== 'PRODUITS' && !isCenterAllowed(saisieUser, currentCenter));
+  // Centre affiché devenu invisible (droits changés, ou resté d'une autre
+  // session) : retour aux Produits plutôt qu'un écran vide qu'on ne peut pas quitter.
+  if (currentCenter !== 'PRODUITS' && !isCenterViewable(saisieUser, currentCenter)) {
+    currentCenter = 'PRODUITS';
+    return viewSaisie();
+  }
   const canStructure = canEditLineStructure();
   const canAddHere = canStructure && !centerReadOnly;
   const canAddLineHere = !centerReadOnly && canAddLineInCenter(currentCenter);
@@ -14356,6 +14418,8 @@ function pnlTable(summary, title, isolateFilter, drillCompanies, compare, fullsc
 
   body += divider();
   for (const center of COST_CENTERS) {
+    // Centre non visible (09/10/2026) : sa rubrique disparaît du P&L.
+    if (!isCenterViewable(pnlUser, center.id)) continue;
     // Un centre hors périmètre d'édition reste affiché (visu complète du
     // P&L) mais grisé et sans lien vers la Saisie — voir le commentaire en
     // tête de fonction. `isCenterAllowed` revient à `true` pour un CDG (pas
@@ -17799,7 +17863,7 @@ function viewPnl() {
   // remplir ». Seule la Saisie reste bornée à son périmètre ; `pnlTable`
   // grise les rubriques hors périmètre et retire leur lien vers la Saisie
   // (voir `isCenterAllowed` dans la boucle des centres).
-  const table = pnlTable(summarizeForDisplay(rawLinesOf(company.id)),
+  const table = pnlTable(summarizeForDisplay(linesOf(company.id)),
     'Compte de résultat — ' + company.name + ' ' + company.year,
     null, null, comparisonFor([company]), pnlFullscreen, company.id);
   // Le plein écran garde sa forme nue : ni en-tête d'onglet ni barre
@@ -25016,6 +25080,7 @@ function authScopePanelHtml(user) {
 
   const restrictCompanies = Array.isArray(user.allowedCompanies);
   const restrictCenters = Array.isArray(user.allowedCostCenters);
+  const restrictView = Array.isArray(user.viewableCostCenters);
   const environments = userEnvironmentIds(user);
   const groups = userGroupIds(user);
   const hasEnvironment = environments.length > 0 || groups.length > 0;
@@ -25026,6 +25091,9 @@ function authScopePanelHtml(user) {
   const groupRows = scopeGroupRowsHtml(user, 'data-auth-scope-group');
   const companyRows = scopeCompanyRowsHtml(user, 'data-auth-scope-company');
   const centerRows = scopeCenterRowsHtml(user, 'data-auth-scope-center');
+  // Grille des centres visibles : à la première activation, tout est coché
+  // (rien ne disparaît par surprise) ; on décoche ce qu'on veut cacher.
+  const viewRows = scopeCenterRowsHtml({ allowedCostCenters: user.viewableCostCenters }, 'data-auth-scope-view-center');
 
   const meta = hasEnvironment
     ? [
@@ -25033,10 +25101,11 @@ function authScopePanelHtml(user) {
       groups.length ? groups.length + (groups.length === 1 ? ' groupe' : ' groupes') : null,
     ].filter(Boolean).join(' · ') +
       ' · ' + (restrictCompanies ? user.allowedCompanies.length : inScope.size) + ' société(s)'
-    : (!restrictCompanies && !restrictCenters
+    : (!restrictCompanies && !restrictCenters && !restrictView
       ? 'accès complet'
       : [
         restrictCompanies ? user.allowedCompanies.length + ' société(s)' : null,
+        restrictView ? user.viewableCostCenters.length + ' centre(s) visible(s)' : null,
         restrictCenters ? user.allowedCostCenters.length + ' centre(s)' : null,
       ].filter(Boolean).join(' · '));
 
@@ -25077,6 +25146,21 @@ function authScopePanelHtml(user) {
     companyRows +
     '</div></div>' +
     '</div>' +
+
+    '<div style="margin-bottom:18px">' +
+    '<label class="auth-editor-toggle-row">' +
+    // Alexis, 09/10/2026 : « pouvoir sélectionner par utilisateur les
+    // centres de coûts visibles ; si aucun centre de coûts coché, aucune
+    // vue sur le contenu ».
+    '<span class="grow">Choisir les centres de coûts visibles</span>' +
+    '<input type="checkbox" class="nice-check" id="auth-scope-restrict-view-centers"' + (restrictView ? ' checked' : '') + ' />' +
+    '</label>' +
+    '<div id="auth-scope-view-centers-list" style="margin-top:10px' + (restrictView ? '' : ';display:none') + '">' +
+    '<p class="muted" style="margin:0 0 8px;font-size:12px">Un centre non coché disparaît pour cette personne : ' +
+    'onglet de la Saisie, rubrique du P&amp;L, équipe du Payroll, et ses charges ne comptent plus dans ce qu’elle ' +
+    'voit (totaux, consolidation, exports). Aucun centre coché : aucune charge visible, seul le chiffre d’affaires ' +
+    'reste. Un centre non visible n’est jamais modifiable.</p>' +
+    viewRows + '</div></div>' +
 
     '<div>' +
     '<label class="auth-editor-toggle-row">' +
@@ -33744,6 +33828,11 @@ document.getElementById('view').addEventListener('click', async function (event)
     if (list) list.style.display = target.checked ? '' : 'none';
     return;
   }
+  if (target.id === 'auth-scope-restrict-view-centers') {
+    const list = document.getElementById('auth-scope-view-centers-list');
+    if (list) list.style.display = target.checked ? '' : 'none';
+    return;
+  }
   // Cocher un environnement borne la liste des sociétés proposables à celles
   // qu'il contient (les deux réglages se combinent : voir `allowedCompanyIds`)
   // — Alexis : « décider l'environnement et ensuite sélectionner certaines
@@ -33830,14 +33919,18 @@ document.getElementById('view').addEventListener('click', async function (event)
     const centers = (restrictCenters && restrictCenters.checked)
       ? Array.from(document.querySelectorAll('[data-auth-scope-center]:checked')).map(function (b) { return b.dataset.authScopeCenter; })
       : null;
+    const restrictView = document.getElementById('auth-scope-restrict-view-centers');
+    const viewCenters = (restrictView && restrictView.checked)
+      ? Array.from(document.querySelectorAll('[data-auth-scope-view-center]:checked')).map(function (b) { return b.dataset.authScopeViewCenter; })
+      : null;
     if (isServerUserId(saveScope.dataset.authSaveScope)) {
-      setUserScope(saveScope.dataset.authSaveScope, companies, centers, environmentIds, groupIds);
+      setUserScope(saveScope.dataset.authSaveScope, companies, centers, environmentIds, groupIds, viewCenters);
       render();
       pushServerRights(saveScope.dataset.authSaveScope);
       return;
     }
     captureUndoStep();
-    setUserScope(saveScope.dataset.authSaveScope, companies, centers, environmentIds, groupIds);
+    setUserScope(saveScope.dataset.authSaveScope, companies, centers, environmentIds, groupIds, viewCenters);
     save();
     render();
     showToast('Périmètre enregistré.');
@@ -33851,13 +33944,13 @@ document.getElementById('view').addEventListener('click', async function (event)
   const clearScope = target.closest('[data-auth-clear-scope]');
   if (clearScope) {
     if (isServerUserId(clearScope.dataset.authClearScope)) {
-      setUserScope(clearScope.dataset.authClearScope, null, null, [], []);
+      setUserScope(clearScope.dataset.authClearScope, null, null, [], [], null);
       render();
       pushServerRights(clearScope.dataset.authClearScope);
       return;
     }
     captureUndoStep();
-    setUserScope(clearScope.dataset.authClearScope, null, null, [], []);
+    setUserScope(clearScope.dataset.authClearScope, null, null, [], [], null);
     save();
     render();
     showToast('Accès complet rétabli pour ce compte.');
