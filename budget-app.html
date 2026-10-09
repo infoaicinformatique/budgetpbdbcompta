@@ -3501,7 +3501,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-09.1';
+const APP_BUILD = '2026-10-09.2';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -6671,7 +6671,7 @@ function welcomeEnvironmentCardsHtml() {
     return cardFor(environment.id, environment.name, environment.period, environment.logo);
   }).join('');
   if (canSeeAllEnvironments(user)) {
-    cards += cardFor(null, userEnvironmentIds(user).length ? 'Tous mes environnements' : 'Tous les environnements');
+    cards += cardFor(null, userScopeEnvironmentIds(user).length ? 'Tous mes environnements' : 'Tous les environnements');
   }
   return '<div class="welcome-env-grid' + tier + '">' + cards + '</div>';
 }
@@ -8952,7 +8952,7 @@ function setUserPermissions(userId, permissions) {
  * réglage. Distinct de `permissions` (onglets/rubriques) pour que
  * l'enregistrement de l'un n'efface jamais l'autre.
  */
-function setUserScope(userId, companies, costCenters, environmentIds) {
+function setUserScope(userId, companies, costCenters, environmentIds, groupIds) {
   const user = userById(userId);
   if (!user) return null;
   user.allowedCompanies = Array.isArray(companies) ? companies.slice() : null;
@@ -8963,6 +8963,9 @@ function setUserScope(userId, companies, costCenters, environmentIds) {
   user.environmentIds = Array.isArray(environmentIds)
     ? environmentIds.filter(function (id) { return typeof id === 'string' && id; }).slice()
     : (environmentIds ? [environmentIds] : []);
+  // Groupes de sociétés (09/10/2026) : absents de l'appel = inchangés (la
+  // fenêtre d'invitation ne les propose pas), tableau = remplacés.
+  if (groupIds !== undefined) user.groupIds = normalizeEnvironmentIds(groupIds);
   logAuthEvent('scope-changed', 'Périmètre sociétés/centres de coûts modifié pour « ' + (user.username || user.email) + ' »');
   return user;
 }
@@ -9011,6 +9014,53 @@ function userEnvironmentIds(user) {
   return user.environmentIds.filter(function (id) { return Boolean(environmentById(id)); });
 }
 
+/**
+ * Groupes de sociétés attribués à un compte (Paramètres › Droits d'accès,
+ * Périmètre), bornés à ceux qui existent encore. Alexis, 09/10/2026 :
+ * « au niveau des accès aux périmètres, on souhaiterait aussi pouvoir
+ * sélectionner les groupes de sociétés, donc soit sélectionner
+ * l'environnement, soit sélectionner le groupe de sociétés ». Un groupe
+ * coché ouvre ses sociétés, en plus de celles des environnements cochés.
+ */
+function userGroupIds(user) {
+  if (!user || !Array.isArray(user.groupIds)) return [];
+  const known = new Set((state.groups || []).map(function (g) { return g.id; }));
+  return user.groupIds.filter(function (id) { return known.has(id); });
+}
+
+/** Sociétés couvertes par une liste de groupes (union, sans doublon). */
+function companyIdsInGroups(ids) {
+  const wanted = new Set(ids || []);
+  return new Set(state.companies
+    .filter(function (c) { return wanted.has(c.groupId); })
+    .map(function (c) { return c.id; }));
+}
+
+/**
+ * Environnements où un compte a quelque chose à voir : ceux qui lui sont
+ * attribués, plus ceux qui portent ses groupes de sociétés. Sert à la
+ * bascule d'environnement de l'en-tête et de l'accueil — un compte qui n'a
+ * qu'un groupe atterrit dans l'environnement de ce groupe.
+ */
+function userScopeEnvironmentIds(user) {
+  const ids = userEnvironmentIds(user).slice();
+  for (const groupId of userGroupIds(user)) {
+    const group = (state.groups || []).find(function (g) { return g.id === groupId; });
+    if (group && group.superGroupId && environmentById(group.superGroupId) && ids.indexOf(group.superGroupId) === -1) {
+      ids.push(group.superGroupId);
+    }
+  }
+  return ids;
+}
+
+/** Le compte a-t-il un groupe de sociétés rangé dans aucun environnement ? */
+function userHasGroupOutsideEnvironments(user) {
+  return userGroupIds(user).some(function (groupId) {
+    const group = (state.groups || []).find(function (g) { return g.id === groupId; });
+    return !group || !group.superGroupId || !environmentById(group.superGroupId);
+  });
+}
+
 /** Sociétés couvertes par une liste d'environnements (union, sans doublon). */
 function companyIdsInEnvironments(ids) {
   const out = new Set();
@@ -9044,8 +9094,11 @@ function companyIdsInEnvironments(ids) {
 function allowedCompanyIds(user) {
   if (!user) return null;
   const environments = userEnvironmentIds(user);
-  if (environments.length) {
+  const groups = userGroupIds(user);
+  if (environments.length || groups.length) {
+    // Environnements et groupes cochés s'additionnent (09/10/2026).
     const inEnvironments = companyIdsInEnvironments(environments);
+    for (const id of companyIdsInGroups(groups)) inEnvironments.add(id);
     // Alexis : « je puisse décider l'environnement et ensuite sélectionner
     // certaines sociétés où il aura accès » — les deux réglages se
     // combinent désormais : un environnement borne la liste maximale, une
@@ -9081,7 +9134,7 @@ function allowedCostCenterIds(user) {
  * l'application sur un périmètre, pas une limite de droits.
  */
 function availableEnvironments(user) {
-  const assigned = userEnvironmentIds(user);
+  const assigned = userScopeEnvironmentIds(user);
   // Un compte explicitement rattaché voit toujours les siens, masqués ou
   // non — l'onglet Affichage (Alexis : « masquer des environnements... de
   // manière à choisir quoi voir ») allège la vue par défaut, il ne retire
@@ -9096,8 +9149,10 @@ function availableEnvironments(user) {
  * plusieurs — sinon l'option ferait doublon avec son unique environnement.
  */
 function canSeeAllEnvironments(user) {
-  const assigned = userEnvironmentIds(user);
-  return assigned.length === 0 || assigned.length > 1;
+  const assigned = userScopeEnvironmentIds(user);
+  // Un groupe de sociétés rangé hors de tout environnement ne se voit que
+  // dans la vue réunie : elle doit rester atteignable.
+  return assigned.length === 0 || assigned.length > 1 || userHasGroupOutsideEnvironments(user);
 }
 
 /**
@@ -9119,7 +9174,7 @@ function activeEnvironmentId() {
   // c'est bien ainsi que l'application « se divise ». « Tous mes
   // environnements » reste atteignable en un clic, mais ce n'est jamais le
   // point de départ imposé.
-  if (!userEnvironmentIds(user).length) return null;
+  if (!userScopeEnvironmentIds(user).length) return null;
   return available[0] ? available[0].id : null;
 }
 
@@ -9734,6 +9789,7 @@ function serverUserFromRights(account, displayName, rights, mail) {
       ? (Array.isArray(r.allowedCostCenters) ? r.allowedCostCenters.slice() : null)
       : DIRECTEUR_DEFAULT_COST_CENTERS.slice(),
     environmentIds: r ? normalizeEnvironmentIds(r.environmentIds) : [],
+    groupIds: r ? normalizeEnvironmentIds(r.groupIds) : [],
   };
 }
 
@@ -9749,6 +9805,9 @@ function serverRightsPayload(user) {
   };
   // Rôle intégré : la fiche garde sa forme d'avant les rôles personnalisés.
   if (user.roleId) payload.roleId = user.roleId;
+  // Groupes de sociétés : seulement s'il y en a, même raison.
+  const groupIds = normalizeEnvironmentIds(user.groupIds);
+  if (groupIds.length) payload.groupIds = groupIds;
   return payload;
 }
 
@@ -24763,7 +24822,9 @@ function authPermissionsPanel() {
 function scopeCompanyRowsHtml(user, attr) {
   const restrictCompanies = user ? Array.isArray(user.allowedCompanies) : false;
   const envIds = user ? userEnvironmentIds(user) : [];
-  const envFilter = envIds.length ? companyIdsInEnvironments(envIds) : null;
+  const groupIds = user ? userGroupIds(user) : [];
+  const envFilter = envIds.length || groupIds.length ? companyIdsInEnvironments(envIds) : null;
+  if (envFilter) for (const id of companyIdsInGroups(groupIds)) envFilter.add(id);
   const rows = state.companies.slice()
     .sort(function (a, b) { return alphaCompare(a.name, b.name) || String(a.year).localeCompare(String(b.year)); })
     .map(function (c) {
@@ -24775,7 +24836,8 @@ function scopeCompanyRowsHtml(user, attr) {
       const checked = restrictCompanies ? user.allowedCompanies.indexOf(c.id) !== -1 : false;
       const hidden = envFilter && !envFilter.has(c.id);
       return '<label class="scope-check-item" data-scope-company-env="' +
-        escapeHtml(environmentIdForCompany(c) || '') + '"' + (hidden ? ' style="display:none"' : '') + '>' +
+        escapeHtml(environmentIdForCompany(c) || '') + '" data-scope-company-group="' + escapeHtml(c.groupId || '') + '"' +
+        (hidden ? ' style="display:none"' : '') + '>' +
         '<input type="checkbox" ' + attr + '="' + c.id + '"' + (checked ? ' checked' : '') + ' />' +
         '<span>' + escapeHtml(c.name) + ' <span class="scope-check-year">' + c.year + '</span></span></label>';
     }).join('');
@@ -24824,6 +24886,35 @@ function scopeEnvironmentRowsHtml(user, attr) {
       '<input type="checkbox" ' + attr + '="' + sg.id + '"' + (assigned.indexOf(sg.id) !== -1 ? ' checked' : '') + ' />' +
       '<span>' + escapeHtml(sg.name) +
       ' <span class="scope-check-year">' + count + (count === 1 ? ' société' : ' sociétés') + '</span></span></label>';
+  }).join('');
+  return '<div class="scope-check-grid">' + rows + '</div>';
+}
+
+/**
+ * Grille de cases « groupe de sociétés » (09/10/2026) — même présentation
+ * que les environnements, avec l'environnement du groupe et son nombre de
+ * sociétés : deux groupes peuvent porter le même nom d'un environnement à
+ * l'autre (« Palm Beach » en budget et en réalisé).
+ */
+function scopeGroupRowsHtml(user, attr) {
+  const groups = (state.groups || []).slice().sort(function (a, b) {
+    const ea = environmentById(a.superGroupId);
+    const eb = environmentById(b.superGroupId);
+    return alphaCompare(ea ? ea.name : '~', eb ? eb.name : '~') || alphaCompare(a.name, b.name);
+  });
+  if (!groups.length) {
+    return '<p class="muted" style="margin:0;font-size:13px">Aucun groupe de sociétés pour l’instant : ' +
+      'créez-en un dans l’onglet Sociétés.</p>';
+  }
+  const assigned = user ? userGroupIds(user) : [];
+  const rows = groups.map(function (g) {
+    const count = companyIdsInGroups([g.id]).size;
+    const environment = environmentById(g.superGroupId);
+    return '<label class="scope-check-item">' +
+      '<input type="checkbox" ' + attr + '="' + escapeHtml(g.id) + '"' + (assigned.indexOf(g.id) !== -1 ? ' checked' : '') + ' />' +
+      '<span>' + escapeHtml(g.name) +
+      ' <span class="scope-check-year">' + (environment ? escapeHtml(environment.name) + ' · ' : '') +
+      count + (count === 1 ? ' société' : ' sociétés') + '</span></span></label>';
   }).join('');
   return '<div class="scope-check-grid">' + rows + '</div>';
 }
@@ -24926,15 +25017,22 @@ function authScopePanelHtml(user) {
   const restrictCompanies = Array.isArray(user.allowedCompanies);
   const restrictCenters = Array.isArray(user.allowedCostCenters);
   const environments = userEnvironmentIds(user);
-  const hasEnvironment = environments.length > 0;
+  const groups = userGroupIds(user);
+  const hasEnvironment = environments.length > 0 || groups.length > 0;
+  const inScope = companyIdsInEnvironments(environments);
+  for (const id of companyIdsInGroups(groups)) inScope.add(id);
 
   const environmentRows = scopeEnvironmentRowsHtml(user, 'data-auth-scope-environment');
+  const groupRows = scopeGroupRowsHtml(user, 'data-auth-scope-group');
   const companyRows = scopeCompanyRowsHtml(user, 'data-auth-scope-company');
   const centerRows = scopeCenterRowsHtml(user, 'data-auth-scope-center');
 
   const meta = hasEnvironment
-    ? environments.length + (environments.length === 1 ? ' environnement' : ' environnements') +
-      ' · ' + (restrictCompanies ? user.allowedCompanies.length : companyIdsInEnvironments(environments).size) + ' société(s)'
+    ? [
+      environments.length ? environments.length + (environments.length === 1 ? ' environnement' : ' environnements') : null,
+      groups.length ? groups.length + (groups.length === 1 ? ' groupe' : ' groupes') : null,
+    ].filter(Boolean).join(' · ') +
+      ' · ' + (restrictCompanies ? user.allowedCompanies.length : inScope.size) + ' société(s)'
     : (!restrictCompanies && !restrictCenters
       ? 'accès complet'
       : [
@@ -24947,8 +25045,10 @@ function authScopePanelHtml(user) {
     'Sans rien cocher, ce compte accède à toutes les sociétés et tous les centres de coûts couverts par ses ' +
     'droits ci-dessus. Cocher un ou plusieurs environnements limite déjà son accès aux sociétés qu’ils ' +
     'contiennent, et suit leurs changements automatiquement ; avec plusieurs environnements, il bascule de ' +
-    'l’un à l’autre depuis le menu de la barre du haut. « Autoriser certaines sociétés seulement » va plus ' +
-    'loin : parmi le(s) environnement(s) coché(s) (ou parmi toutes les sociétés, sans environnement), seules ' +
+    'l’un à l’autre depuis le menu de la barre du haut. On peut aussi, ou à la place, cocher des groupes de ' +
+    'sociétés : chaque groupe coché ouvre ses sociétés, en plus de celles des environnements cochés, et suit ' +
+    'lui aussi les sociétés qu’on y ajoute. « Autoriser certaines sociétés seulement » va plus ' +
+    'loin : parmi les environnements et groupes cochés (ou parmi toutes les sociétés, sans rien de coché), seules ' +
     'les sociétés cochées ci-dessous restent accessibles — les autres disparaissent entièrement (listes, ' +
     'sélecteurs, exports, recherche). Les centres de coûts, eux, restent TOUS visibles dans la Saisie : ceux ' +
     'qui ne sont pas cochés s’ouvrent en lecture seule (montants verrouillés, aucune action de ligne) et leur ' +
@@ -24959,6 +25059,10 @@ function authScopePanelHtml(user) {
     '<div style="margin-bottom:18px">' +
     '<p class="auth-editor-section-title" style="margin:0 0 8px">Environnements accessibles</p>' +
     environmentRows + '</div>' +
+
+    '<div style="margin-bottom:18px">' +
+    '<p class="auth-editor-section-title" style="margin:0 0 8px">Groupes de sociétés accessibles</p>' +
+    groupRows + '</div>' +
 
     '<div id="auth-scope-companies-section">' +
     '<div style="margin-bottom:18px">' +
@@ -33450,15 +33554,21 @@ document.getElementById('signup-form').addEventListener('submit', async function
  * (panneau et fenêtre d'invitation) peuvent coexister à l'écran avec des
  * listes distinctes, `companySelector` cible déjà la bonne.
  */
-function refreshScopeCompanyFilter(envSelector, envDatasetKey, companySelector) {
+function refreshScopeCompanyFilter(envSelector, envDatasetKey, companySelector, groupSelector, groupDatasetKey) {
   const checkedEnvIds = Array.from(document.querySelectorAll(envSelector + ':checked'))
     .map(function (b) { return b.dataset[envDatasetKey]; });
-  const hasFilter = checkedEnvIds.length > 0;
+  // Groupes de sociétés cochés (09/10/2026) : s'additionnent aux environnements.
+  const checkedGroupIds = groupSelector
+    ? Array.from(document.querySelectorAll(groupSelector + ':checked')).map(function (b) { return b.dataset[groupDatasetKey]; })
+    : [];
+  const hasFilter = checkedEnvIds.length > 0 || checkedGroupIds.length > 0;
   document.querySelectorAll(companySelector).forEach(function (box) {
     const row = box.closest('.scope-check-item');
     if (!row) return;
     const rowEnv = row.dataset.scopeCompanyEnv || '';
-    const visible = !hasFilter || checkedEnvIds.indexOf(rowEnv) !== -1;
+    const rowGroup = row.dataset.scopeCompanyGroup || '';
+    const visible = !hasFilter || checkedEnvIds.indexOf(rowEnv) !== -1 ||
+      (rowGroup !== '' && checkedGroupIds.indexOf(rowGroup) !== -1);
     row.style.display = visible ? '' : 'none';
     if (!visible) box.checked = false;
   });
@@ -33638,8 +33748,9 @@ document.getElementById('view').addEventListener('click', async function (event)
   // qu'il contient (les deux réglages se combinent : voir `allowedCompanyIds`)
   // — Alexis : « décider l'environnement et ensuite sélectionner certaines
   // sociétés où il aura accès ».
-  if (target.dataset && target.dataset.authScopeEnvironment !== undefined) {
-    refreshScopeCompanyFilter('[data-auth-scope-environment]', 'authScopeEnvironment', '[data-auth-scope-company]');
+  if (target.dataset && (target.dataset.authScopeEnvironment !== undefined || target.dataset.authScopeGroup !== undefined)) {
+    refreshScopeCompanyFilter('[data-auth-scope-environment]', 'authScopeEnvironment', '[data-auth-scope-company]',
+      '[data-auth-scope-group]', 'authScopeGroup');
     return;
   }
 
@@ -33709,6 +33820,8 @@ document.getElementById('view').addEventListener('click', async function (event)
     // environnements cochés) sont déjà décochées, donc sans effet ici.
     const environmentIds = Array.from(document.querySelectorAll('[data-auth-scope-environment]:checked'))
       .map(function (b) { return b.dataset.authScopeEnvironment; });
+    const groupIds = Array.from(document.querySelectorAll('[data-auth-scope-group]:checked'))
+      .map(function (b) { return b.dataset.authScopeGroup; });
     const restrictCompanies = document.getElementById('auth-scope-restrict-companies');
     const restrictCenters = document.getElementById('auth-scope-restrict-centers');
     const companies = (restrictCompanies && restrictCompanies.checked)
@@ -33718,13 +33831,13 @@ document.getElementById('view').addEventListener('click', async function (event)
       ? Array.from(document.querySelectorAll('[data-auth-scope-center]:checked')).map(function (b) { return b.dataset.authScopeCenter; })
       : null;
     if (isServerUserId(saveScope.dataset.authSaveScope)) {
-      setUserScope(saveScope.dataset.authSaveScope, companies, centers, environmentIds);
+      setUserScope(saveScope.dataset.authSaveScope, companies, centers, environmentIds, groupIds);
       render();
       pushServerRights(saveScope.dataset.authSaveScope);
       return;
     }
     captureUndoStep();
-    setUserScope(saveScope.dataset.authSaveScope, companies, centers, environmentIds);
+    setUserScope(saveScope.dataset.authSaveScope, companies, centers, environmentIds, groupIds);
     save();
     render();
     showToast('Périmètre enregistré.');
@@ -33738,13 +33851,13 @@ document.getElementById('view').addEventListener('click', async function (event)
   const clearScope = target.closest('[data-auth-clear-scope]');
   if (clearScope) {
     if (isServerUserId(clearScope.dataset.authClearScope)) {
-      setUserScope(clearScope.dataset.authClearScope, null, null, []);
+      setUserScope(clearScope.dataset.authClearScope, null, null, [], []);
       render();
       pushServerRights(clearScope.dataset.authClearScope);
       return;
     }
     captureUndoStep();
-    setUserScope(clearScope.dataset.authClearScope, null, null, []);
+    setUserScope(clearScope.dataset.authClearScope, null, null, [], []);
     save();
     render();
     showToast('Accès complet rétabli pour ce compte.');

@@ -77,6 +77,49 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Périmètre : choisir des groupes de sociétés, pas seulement des environnements (09/10/2026)
+
+Demande : « Au niveau des accès aux périmètres, on souhaiterait aussi
+pouvoir sélectionner les groupes de sociétés, donc soit sélectionner
+l'environnement, soit sélectionner le groupe de sociétés. »
+
+- **Fiche de droits** : nouveau champ `groupIds` (groupes de sociétés),
+  à côté de `environmentIds`. Absent d'une fiche qui n'en a pas
+  (`sanitizeRights`, `serverRightsPayload`) : les fiches existantes gardent
+  leur forme.
+- **Règle du périmètre**, identique côté application (`allowedCompanyIds`)
+  et serveur (`scopeOf` de `data.mjs`, qui filtre ce que chacun reçoit) :
+  sociétés des environnements cochés **∪** sociétés des groupes cochés,
+  puis, si « Autoriser certaines sociétés seulement » est actif, restreintes
+  à la sélection. Un groupe suit les sociétés qu'on y ajoute ensuite. Un
+  groupe disparu est sans effet, comme un environnement disparu.
+- **Bascule d'environnement** (en-tête, accueil) : `userScopeEnvironmentIds`
+  = environnements attribués + environnements des groupes attribués ; une
+  personne qui n'a qu'un groupe atterrit dans l'environnement de ce groupe.
+  Un groupe rangé dans aucun environnement garde la vue réunie atteignable
+  (`userHasGroupOutsideEnvironments`).
+- **Écran** (Paramètres › Droits d'accès › Périmètre) : rubrique « Groupes
+  de sociétés accessibles » sous « Environnements accessibles », chaque
+  case portant l'environnement du groupe et son nombre de sociétés (deux
+  groupes peuvent porter le même nom d'un environnement à l'autre). Cocher
+  un groupe refiltre aussitôt la liste des sociétés proposables
+  (`refreshScopeCompanyFilter`, attribut `data-scope-company-group`) ;
+  « Tout ouvrir » retire aussi les groupes. La fenêtre d'invitation des
+  comptes locaux ne les propose pas (`setUserScope` laisse alors les
+  groupes inchangés).
+
+`APP_BUILD` : `2026-10-09.2`.
+
+Contrôles : `check-budget-app.mjs` « Périmètre : groupes de sociétés,
+seuls ou en plus des environnements » (groupe seul, union avec un
+environnement, restriction par sociétés, environnements de la bascule,
+forme de la fiche, grille cochée, attribut de filtre, filtre en direct et
+enregistrement branchés) ; le contrôle existant du filtre en direct accepte
+la nouvelle signature. `test/data.test.mjs` (périmètre par groupes, filtrage
+des données) et `test/rights.test.mjs` (forme de `groupIds`) — 60 tests
+serveur. Parcours vérifié dans Chromium : un groupe coché ne laisse
+proposer que ses sociétés, la fiche enregistrée porte `groupIds`.
+
 ### Paramètres › Rôles : créer ses propres rôles et leurs droits par défaut (09/10/2026)
 
 Demande : « Dans Paramètres, il faut que l'on puisse créer des rôles
@@ -12495,6 +12538,8 @@ const app = await importApp(
     'export { setServerRoles, customRoles, customRoleById, userRoleLabel, roleChoiceOf, defaultRightsForRole,\n' +
     '  applyRoleChoice, knownPermissions, parametresRolesPanel, roleEditorPanel, serverRightsRolePanel,\n' +
     '  roleDraftError, saveRoleEditor, deleteCustomRole, roleRightsSummary, viewParametresServeur };\n' +
+    // Groupes de sociétés dans le périmètre (09/10/2026).
+    'export { userGroupIds, companyIdsInGroups, userScopeEnvironmentIds, scopeGroupRowsHtml };\n' +
     'export function __setRoleEditor(v) { roleEditor = v; }\n' +
     'export function __getRoleEditor() { return roleEditor; }\n' +
     'export function __getServerRoles() { return serverRoles; }\n' +
@@ -30374,6 +30419,50 @@ function restoreEnvironmentFixture(saved) {
   app.signOut();
 }
 
+check('Périmètre : groupes de sociétés, seuls ou en plus des environnements (09/10/2026)', () => {
+  // Alexis : « on souhaiterait aussi pouvoir sélectionner les groupes de
+  // sociétés, donc soit sélectionner l'environnement, soit sélectionner le
+  // groupe de sociétés ».
+  const saved = environmentFixture();
+  const rights = (o) => Object.assign({ role: 'directeur', isAdmin: false, permissions: { saisie: ['saisie-ajouter'] },
+    allowedCompanies: null, allowedCostCenters: null, environmentIds: [] }, o);
+  try {
+    app.adoptServerSession({ method: 'ldap', account: 'dir', rights: rights({ groupIds: ['multi_grp_b'] }) }, null);
+    const me = app.currentUser();
+    assert.deepEqual([...app.allowedCompanyIds(me)], ['multi_b'], 'un groupe seul ouvre ses sociétés, et rien d’autre');
+    assert.deepEqual(app.userScopeEnvironmentIds(me), ['multi_env_b'], 'l’environnement du groupe devient le sien');
+    assert.deepEqual(app.availableEnvironments(me).map((e) => e.id), ['multi_env_b']);
+    assert.equal(app.canSeeAllEnvironments(me), false, 'un seul environnement : pas de vue réunie en doublon');
+    assert.deepEqual(app.serverRightsPayload(me).groupIds, ['multi_grp_b'], 'les groupes repartent au serveur');
+
+    app.adoptServerSession({ method: 'ldap', account: 'dir', rights: rights({ environmentIds: ['multi_env_a'], groupIds: ['multi_grp_b'] }) }, null);
+    assert.deepEqual([...app.allowedCompanyIds(app.currentUser())].sort(), ['multi_a', 'multi_b'], 'environnement + groupe : union');
+    assert.equal(app.canSeeAllEnvironments(app.currentUser()), true);
+
+    app.adoptServerSession({ method: 'ldap', account: 'dir', rights: rights({ groupIds: ['multi_grp_a', 'multi_grp_b'], allowedCompanies: ['multi_b', 'multi_c'] }) }, null);
+    assert.deepEqual([...app.allowedCompanyIds(app.currentUser())], ['multi_b'], 'la sélection de sociétés restreint encore');
+
+    app.adoptServerSession({ method: 'ldap', account: 'dir', rights: rights({}) }, null);
+    assert.ok(!('groupIds' in app.serverRightsPayload(app.currentUser())), 'sans groupe : fiche de forme inchangée');
+    assert.equal(app.allowedCompanyIds(app.currentUser()), null);
+
+    // Écran : la grille des groupes, cochée selon la fiche, nommant l'environnement.
+    const user = app.serverUserFromRights('bob', 'Bob', rights({ groupIds: ['multi_grp_a'] }), '');
+    const grid = app.scopeGroupRowsHtml(user, 'data-auth-scope-group');
+    assert.ok(/data-auth-scope-group="multi_grp_a" checked/.test(grid) && /data-auth-scope-group="multi_grp_b"(?! checked)/.test(grid));
+    assert.ok(grid.includes('Environnement A · 1 société'));
+    const panelHtml = app.authScopePanelHtml(user);
+    assert.ok(panelHtml.includes('Groupes de sociétés accessibles'), 'rubrique dans le Périmètre');
+    assert.ok(panelHtml.includes('data-scope-company-group="multi_grp_a"'), 'chaque société porte son groupe pour le filtre en direct');
+    assert.ok(/data-auth-scope-group\]', 'authScopeGroup'\)/.test(html), 'cocher un groupe refiltre la liste des sociétés');
+    assert.ok(/setUserScope\(saveScope\.dataset\.authSaveScope, companies, centers, environmentIds, groupIds\)/.test(html),
+      'l’enregistrement du périmètre emporte les groupes');
+  } finally {
+    app.__clearServerSession();
+    restoreEnvironmentFixture(saved);
+  }
+});
+
 check('Couleur par environnement : sélecteur libre (--navy/--navy-deep en style en ligne sur <html>)', () => {
   // Alexis : « fait en sorte que chaque environnement puisse changer de
   // thème de couleur… mais fait en sorte que je puisse les changer à la
@@ -31336,7 +31425,7 @@ check('Périmètre : environnement et sélection de sociétés se combinent, au 
   // qu'un environnement est également coché.
   assert.ok(/function refreshScopeCompanyFilter\(/.test(appSource),
     'le filtrage en direct des sociétés selon les environnements cochés doit exister');
-  assert.ok(/refreshScopeCompanyFilter\('\[data-auth-scope-environment\]', 'authScopeEnvironment', '\[data-auth-scope-company\]'\)/.test(appSource),
+  assert.ok(/refreshScopeCompanyFilter\('\[data-auth-scope-environment\]', 'authScopeEnvironment', '\[data-auth-scope-company\]'[,)]/.test(appSource),
     'le panneau périmètre doit rejouer ce filtre quand une case environnement change');
   assert.ok(/refreshScopeCompanyFilter\(\s*'\[data-auth-editor-scope-environment\]', 'authEditorScopeEnvironment', '\[data-auth-editor-scope-company\]'\)/.test(appSource),
     'la fenêtre d’invitation\/modification doit rejouer le même filtre');

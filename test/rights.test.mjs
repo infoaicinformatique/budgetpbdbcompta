@@ -124,3 +124,10 @@ test('rôles personnalisés : créés, renommés, attribués, supprimés sans to
   assert.deepEqual(bob.permissions, directeur.permissions, 'les droits restent');
   assert.deepEqual(store.removeRole('role_chef', 'alexis'), { removed: false, users: 0 });
 });
+
+test('groupes de sociétés du périmètre : contrôlés, absents d’une fiche qui n’en a pas', () => {
+  assert.ok(!('groupIds' in sanitizeRights(directeur)));
+  assert.ok(!('groupIds' in sanitizeRights(Object.assign({ groupIds: [] }, directeur))));
+  assert.deepEqual(sanitizeRights(Object.assign({ groupIds: ['grp_1', 'grp_1'] }, directeur)).groupIds, ['grp_1']);
+  assert.throws(() => sanitizeRights(Object.assign({ groupIds: ['<x>'] }, directeur)), RightsError);
+});

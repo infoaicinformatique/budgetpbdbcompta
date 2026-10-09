@@ -221,3 +221,20 @@ test('un poste ne renvoie que ce qu’il a modifié : sa copie périmée d’une
   assert.deepEqual(store.read(controleur).state.companies.map((c) => c.id), ['a', 'c', 'd']);
   assert.equal(declarationOf({}), null);
 });
+
+test('périmètre par groupes de sociétés : seuls ou en plus des environnements (09/10/2026)', () => {
+  const s = sample();
+  // Un troisième groupe, rangé dans aucun environnement.
+  s.groups.push({ id: 'g3', name: 'Groupe 3' });
+  s.companies.push({ id: 'd', name: 'Delta', groupId: 'g3' });
+  const ids = (scope) => (scope === null ? null : [...scope].sort());
+  assert.deepEqual(ids(scopeOf({ role: 'directeur', groupIds: ['g2'] }, s)), ['c'], 'un groupe seul');
+  assert.deepEqual(ids(scopeOf({ role: 'directeur', environmentIds: ['sgrp_pb'], groupIds: ['g3'] }, s)), ['a', 'b', 'd'],
+    'environnement + groupe : union, même hors environnement');
+  assert.deepEqual(ids(scopeOf({ role: 'directeur', groupIds: ['g1'], allowedCompanies: ['b', 'c'] }, s)), ['b'],
+    'la sélection de sociétés restreint encore');
+  assert.deepEqual(ids(scopeOf({ role: 'directeur', groupIds: ['inconnu'] }, s)), null, 'groupe disparu : sans effet');
+  const out = filterState(s, scopeOf({ role: 'directeur', groupIds: ['g2'] }, s), { groupIds: ['g2'] });
+  assert.deepEqual(out.companies.map((c) => c.id), ['c']);
+  assert.deepEqual(out.superGroups.map((sg) => sg.id), ['sgrp_db'], 'l’environnement du groupe suit');
+});

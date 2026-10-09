@@ -23,7 +23,7 @@ documentation. Les identifiants JS restent en anglais, en camelCase.
 | `budget-app.html` | **L'application entière** (~31 000 lignes, 1,7 Mo), zéro dépendance, zéro réseau |
 | `server.mjs` | Serveur Node ≥ 22 : sert seulement `/` (brotli/gzip), `/healthz`, auth Basic (compte local et/ou LDAP) ; tout le reste → 404. Dépose le cookie `bm-auth` (identité + config LDAP publique) lu par Paramètres › LDAP. `/api/droits` : droits par personne de l'annuaire |
 | `rights.mjs` | Fichier des droits (`RIGHTS_FILE`, volume Docker `droits`), contrôle de forme, dernier administrateur protégé, `RIGHTS_ADMINS`, rôles personnalisés (`roles`, Paramètres › Rôles : nom, vue de base, droits par défaut ; la fiche garde `role` = vue de base + `roleId`) |
-| `data.mjs` | Données budgétaires tenues par le serveur (`DATA_FILE`, même volume, `historique/`) : périmètre par droits (`scopeOf`), lecture filtrée, fusion des seules sociétés déclarées modifiées, conflits par société (409). `/api/donnees` dans `server.mjs` |
+| `data.mjs` | Données budgétaires tenues par le serveur (`DATA_FILE`, même volume, `historique/`) : périmètre par droits (`scopeOf` : environnements ∪ groupes de sociétés, puis sélection de sociétés), lecture filtrée, fusion des seules sociétés déclarées modifiées, conflits par société (409). `/api/donnees` dans `server.mjs` |
 | `presence.mjs` | Qui a la main sur une société (saisies simultanées) : en mémoire, pris par battement de cœur, rendu après 70 s sans nouvelle. `POST /api/donnees/main` dans `server.mjs`, qui refuse aussi (409) l'écriture d'une société tenue par quelqu'un d'autre |
 | `preferences.mjs` | Préférences de chaque personne (`PREFERENCES_FILE`, même volume) : ordre des sociétés de l'accueil et réglages visuels (taille du texte, densité, animations, palette — `DISPLAY_OPTIONS`, identique dans l'application). `GET`/`PUT /api/preferences` dans `server.mjs`, chacun ne lit et n'écrit que les siennes, un `PUT` partiel ne touche qu'à ce qu'il envoie |
 | `auth-ldap.mjs`, `test/` | Vérification LDAP (seule dépendance : `ldapts`) et tests serveur (`npm test` : LDAP, droits, données, main, préférences) |
@@ -117,7 +117,7 @@ Invariants techniques :
 ## Commandes
 
 ```bash
-npm ci && npm test                     # serveur : LDAP, droits, données, main, préférences (58 tests)
+npm ci && npm test                     # serveur : LDAP, droits, données, main, préférences (60 tests)
 npm start                              # http://127.0.0.1:3000 (server.mjs)
 npm --prefix excel-grid install        # une fois (node_modules absent par défaut)
 npm run verify                         # check + test + check:app + check:markup + typecheck
