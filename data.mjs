@@ -65,7 +65,8 @@ function globalKeys(...states) {
 /**
  * Sociétés qu'une fiche de droits autorise, ou `null` (aucune restriction).
  * Même règle que `allowedCompanyIds` côté application : des environnements
- * bornent la liste (union de leurs sociétés, via groupe → environnement),
+ * et des groupes de sociétés (`groupIds`, 09/10/2026) bornent la liste
+ * (union de leurs sociétés, via groupe → environnement pour les premiers),
  * `allowedCompanies` la restreint encore s'il est renseigné. Sans fiche :
  * rien.
  */
@@ -75,9 +76,12 @@ export function scopeOf(rights, state) {
   const groups = asArray(state && state.groups);
   const knownEnvironments = new Set(asArray(state && state.superGroups).map((sg) => sg && sg.id));
   const environments = asArray(rights.environmentIds).filter((id) => knownEnvironments.has(id));
+  const knownGroups = new Set(groups.map((g) => g && g.id));
+  const chosenGroups = asArray(rights.groupIds).filter((id) => knownGroups.has(id));
   const chosen = Array.isArray(rights.allowedCompanies) ? new Set(rights.allowedCompanies) : null;
-  if (environments.length) {
+  if (environments.length || chosenGroups.length) {
     const groupIds = new Set(groups.filter((g) => g && environments.includes(g.superGroupId)).map((g) => g.id));
+    for (const id of chosenGroups) groupIds.add(id);
     const inEnvironments = companies.filter((c) => c && groupIds.has(c.groupId)).map((c) => c.id);
     return new Set(chosen ? inEnvironments.filter((id) => chosen.has(id)) : inEnvironments);
   }

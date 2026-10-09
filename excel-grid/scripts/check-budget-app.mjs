@@ -548,6 +548,8 @@ const app = await importApp(
     'export { setServerRoles, customRoles, customRoleById, userRoleLabel, roleChoiceOf, defaultRightsForRole,\n' +
     '  applyRoleChoice, knownPermissions, parametresRolesPanel, roleEditorPanel, serverRightsRolePanel,\n' +
     '  roleDraftError, saveRoleEditor, deleteCustomRole, roleRightsSummary, viewParametresServeur };\n' +
+    // Groupes de sociétés dans le périmètre (09/10/2026).
+    'export { userGroupIds, companyIdsInGroups, userScopeEnvironmentIds, scopeGroupRowsHtml };\n' +
     'export function __setRoleEditor(v) { roleEditor = v; }\n' +
     'export function __getRoleEditor() { return roleEditor; }\n' +
     'export function __getServerRoles() { return serverRoles; }\n' +
@@ -18427,6 +18429,50 @@ function restoreEnvironmentFixture(saved) {
   app.signOut();
 }
 
+check('Périmètre : groupes de sociétés, seuls ou en plus des environnements (09/10/2026)', () => {
+  // Alexis : « on souhaiterait aussi pouvoir sélectionner les groupes de
+  // sociétés, donc soit sélectionner l'environnement, soit sélectionner le
+  // groupe de sociétés ».
+  const saved = environmentFixture();
+  const rights = (o) => Object.assign({ role: 'directeur', isAdmin: false, permissions: { saisie: ['saisie-ajouter'] },
+    allowedCompanies: null, allowedCostCenters: null, environmentIds: [] }, o);
+  try {
+    app.adoptServerSession({ method: 'ldap', account: 'dir', rights: rights({ groupIds: ['multi_grp_b'] }) }, null);
+    const me = app.currentUser();
+    assert.deepEqual([...app.allowedCompanyIds(me)], ['multi_b'], 'un groupe seul ouvre ses sociétés, et rien d’autre');
+    assert.deepEqual(app.userScopeEnvironmentIds(me), ['multi_env_b'], 'l’environnement du groupe devient le sien');
+    assert.deepEqual(app.availableEnvironments(me).map((e) => e.id), ['multi_env_b']);
+    assert.equal(app.canSeeAllEnvironments(me), false, 'un seul environnement : pas de vue réunie en doublon');
+    assert.deepEqual(app.serverRightsPayload(me).groupIds, ['multi_grp_b'], 'les groupes repartent au serveur');
+
+    app.adoptServerSession({ method: 'ldap', account: 'dir', rights: rights({ environmentIds: ['multi_env_a'], groupIds: ['multi_grp_b'] }) }, null);
+    assert.deepEqual([...app.allowedCompanyIds(app.currentUser())].sort(), ['multi_a', 'multi_b'], 'environnement + groupe : union');
+    assert.equal(app.canSeeAllEnvironments(app.currentUser()), true);
+
+    app.adoptServerSession({ method: 'ldap', account: 'dir', rights: rights({ groupIds: ['multi_grp_a', 'multi_grp_b'], allowedCompanies: ['multi_b', 'multi_c'] }) }, null);
+    assert.deepEqual([...app.allowedCompanyIds(app.currentUser())], ['multi_b'], 'la sélection de sociétés restreint encore');
+
+    app.adoptServerSession({ method: 'ldap', account: 'dir', rights: rights({}) }, null);
+    assert.ok(!('groupIds' in app.serverRightsPayload(app.currentUser())), 'sans groupe : fiche de forme inchangée');
+    assert.equal(app.allowedCompanyIds(app.currentUser()), null);
+
+    // Écran : la grille des groupes, cochée selon la fiche, nommant l'environnement.
+    const user = app.serverUserFromRights('bob', 'Bob', rights({ groupIds: ['multi_grp_a'] }), '');
+    const grid = app.scopeGroupRowsHtml(user, 'data-auth-scope-group');
+    assert.ok(/data-auth-scope-group="multi_grp_a" checked/.test(grid) && /data-auth-scope-group="multi_grp_b"(?! checked)/.test(grid));
+    assert.ok(grid.includes('Environnement A · 1 société'));
+    const panelHtml = app.authScopePanelHtml(user);
+    assert.ok(panelHtml.includes('Groupes de sociétés accessibles'), 'rubrique dans le Périmètre');
+    assert.ok(panelHtml.includes('data-scope-company-group="multi_grp_a"'), 'chaque société porte son groupe pour le filtre en direct');
+    assert.ok(/data-auth-scope-group\]', 'authScopeGroup'\)/.test(html), 'cocher un groupe refiltre la liste des sociétés');
+    assert.ok(/setUserScope\(saveScope\.dataset\.authSaveScope, companies, centers, environmentIds, groupIds\)/.test(html),
+      'l’enregistrement du périmètre emporte les groupes');
+  } finally {
+    app.__clearServerSession();
+    restoreEnvironmentFixture(saved);
+  }
+});
+
 check('Couleur par environnement : sélecteur libre (--navy/--navy-deep en style en ligne sur <html>)', () => {
   // Alexis : « fait en sorte que chaque environnement puisse changer de
   // thème de couleur… mais fait en sorte que je puisse les changer à la
@@ -19389,7 +19435,7 @@ check('Périmètre : environnement et sélection de sociétés se combinent, au 
   // qu'un environnement est également coché.
   assert.ok(/function refreshScopeCompanyFilter\(/.test(appSource),
     'le filtrage en direct des sociétés selon les environnements cochés doit exister');
-  assert.ok(/refreshScopeCompanyFilter\('\[data-auth-scope-environment\]', 'authScopeEnvironment', '\[data-auth-scope-company\]'\)/.test(appSource),
+  assert.ok(/refreshScopeCompanyFilter\('\[data-auth-scope-environment\]', 'authScopeEnvironment', '\[data-auth-scope-company\]'[,)]/.test(appSource),
     'le panneau périmètre doit rejouer ce filtre quand une case environnement change');
   assert.ok(/refreshScopeCompanyFilter\(\s*'\[data-auth-editor-scope-environment\]', 'authEditorScopeEnvironment', '\[data-auth-editor-scope-company\]'\)/.test(appSource),
     'la fenêtre d’invitation\/modification doit rejouer le même filtre');

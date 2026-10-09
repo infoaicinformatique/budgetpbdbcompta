@@ -7,7 +7,7 @@
  * Une fiche par identifiant canonique (voir `ldapAuthenticateEntry`) :
  *
  *   { role, isAdmin, permissions, allowedCompanies, allowedCostCenters,
- *     environmentIds, updatedAt, updatedBy }
+ *     environmentIds, groupIds?, roleId?, updatedAt, updatedBy }
  *
  * Les champs ont la forme de ceux d'un compte de l'application
  * (`createUser` dans budget-app.html), pour que ses contrôles d'accès
@@ -144,6 +144,10 @@ export function sanitizeRights(input) {
     environmentIds: idList(input.environmentIds, 'Environnements') || [],
   };
   if (roleId) rights.roleId = roleId;
+  // Groupes de sociétés du périmètre (09/10/2026) : comme `roleId`, absents
+  // d'une fiche qui n'en a pas, pour que les fiches existantes gardent leur forme.
+  const groupIds = idList(input.groupIds, 'Groupes de sociétés') || [];
+  if (groupIds.length) rights.groupIds = groupIds;
   return rights;
 }
 
