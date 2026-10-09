@@ -3501,7 +3501,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-09.3';
+const APP_BUILD = '2026-10-09.4';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -3883,6 +3883,60 @@ function summarize(lines, resolveAccount) {
   };
 }
 /* CORE-END */
+
+/* ---------------- Présentation du P&L (écran, Excel, CSV) ----------------
+
+   Alexis, 09/10/2026 : « le P&L et l'export Excel du P&L Synthèse doivent
+   ressembler à cela » (classeur modèle « pnl_Medusa_2027 ») :
+
+     Covers · Average Check per Cover · Headcount (FTE)
+     Food / Beverage / Event / Other Revenue · Revenue
+     Food Cost (+ ratio) · Beverage Cost (+ ratio)
+     Gross Margin (+ ratio)              = Revenue − Food Cost − Beverage Cost
+     Payroll · Operational Expenses · les huit autres centres (+ ratios)
+     Total Expenses · GOP · EBITDA (+ ratios), chacun séparé du suivant
+
+   Les noms des centres viennent du modèle ; ils restent hors du noyau
+   (`CENTER_LABEL_EN`, partagé avec chart.ts, n'est pas touché). La marge
+   brute du noyau n'est qu'un ratio annuel (`ratios.grossMargin`) : ses
+   douze mois se calculent ici, sur les mêmes séries. */
+const PNL_CENTER_NAMES = {
+  'AG': 'Administration & General',
+  'HR': 'Human Resources',
+  'MAT': 'Material',
+  'IT': 'IT',
+  'MARK': 'Sales & Marketing',
+  'POMEC': 'POMEC',
+  'SECU': 'Security',
+  'RPOI': 'Fixed Charges'
+};
+
+/** Nom d'un centre de coûts dans le P&L. */
+function pnlCenterName(centerId) {
+  return PNL_CENTER_NAMES[centerId] || (CENTER_LABEL_EN[centerId] ? CENTER_LABEL_EN[centerId].label : centerId);
+}
+
+/** Ratio d'un centre, renommé comme sa ligne (« Fixed Charges Ratio »). */
+function pnlCenterRatio(ratioById, centerId) {
+  const line = ratioById[centerId];
+  return line ? Object.assign({}, line, { label: pnlCenterName(centerId) + ' Ratio' }) : null;
+}
+
+/** Marge brute mois par mois et son ratio : CA − Food Cost − Beverage Cost. */
+function pnlGrossMargin(summary) {
+  const months = summary.produits.map(function (v, i) {
+    return v - (summary.foodBeverage.food[i] || 0) - (summary.foodBeverage.beverage[i] || 0);
+  });
+  return {
+    months: months,
+    ratio: {
+      id: 'gross-margin',
+      label: 'Gross Margin Ratio',
+      months: ratioMonths(months, summary.produits),
+      value: ratio(total(months), total(summary.produits))
+    }
+  };
+}
 
 /* ==================================================================
    LECTEUR .XLSX (navigateur) — pour importer un plan comptable
@@ -14312,7 +14366,7 @@ function pnlTable(summary, title, isolateFilter, drillCompanies, compare, fullsc
       const before = compareSeries ? activityYearTicket(compareSeries) : 0;
       const gap = yearTicket - before;
       const ratio = before ? (gap / Math.abs(before)) * 100 : null;
-      return '<tr class="sub-row"><td class="sticky-col">Ticket moyen</td>' +
+      return '<tr class="sub-row"><td class="sticky-col">Average Check per Cover</td>' +
         '<td class="num total-col"><strong>' + money(yearTicket) + '</strong></td>' +
         '<td class="num">' + money(before) + '</td>' +
         '<td class="num' + (gap < 0 ? ' neg' : '') + '">' + money(gap) + '</td>' +
@@ -14320,7 +14374,7 @@ function pnlTable(summary, title, isolateFilter, drillCompanies, compare, fullsc
         (ratio === null ? '<span class="muted">—</span>' : formatRateValue(Math.round(ratio * 10) / 10) + ' %') +
         '</td></tr>';
     }
-    return '<tr class="sub-row"><td class="sticky-col">Ticket moyen</td>' +
+    return '<tr class="sub-row"><td class="sticky-col">Average Check per Cover</td>' +
       '<td class="num total-col"><strong>' + money(yearTicket) + '</strong></td>' +
       series.ticket.map(function (v) { return '<td class="num">' + money(v) + '</td>'; }).join('') +
       '</tr>';
@@ -14387,8 +14441,11 @@ function pnlTable(summary, title, isolateFilter, drillCompanies, compare, fullsc
   // — voir `payrollHeadcountMonths` et son commentaire, plus haut.
   const headcountMonths = payrollHeadcountMonths(activityCompanies);
   const compareHeadcountMonths = compare ? payrollHeadcountMonths(compare.companies) : null;
-  let body = row('Couverts', activity.covers, 'sub-row', null, compareActivity && compareActivity.covers);
+  // Trame du classeur modèle (« Présentation du P&L », 09/10/2026) : les
+  // trois indicateurs d'activité ensemble, l'effectif compris.
+  let body = row('Covers', activity.covers, 'sub-row', null, compareActivity && compareActivity.covers);
   body += ticketRow(activity, compareActivity);
+  body += etpRow('Headcount (FTE)', headcountMonths, compareHeadcountMonths);
   body += divider();
 
   // Food Revenue et Beverage Revenue recalculés pour que leur somme retombe
@@ -14417,47 +14474,53 @@ function pnlTable(summary, title, isolateFilter, drillCompanies, compare, fullsc
   body += row('Revenue', summary.produits, 'total', 'produits');
 
   body += divider();
-  for (const center of COST_CENTERS) {
-    // Centre non visible (09/10/2026) : sa rubrique disparaît du P&L.
-    if (!isCenterViewable(pnlUser, center.id)) continue;
-    // Un centre hors périmètre d'édition reste affiché (visu complète du
-    // P&L) mais grisé et sans lien vers la Saisie — voir le commentaire en
-    // tête de fonction. `isCenterAllowed` revient à `true` pour un CDG (pas
-    // de restriction) ; pour un directeur elle sert uniquement à ce
-    // grisage, plus à filtrer quoi que ce soit (`linesOf` ne filtre plus
-    // depuis le 23/09/2026).
-    const centerReadOnly = !isCenterAllowed(pnlUser, center.id);
-    if (center.id === 'F&B') {
-      // Food et Bev isolés du reste des achats F&B (équipement, casse…) :
-      // ce sont les deux seuls postes suivis avec un ratio dédié, ils ne
-      // doivent pas rester noyés dans un bloc « Food & Beverage » unique.
-      body += row('Food Cost', summary.foodBeverage.food, 'sub-row pnl-cat pnl-cat-food', 'fnb-food', null, centerReadOnly);
-      body += ratioRow(ratioById.food, centerReadOnly, 'pnl-cat pnl-cat-food');
-      body += row('Beverage Cost', summary.foodBeverage.beverage, 'sub-row pnl-cat pnl-cat-beverage', 'fnb-beverage', null, centerReadOnly);
-      body += ratioRow(ratioById.beverage, centerReadOnly, 'pnl-cat pnl-cat-beverage');
-      // Masse salariale (comptes 6411 + 645) : transverse à tous les
-      // centres, affichée ici à la demande d'Alexis, juste sous le ratio
-      // Beverage plutôt que reléguée en bas du tableau.
-      body += row('Payroll', summary.payroll, 'sub-row pnl-cat pnl-cat-payroll', 'payroll', null, centerReadOnly);
-      body += ratioRow(ratioById.payroll, centerReadOnly, 'pnl-cat pnl-cat-payroll');
-      body += etpRow('Effectif (ETP)', headcountMonths, compareHeadcountMonths, centerReadOnly, 'pnl-cat pnl-cat-payroll');
-      body += row('Operational expenses', summary.foodBeverage.other, 'sub-row pnl-cat pnl-cat-opex', 'fnb-other', null, centerReadOnly);
-      body += ratioRow(ratioById['other-fnb'], centerReadOnly, 'pnl-cat pnl-cat-opex');
-      continue;
-    }
-    const centerEn = CENTER_LABEL_EN[center.id];
-    body += row(centerEn.label + ' — ' + centerEn.category, summary.byCenter[center.id], '', 'center:' + center.id, null, centerReadOnly);
-    body += ratioRow(ratioById[center.id], centerReadOnly);
+  // Centre non visible (09/10/2026) : sa rubrique disparaît du P&L. Un
+  // centre hors périmètre d'édition reste affiché (visu complète du P&L)
+  // mais grisé et sans lien vers la Saisie — voir le commentaire en tête de
+  // fonction. `isCenterAllowed` revient à `true` pour un CDG.
+  const fnbVisible = isCenterViewable(pnlUser, 'F&B');
+  const fnbReadOnly = !isCenterAllowed(pnlUser, 'F&B');
+  if (fnbVisible) {
+    // Food et Bev isolés du reste des achats F&B (équipement, casse…) :
+    // ce sont les deux seuls postes suivis avec un ratio dédié.
+    body += row('Food Cost', summary.foodBeverage.food, 'sub-row pnl-cat pnl-cat-food', 'fnb-food', null, fnbReadOnly);
+    body += ratioRow(ratioById.food, fnbReadOnly, 'pnl-cat pnl-cat-food');
+    body += row('Beverage Cost', summary.foodBeverage.beverage, 'sub-row pnl-cat pnl-cat-beverage', 'fnb-beverage', null, fnbReadOnly);
+    body += ratioRow(ratioById.beverage, fnbReadOnly, 'pnl-cat pnl-cat-beverage');
+    body += divider();
+    // Marge brute (09/10/2026) : CA − Food Cost − Beverage Cost, ligne de
+    // total suivie de son ratio sur le CA.
+    const grossMargin = pnlGrossMargin(summary);
+    if (compare) compareRatioById['gross-margin'] = pnlGrossMargin(compare.summary).ratio;
+    body += row('Gross Margin', grossMargin.months, 'total', null,
+      compare ? pnlGrossMargin(compare.summary).months : null);
+    body += ratioRow(grossMargin.ratio);
+    body += divider();
+    // Masse salariale (comptes 6411 + 645) : transverse à tous les centres,
+    // rattachée au bloc F&B comme avant pour la visibilité et le grisage.
+    body += row('Payroll', summary.payroll, 'sub-row pnl-cat pnl-cat-payroll', 'payroll', null, fnbReadOnly);
+    body += ratioRow(ratioById.payroll, fnbReadOnly, 'pnl-cat pnl-cat-payroll');
+    body += row('Operational Expenses', summary.foodBeverage.other, 'sub-row pnl-cat pnl-cat-opex', 'fnb-other', null, fnbReadOnly);
+    body += ratioRow(ratioById['other-fnb'], fnbReadOnly, 'pnl-cat pnl-cat-opex');
   }
+  for (const center of COST_CENTERS) {
+    if (center.id === 'F&B' || !isCenterViewable(pnlUser, center.id)) continue;
+    const centerReadOnly = !isCenterAllowed(pnlUser, center.id);
+    body += row(pnlCenterName(center.id), summary.byCenter[center.id], '', 'center:' + center.id, null, centerReadOnly);
+    body += ratioRow(pnlCenterRatio(ratioById, center.id), centerReadOnly);
+  }
+  body += divider();
   body += row('Total Expenses', summary.charges, 'total', 'charges');
   // Chaque ligne de résultat est suivie de son ratio sur le CA, comme les
   // centres de coûts (Alexis, 08/10/2026).
   body += ratioRow(ratioById.charges);
+  body += divider();
   // GOP et EBITDA sont les deux résultats de la cascade, pas des sommes
   // intermédiaires comme Revenue ou Total Expenses : ils prennent le cran
   // de lecture supérieur (voir `tr.grand-total`).
   body += row('GOP', summary.gop, 'total grand-total', 'gop');
   body += ratioRow(ratioById.gop);
+  body += divider();
   body += row('EBITDA', summary.ebitda, 'total grand-total', 'ebitda');
   body += ratioRow(ratioById.ebitda);
 
@@ -26619,33 +26682,37 @@ function pnlRows(summary, label) {
   push('Other Revenue', summary.revenueSplit.other);
   push('Revenue', summary.produits);
   rows.push([]);
+  // Même trame que l'écran et l'Excel (« Présentation du P&L »).
+  push('Food Cost', summary.foodBeverage.food);
+  pushRatio(ratioById.food);
+  push('Beverage Cost', summary.foodBeverage.beverage);
+  pushRatio(ratioById.beverage);
+  rows.push([]);
+  const grossMargin = pnlGrossMargin(summary);
+  push('Gross Margin', grossMargin.months);
+  pushRatio(grossMargin.ratio);
+  rows.push([]);
+  // Masse salariale : elle n'est dans aucun centre (`byCenter` l'exclut
+  // depuis le 03/08/2026) ; sans cette ligne, les charges exportées ne
+  // retombaient pas sur « Total Expenses » (24/09/2026).
+  push('Payroll', summary.payroll || emptyMonths());
+  if (ratioById.payroll) pushRatio(ratioById.payroll);
+  push('Operational Expenses', summary.foodBeverage.other);
+  pushRatio(ratioById['other-fnb']);
   for (const center of COST_CENTERS) {
-    if (center.id === 'F&B') {
-      push('Food Cost', summary.foodBeverage.food);
-      pushRatio(ratioById.food);
-      push('Beverage Cost', summary.foodBeverage.beverage);
-      pushRatio(ratioById.beverage);
-      // Masse salariale, placée comme à l'écran (juste sous Beverage). Elle
-      // n'est dans aucun centre (`byCenter` l'exclut depuis le 03/08/2026) :
-      // sans cette ligne, les charges exportées ne retombaient pas sur
-      // « Total Expenses » — 2,93 M€ manquants sur LPM test (24/09/2026).
-      push('Payroll', summary.payroll || emptyMonths());
-      if (ratioById.payroll) pushRatio(ratioById.payroll);
-      push('Operational expenses', summary.foodBeverage.other);
-      pushRatio(ratioById['other-fnb']);
-      continue;
-    }
-    push(CENTER_LABEL_EN[center.id].category, summary.byCenter[center.id]);
-    pushRatio(ratioById[center.id]);
+    if (center.id === 'F&B') continue;
+    push(pnlCenterName(center.id), summary.byCenter[center.id]);
+    pushRatio(pnlCenterRatio(ratioById, center.id));
   }
+  rows.push([]);
   push('Total Expenses', summary.charges);
   pushRatio(ratioById.charges);
+  rows.push([]);
   push('GOP', summary.gop);
   pushRatio(ratioById.gop);
+  rows.push([]);
   push('EBITDA', summary.ebitda);
   pushRatio(ratioById.ebitda);
-  rows.push([]);
-  rows.push(['Gross Margin', percent(summary.ratios.grossMargin)]);
   // Ratios définis par l'utilisateur : à la suite, comme à l'écran.
   const customRows = customRatioRows(summary);
   if (customRows.length) {
@@ -26741,11 +26808,12 @@ function styledPnlSheet(summary, title, subtitle, activity) {
   const ratioById = {};
   for (const line of summary.ratioRows) ratioById[line.id] = line;
 
-  // Couverts et ticket moyen en tête, avant le CA qu'ils expliquent —
-  // comme dans l'onglet P&L, séparés du détail du CA par une ligne vide.
+  // Indicateurs d'activité en tête, avant le CA qu'ils expliquent, l'effectif
+  // compris — trame du classeur modèle (« Présentation du P&L »).
   if (activity) {
-    activityRow('Couverts', activity.covers, activity.coversYear, XLSX_STYLE.money);
-    activityRow('Ticket moyen', activity.ticket, activity.ticketYear, XLSX_STYLE.decimal);
+    activityRow('Covers', activity.covers, activity.coversYear, XLSX_STYLE.money);
+    activityRow('Average Check per Cover', activity.ticket, activity.ticketYear, XLSX_STYLE.decimal);
+    activityRow('Headcount (FTE)', activity.headcount, activity.headcountYear, XLSX_STYLE.decimal);
     rows.push([]);
   }
 
@@ -26757,33 +26825,35 @@ function styledPnlSheet(summary, title, subtitle, activity) {
   dataRow('Other Revenue', summary.revenueSplit.other);
   dataRow('Revenue', summary.produits, 'total');
   rows.push([]);
+  dataRow('Food Cost', summary.foodBeverage.food);
+  ratioDataRow(ratioById.food);
+  dataRow('Beverage Cost', summary.foodBeverage.beverage);
+  ratioDataRow(ratioById.beverage);
+  rows.push([]);
+  // Marge brute : CA − Food Cost − Beverage Cost, ligne de total et son ratio.
+  const grossMargin = pnlGrossMargin(summary);
+  dataRow('Gross Margin', grossMargin.months, 'total');
+  ratioDataRow(grossMargin.ratio);
+  rows.push([]);
+  // Masse salariale : même place qu'à l'écran et dans le CSV (voir `pnlRows`).
+  dataRow('Payroll', summary.payroll || emptyMonths());
+  if (ratioById.payroll) ratioDataRow(ratioById.payroll);
+  dataRow('Operational Expenses', summary.foodBeverage.other);
+  ratioDataRow(ratioById['other-fnb']);
   for (const center of COST_CENTERS) {
-    if (center.id === 'F&B') {
-      dataRow('Food Cost', summary.foodBeverage.food);
-      ratioDataRow(ratioById.food);
-      dataRow('Beverage Cost', summary.foodBeverage.beverage);
-      ratioDataRow(ratioById.beverage);
-      // Masse salariale : même place qu'à l'écran et dans le CSV (voir `pnlRows`).
-      dataRow('Payroll', summary.payroll || emptyMonths());
-      if (ratioById.payroll) ratioDataRow(ratioById.payroll);
-      // Effectif juste sous Payroll et son ratio, comme à l'écran.
-      if (activity) activityRow('Effectif (ETP)', activity.headcount, activity.headcountYear, XLSX_STYLE.decimal);
-      dataRow('Operational expenses', summary.foodBeverage.other);
-      ratioDataRow(ratioById['other-fnb']);
-      continue;
-    }
-    dataRow(CENTER_LABEL_EN[center.id].category, summary.byCenter[center.id]);
-    ratioDataRow(ratioById[center.id]);
+    if (center.id === 'F&B') continue;
+    dataRow(pnlCenterName(center.id), summary.byCenter[center.id]);
+    ratioDataRow(pnlCenterRatio(ratioById, center.id));
   }
+  rows.push([]);
   dataRow('Total Expenses', summary.charges, 'total');
   ratioDataRow(ratioById.charges);
+  rows.push([]);
   dataRow('GOP', summary.gop, 'total');
   ratioDataRow(ratioById.gop);
+  rows.push([]);
   dataRow('EBITDA', summary.ebitda, 'total');
   ratioDataRow(ratioById.ebitda);
-
-  rows.push([]);
-  rows.push([xc('Gross Margin', XLSX_STYLE.labelBold), xc(summary.ratios.grossMargin, XLSX_STYLE.percent)]);
 
   return {
     rows: rows,

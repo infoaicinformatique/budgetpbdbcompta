@@ -552,6 +552,8 @@ const app = await importApp(
     'export { userGroupIds, companyIdsInGroups, userScopeEnvironmentIds, scopeGroupRowsHtml };\n' +
     // Centres de coûts visibles (09/10/2026).
     'export { viewableCostCenterIds, isCenterViewable };\n' +
+    // Présentation du P&L (09/10/2026).
+    'export { pnlGrossMargin, pnlCenterName, PNL_CENTER_NAMES };\n' +
     'export function __setRoleEditor(v) { roleEditor = v; }\n' +
     'export function __getRoleEditor() { return roleEditor; }\n' +
     'export function __getServerRoles() { return serverRoles; }\n' +
@@ -2747,7 +2749,8 @@ check('Export P&L : la masse salariale y figure, et les charges exportées retom
     assert.ok(payrollRow, c.name + ' : ligne Payroll absente du CSV');
     assert.equal(payrollRow[1], payroll, c.name + ' : montant Payroll du CSV');
     let sum = 0;
-    for (let i = start + 1; i < end; i++) if (rows[i] && typeof rows[i][1] === 'number') sum += rows[i][1];
+    // Gross Margin (09/10/2026) est un sous-total, pas une charge : hors somme.
+    for (let i = start + 1; i < end; i++) if (rows[i] && rows[i][0] !== 'Gross Margin' && typeof rows[i][1] === 'number') sum += rows[i][1];
     assert.ok(Math.abs(sum - rows[end][1]) <= 12,
       c.name + ' : charges exportées (' + sum + ') ≠ Total Expenses (' + rows[end][1] + ')');
     // Excel (onglet Synthèse)
@@ -6257,12 +6260,12 @@ check('Food et Bev sont isolés des autres charges F&B, avec un ratio par poste'
   const rendered = document.getElementById('view').innerHTML;
   assert.ok(rendered.includes('>Food Cost<'), 'ligne Food Cost absente du tableau P&L');
   assert.ok(rendered.includes('>Beverage Cost<'), 'ligne Beverage Cost absente du tableau P&L');
-  assert.ok(rendered.includes('>Operational expenses<'), 'ligne Operational expenses absente du tableau P&L');
+  assert.ok(rendered.includes('>Operational Expenses<'), 'ligne Operational Expenses absente du tableau P&L');
   assert.ok(!rendered.includes('Food &amp; Beverage — Operating charge'),
     'l’ancienne ligne unique « Food & Beverage » ne devrait plus apparaître');
   assert.ok(!rendered.includes('>Ratios<'), 'l’ancienne section « Ratios » à part ne devrait plus exister');
   assert.ok(rendered.includes('Food Cost Ratio') && rendered.includes('Beverage Cost Ratio'), 'ratios Food Cost/Beverage Cost absents du tableau');
-  assert.ok(rendered.includes('General Administration Ratio'), 'ratio d’un autre centre absent du tableau');
+  assert.ok(rendered.includes('Administration &amp; General Ratio'), 'ratio d’un autre centre absent du tableau');
   // Les rubriques ne portent plus de préfixe numérique/lettre (1a., 2., …).
   assert.ok(!/>\d[a-z]?\.\s/.test(rendered), 'un préfixe numéroté traîne encore devant une rubrique du P&L');
   // Ordre : la ligne Food précède immédiatement son ratio, pas l'inverse
@@ -6292,8 +6295,8 @@ check('Food et Bev sont isolés des autres charges F&B, avec un ratio par poste'
   assert.ok(beverageRatioIdx < payrollRowIdx, 'la ligne Payroll devrait suivre le ratio Beverage');
   assert.ok(payrollRowIdx < payrollRatioIdx,
     'le ratio Payroll devrait suivre immédiatement la ligne Payroll');
-  assert.ok(payrollRatioIdx < rendered.indexOf('>Operational expenses<'),
-    'Payroll et son ratio devraient précéder Operational expenses');
+  assert.ok(payrollRatioIdx < rendered.indexOf('>Operational Expenses<'),
+    'Payroll et son ratio devraient précéder Operational Expenses');
 
   // CSV et Excel reprennent le même détail, dans le même ordre.
   const csv = app.pnlRows(summary, 'Test');
@@ -6301,6 +6304,64 @@ check('Food et Bev sont isolés des autres charges F&B, avec un ratio par poste'
   const foodRatioIdx = csv.findIndex((row) => row[0] === 'Food Cost Ratio');
   assert.ok(foodIdx >= 0 && foodRatioIdx === foodIdx + 1, 'le ratio Food Cost devrait suivre immédiatement la ligne Food Cost dans le CSV');
   assert.ok(!csv.some((row) => row[0] === 'Ratios'), 'l’ancien bloc « Ratios » à part ne devrait plus exister dans le CSV');
+});
+
+check('P&L Synthèse : trame du classeur modèle « pnl_Medusa_2027 », à l’écran comme en Excel et CSV (09/10/2026)', () => {
+  // Alexis : « le P&L et l'export Excel du P&L Synthèse doivent ressembler à
+  // cela » — colonne A du classeur fourni, lignes vides comprises (ligne 5 à 51).
+  const MODEL = ['Covers', 'Average Check per Cover', 'Headcount (FTE)', '',
+    'Food Revenue', 'Beverage Revenue', 'Event Revenue', 'Other Revenue', 'Revenue', '',
+    'Food Cost', 'Food Cost Ratio', 'Beverage Cost', 'Beverage Cost Ratio', '',
+    'Gross Margin', 'Gross Margin Ratio', '',
+    'Payroll', 'Payroll Ratio', 'Operational Expenses', 'Operational expenses Ratio',
+    'Administration & General', 'Administration & General Ratio', 'Human Resources', 'Human Resources Ratio',
+    'Material', 'Material Ratio', 'IT', 'IT Ratio', 'Sales & Marketing', 'Sales & Marketing Ratio',
+    'POMEC', 'POMEC Ratio', 'Security', 'Security Ratio', 'Fixed Charges', 'Fixed Charges Ratio', '',
+    'Total Expenses', 'Total Expenses Ratio', '', 'GOP', 'GOP Ratio', '', 'EBITDA', 'EBITDA Ratio'];
+  const company = app.state.companies.find((c) => c.name === 'Palm Beach Test');
+  const summary = app.summarizeForDisplay(app.linesOf(company.id));
+  const valueOf = (cell) => (cell && typeof cell === 'object' ? cell.v : cell);
+  const sheet = app.styledPnlSheet(summary, 'Test', '', app.pnlActivityOf([company]));
+  const labels = sheet.rows.slice(4).map((r) => (r && r.length ? String(valueOf(r[0])) : ''));
+  assert.deepEqual(labels, MODEL, 'colonne A de la Synthèse ≠ classeur modèle');
+
+  // Gross Margin = Revenue − Food Cost − Beverage Cost, mois par mois, et son ratio.
+  const at = (name) => sheet.rows[4 + MODEL.indexOf(name)];
+  for (let m = 0; m < 12; m++) {
+    const want = Math.round(summary.produits[m] - summary.foodBeverage.food[m] - summary.foodBeverage.beverage[m]);
+    assert.ok(Math.abs(valueOf(at('Gross Margin')[2 + m]) - want) <= 1, 'Gross Margin faux au mois ' + m);
+  }
+  const gm = app.pnlGrossMargin(summary);
+  assert.ok(Math.abs(gm.ratio.value - summary.ratios.grossMargin) < 1e-9, 'ratio annuel = celui du noyau (ratios.grossMargin)');
+  assert.equal(at('Gross Margin')[0].s, at('Revenue')[0].s, 'Gross Margin a le style des lignes de total, comme Revenue');
+  assert.equal(at('Gross Margin Ratio')[0].s, at('Food Cost Ratio')[0].s, 'son ratio a le style des ratios');
+  assert.equal(at('Fixed Charges')[1].v, Math.round(app.total(summary.byCenter.RPOI)), 'Fixed Charges = centre 9');
+
+  // CSV : même trame, sans les indicateurs d'activité.
+  const csv = app.pnlRows(summary, 'Test').slice(1).map((r) => (r.length ? String(r[0]) : ''));
+  assert.deepEqual(csv, MODEL.slice(4), 'trame du CSV ≠ classeur modèle');
+
+  // Écran : mêmes libellés, dans le même ordre.
+  const savedActive = app.state.activeCompany;
+  const savedTab = app.__getTab();
+  try {
+    app.state.activeCompany = company.id;
+    app.__setTab('pnl');
+    app.render();
+    const html = document.getElementById('view').innerHTML;
+    const table = html.slice(html.indexOf('<table'));
+    let from = 0;
+    for (const name of MODEL.filter(Boolean)) {
+      const idx = table.indexOf('>' + name.replace(/&/g, '&amp;') + '<', from);
+      assert.ok(idx >= 0, 'écran : « ' + name + ' » absent ou hors de l’ordre du modèle');
+      from = idx;
+    }
+    assert.ok(!table.includes('>Couverts<') && !table.includes('>Effectif (ETP)<'), 'anciens libellés retirés');
+  } finally {
+    app.state.activeCompany = savedActive;
+    app.__setTab(savedTab);
+    app.render();
+  }
 });
 
 check('P&L : ratio sur le CA de Total Expenses, du GOP et de l’EBITDA, chacun sous sa ligne', () => {
@@ -6373,9 +6434,9 @@ check('Excel du P&L : lignes de revenus et Operational expenses dans la même po
   const valueOf = (cell) => (cell && typeof cell === 'object' ? cell.v : cell);
   const byLabel = (name) => sheet.rows.find((r) => r && r.length && valueOf(r[0]) === name);
   const styleOf = (row) => row.map((cell) => (cell && typeof cell === 'object' ? cell.s : 0));
-  const reference = byLabel('Administration');
-  assert.ok(reference, 'ligne Administration absente de l’Excel');
-  for (const name of ['Food Revenue', 'Beverage Revenue', 'Event Revenue', 'Other Revenue', 'Operational expenses']) {
+  const reference = byLabel('Administration & General');
+  assert.ok(reference, 'ligne Administration & General absente de l’Excel');
+  for (const name of ['Food Revenue', 'Beverage Revenue', 'Event Revenue', 'Other Revenue', 'Operational Expenses']) {
     const row = byLabel(name);
     assert.ok(row, `${name} absent de l’Excel`);
     assert.deepEqual(styleOf(row), styleOf(reference), `${name} doit avoir la police d’Administration, pas celle des ratios`);
@@ -6421,10 +6482,10 @@ check('le chiffre d’affaires se ventile en Food/Bev/Autres, et le ratio « Ope
   assert.ok(rendered.includes('Operational expenses Ratio'), 'ratio « Operational expenses » absent du tableau P&L');
   // Le ratio suit immédiatement sa propre ligne « Operational expenses »,
   // avant tout autre centre ; et « of which Other Taxes » a disparu.
-  const otherFbLineIdx = rendered.indexOf('>Operational expenses<');
+  const otherFbLineIdx = rendered.indexOf('>Operational Expenses<');
   const opexRatioIdx = rendered.indexOf('Operational expenses Ratio');
   assert.ok(otherFbLineIdx >= 0 && otherFbLineIdx < opexRatioIdx,
-    'le ratio devrait suivre la ligne Operational expenses');
+    'le ratio devrait suivre la ligne Operational Expenses');
   // La ligne « Total Expenses » du tableau, pas le KPI du même nom affiché
   // au-dessus (bandeau d'indicateurs) : on cherche à partir du ratio.
   assert.ok(
@@ -6457,9 +6518,9 @@ check('le chiffre d’affaires se ventile en Food/Bev/Autres, et le ratio « Ope
   assert.ok(csv.some((row) => row[0] === 'Beverage Revenue'), 'Beverage Revenue absent du CSV');
   assert.ok(csv.some((row) => row[0] === 'Other Revenue'), 'Other Revenue absent du CSV');
   const opexRatioIdxCsv = csv.findIndex((row) => row[0] === 'Operational expenses Ratio');
-  const otherFbIdxCsv = csv.findIndex((row) => row[0] === 'Operational expenses');
+  const otherFbIdxCsv = csv.findIndex((row) => row[0] === 'Operational Expenses');
   assert.ok(opexRatioIdxCsv >= 0, 'ratio « Operational expenses » absent du CSV');
-  assert.equal(opexRatioIdxCsv, otherFbIdxCsv + 1, 'le ratio devrait suivre immédiatement « Operational expenses » dans le CSV');
+  assert.equal(opexRatioIdxCsv, otherFbIdxCsv + 1, 'le ratio devrait suivre immédiatement « Operational Expenses » dans le CSV');
   assert.ok(!csv.some((row) => row[0] === 'of which Other Taxes (RPOI)'), 'la ligne « of which Other Taxes » ne devrait plus apparaître dans le CSV');
 });
 
@@ -7062,11 +7123,12 @@ check('PnL : Couverts et Ticket moyen mensuels apparaissent avant Revenue, sourc
     app.__setTab('pnl');
     app.render();
     const rendered = document.getElementById('view').innerHTML;
-    assert.ok(rendered.includes('>Couverts<'), 'ligne Couverts absente du PnL');
-    assert.ok(rendered.includes('>Ticket moyen<'), 'ligne Ticket moyen absente du PnL');
+    // Libellés du classeur modèle depuis le 09/10/2026.
+    assert.ok(rendered.includes('>Covers<'), 'ligne Covers absente du PnL');
+    assert.ok(rendered.includes('>Average Check per Cover<'), 'ligne Average Check per Cover absente du PnL');
 
-    const couvertsIdx = rendered.indexOf('>Couverts<');
-    const ticketIdx = rendered.indexOf('>Ticket moyen<');
+    const couvertsIdx = rendered.indexOf('>Covers<');
+    const ticketIdx = rendered.indexOf('>Average Check per Cover<');
     const foodRevenueIdx = rendered.indexOf('Food Revenue');
     // « Revenue » du tableau, pas le KPI du même nom affiché au-dessus
     // (bandeau d'indicateurs) : on cherche à partir du détail du CA, comme
@@ -7113,12 +7175,14 @@ check('PnL : ligne Effectif (ETP) juste sous Payroll, avec la MOYENNE annuelle (
     app.render();
     const rendered = document.getElementById('view').innerHTML;
 
-    assert.ok(rendered.includes('Effectif (ETP)'), 'ligne Effectif (ETP) absente du PnL');
-    const payrollIdx = rendered.indexOf('>Payroll<');
-    const etpIdx = rendered.indexOf('Effectif (ETP)');
-    const opexIdx = rendered.indexOf('Operational expenses');
-    assert.ok(payrollIdx >= 0 && payrollIdx < etpIdx && etpIdx < opexIdx,
-      'Effectif (ETP) devrait apparaître juste sous Payroll, avant Operational expenses');
+    // Depuis le 09/10/2026 (classeur modèle) : « Headcount (FTE) » en tête,
+    // avec Covers et Average Check per Cover, avant le détail du CA.
+    assert.ok(rendered.includes('Headcount (FTE)'), 'ligne Headcount (FTE) absente du PnL');
+    const ticketIdx = rendered.indexOf('>Average Check per Cover<');
+    const etpIdx = rendered.indexOf('Headcount (FTE)');
+    const revenueIdx = rendered.indexOf('Food Revenue', etpIdx);
+    assert.ok(ticketIdx >= 0 && ticketIdx < etpIdx && etpIdx < revenueIdx,
+      'Headcount (FTE) devrait suivre Average Check per Cover, avant le détail du CA');
 
     // Même moteur que la Matrice Payroll : 1 ETP jan-juin, 2 ETP juil-déc,
     // moyenne annuelle 1,5 — jamais la somme (18).
@@ -7176,8 +7240,8 @@ check('PnL : un scénario actif impacte aussi les couverts et le ticket moyen', 
     const rendered = document.getElementById('view').innerHTML;
     // Colonne « Année » (total-col) de Couverts et Ticket moyen : les deux
     // premières cellules numériques après le libellé.
-    const couvertsRow = rendered.slice(rendered.indexOf('>Couverts<'), rendered.indexOf('>Ticket moyen<'));
-    const ticketRow = rendered.slice(rendered.indexOf('>Ticket moyen<'), rendered.indexOf('Food Revenue'));
+    const couvertsRow = rendered.slice(rendered.indexOf('>Covers<'), rendered.indexOf('>Average Check per Cover<'));
+    const ticketRow = rendered.slice(rendered.indexOf('>Average Check per Cover<'), rendered.indexOf('Headcount (FTE)'));
     assert.ok(couvertsRow.includes('<strong>11</strong>'), 'couverts scénarisés absents de l’écran (attendu 11)');
     assert.ok(ticketRow.includes('<strong>22</strong>'), 'ticket moyen scénarisé absent de l’écran (attendu 22)');
   } finally {
@@ -7292,16 +7356,17 @@ await checkAsync('export Excel du P&L : couverts, ticket moyen et ETP, placés c
     const sheet = readWorkbook(temp).get('Synthèse');
     const at = (label) => sheet.findIndex((row) => row[0] === label);
     const num = (v) => Number(String(v).replace(',', '.'));
-    const covers = at('Couverts');
-    const ticket = at('Ticket moyen');
-    const etp = at('Effectif (ETP)');
-    assert.ok(covers > 3 && ticket === covers + 1, 'Couverts puis Ticket moyen, juste sous l’en-tête');
-    assert.ok(ticket < at('Food Revenue'), 'Couverts et Ticket moyen avant le détail du CA, comme à l’écran');
+    // Libellés et ordre du classeur modèle (09/10/2026).
+    const covers = at('Covers');
+    const ticket = at('Average Check per Cover');
+    const etp = at('Headcount (FTE)');
+    assert.ok(covers > 3 && ticket === covers + 1, 'Covers puis Average Check per Cover, juste sous l’en-tête');
+    assert.ok(ticket < at('Food Revenue'), 'indicateurs d’activité avant le détail du CA, comme à l’écran');
     assert.equal(num(sheet[covers][1]), 4000, 'Excel : couverts de l’année');
     assert.equal(num(sheet[covers][2]), 3000, 'Excel : couverts de janvier');
     assert.equal(num(sheet[ticket][1]), 85, 'Excel : ticket moyen de l’année (pondéré)');
     assert.equal(num(sheet[ticket][4]), 40, 'Excel : ticket moyen de mars');
-    assert.equal(etp, at('Payroll Ratio') + 1, 'Effectif (ETP) juste sous Payroll et son ratio, comme à l’écran');
+    assert.equal(etp, ticket + 1, 'Headcount (FTE) juste sous Average Check per Cover, comme à l’écran');
     const average = Math.round((headcount.reduce((a, b) => a + b, 0) / 12) * 100) / 100;
     assert.ok(Math.abs(num(sheet[etp][1]) - average) < 0.005, 'Excel : ETP de l’année = moyenne des douze mois');
 
@@ -7313,8 +7378,8 @@ await checkAsync('export Excel du P&L : couverts, ticket moyen et ETP, placés c
     app.render();
     const html = document.getElementById('view').innerHTML;
     app.state.activeCompany = savedActive;
-    const ticketRow = html.slice(html.indexOf('>Ticket moyen<'), html.indexOf('</tr>', html.indexOf('>Ticket moyen<')));
-    assert.ok(ticketRow.length > 0, 'ligne Ticket moyen absente de l’onglet P&L');
+    const ticketRow = html.slice(html.indexOf('>Average Check per Cover<'), html.indexOf('</tr>', html.indexOf('>Average Check per Cover<')));
+    assert.ok(ticketRow.length > 0, 'ligne Average Check per Cover absente de l’onglet P&L');
     assert.ok(ticketRow.includes('<strong>' + app.money(85) + '</strong>'),
       'onglet P&L : ticket moyen de l’année = 85 € (pondéré), pas ' + app.money(140));
     assert.ok(!ticketRow.includes('<strong>' + app.money(140) + '</strong>'), 'la somme des tickets mensuels ne doit plus apparaître');
@@ -12453,11 +12518,11 @@ await checkAsync('P&L : un centre hors périmètre reste visible (vrai montant),
     // AG (hors périmètre) : reste visible avec son vrai montant, mais grisé
     // et sans lien vers la Saisie, où il ne pourrait de toute façon rien
     // saisir — c'est exactement « visu sans pouvoir remplir ».
-    assert.ok(rendered.includes('General Administration — Administration'),
+    assert.ok(rendered.includes('>Administration &amp; General'),
       'le centre hors périmètre doit rester visible dans le P&L, pas masqué comme avant');
     assert.ok(rendered.includes(app.money(2400)),
       'son vrai montant annuel doit être affiché, pas un zéro trompeur');
-    const agLabelIdx = rendered.indexOf('General Administration — Administration');
+    const agLabelIdx = rendered.indexOf('>Administration &amp; General');
     const agRow = rendered.slice(rendered.lastIndexOf('<tr', agLabelIdx), rendered.indexOf('</tr>', agLabelIdx));
     assert.ok(agRow.includes('center-readonly'), 'la ligne AG doit porter la classe de lecture seule');
     assert.ok(agRow.includes('🔒'), 'un cadenas doit signaler visuellement la lecture seule');
@@ -12925,9 +12990,9 @@ await checkAsync('Autorisations : périmètre centre de coûts — Saisie et Pay
     app.__setTab('pnl');
     app.render();
     rendered = document.getElementById('view').innerHTML;
-    assert.ok(rendered.includes('General Administration'),
+    assert.ok(rendered.includes('>Administration &amp; General'),
       'un centre hors périmètre doit désormais rester visible dans le détail du P&L (lecture seule)');
-    const agIdx = rendered.indexOf('General Administration');
+    const agIdx = rendered.indexOf('>Administration &amp; General');
     const agRow = rendered.slice(rendered.lastIndexOf('<tr', agIdx), rendered.indexOf('</tr>', agIdx));
     assert.ok(agRow.includes('center-readonly'), 'la ligne du centre hors périmètre doit être grisée');
     assert.ok(!agRow.includes('data-goto-saisie'), 'aucun lien vers la Saisie pour ce centre hors périmètre');
