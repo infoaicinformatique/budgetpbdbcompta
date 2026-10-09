@@ -77,6 +77,32 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Excel « Synthèse » : Gross Margin en formules (09/10/2026)
+
+Demande : « Ajoute les formules Excel pour la Gross Margin. »
+
+- `styledPnlSheet` : la ligne **Gross Margin** est écrite en formules,
+  colonnes B (année) à N (décembre) : `=B13-B15-B17` (Revenue − Food Cost −
+  Beverage Cost), comme dans le classeur modèle. **Gross Margin Ratio** :
+  `=IFERROR(B20/B13,"")` — le modèle écrivait `=B20/B13`, l'enveloppe
+  SIERREUR laisse la case vide sans CA (comme les autres ratios) au lieu
+  d'un `#DIV/0!`. Les numéros de ligne sont relevés pendant la construction
+  de la feuille, pas codés en dur.
+- Les autres lignes restent des valeurs. Le classeur se recalcule à
+  l'ouverture (`fullCalcOnLoad`, déjà en place pour la matrice CA). La
+  formule portant sur des montants arrondis à l'euro, l'année peut
+  s'écarter d'un euro de l'écran (10 209 969 € contre 10 209 968 € sur LPM
+  test).
+- L'écran et le CSV n'ont pas de formules : inchangés.
+
+`APP_BUILD` : `2026-10-09.5`.
+
+Contrôle : « P&L Synthèse : trame du classeur modèle » vérifie désormais
+les formules des treize colonnes (lignes 13, 15, 17 et 20, comme le
+modèle) et que ce qu'elles calculent retombe sur la marge brute de
+l'application. Export réel produit dans Chromium, recalculé par
+LibreOffice : Gross Margin 10 209 969 €, ratio 80,5 % (LPM test).
+
 ### P&L et Excel « Synthèse » : la trame du classeur modèle d'Alexis (09/10/2026)
 
 Demande : « Le P&L et l'export Excel du P&L Synthèse doivent ressembler à
@@ -18415,11 +18441,24 @@ check('P&L Synthèse : trame du classeur modèle « pnl_Medusa_2027 », à l’�
   const labels = sheet.rows.slice(4).map((r) => (r && r.length ? String(valueOf(r[0])) : ''));
   assert.deepEqual(labels, MODEL, 'colonne A de la Synthèse ≠ classeur modèle');
 
-  // Gross Margin = Revenue − Food Cost − Beverage Cost, mois par mois, et son ratio.
+  // Gross Margin = Revenue − Food Cost − Beverage Cost, en FORMULES Excel
+  // (« ajoute les formules Excel pour la Gross Margin », 09/10/2026) qui
+  // pointent les bonnes lignes : B à N, comme `=B13-B15-B17` du modèle.
   const at = (name) => sheet.rows[4 + MODEL.indexOf(name)];
+  const rowNo = (name) => 5 + MODEL.indexOf(name);
+  const [rev, food, bev, gmRow] = ['Revenue', 'Food Cost', 'Beverage Cost', 'Gross Margin'].map(rowNo);
+  assert.deepEqual([rev, food, bev, gmRow], [13, 15, 17, 20], 'mêmes lignes que le classeur modèle');
+  const cols = ['B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N'];
+  cols.forEach((col, i) => {
+    assert.equal(at('Gross Margin')[1 + i].f, col + rev + '-' + col + food + '-' + col + bev, 'formule Gross Margin, colonne ' + col);
+    assert.equal(at('Gross Margin Ratio')[1 + i].f, 'IFERROR(' + col + gmRow + '/' + col + rev + ',"")', 'formule du ratio, colonne ' + col);
+  });
+  // Ce que la formule calcule, sur les montants écrits dans le classeur, est
+  // bien la marge brute de l'application.
   for (let m = 0; m < 12; m++) {
-    const want = Math.round(summary.produits[m] - summary.foodBeverage.food[m] - summary.foodBeverage.beverage[m]);
-    assert.ok(Math.abs(valueOf(at('Gross Margin')[2 + m]) - want) <= 1, 'Gross Margin faux au mois ' + m);
+    const computed = valueOf(at('Revenue')[2 + m]) - valueOf(at('Food Cost')[2 + m]) - valueOf(at('Beverage Cost')[2 + m]);
+    const want = summary.produits[m] - summary.foodBeverage.food[m] - summary.foodBeverage.beverage[m];
+    assert.ok(Math.abs(computed - want) <= 2, 'Gross Margin faux au mois ' + m);
   }
   const gm = app.pnlGrossMargin(summary);
   assert.ok(Math.abs(gm.ratio.value - summary.ratios.grossMargin) < 1e-9, 'ratio annuel = celui du noyau (ratios.grossMargin)');

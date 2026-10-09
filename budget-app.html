@@ -3501,7 +3501,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-09.4';
+const APP_BUILD = '2026-10-09.5';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -26823,17 +26823,33 @@ function styledPnlSheet(summary, title, subtitle, activity) {
   dataRow('Beverage Revenue', summary.revenueSplit.beverage);
   dataRow('Event Revenue', summary.revenueSplit.event || emptyMonths());
   dataRow('Other Revenue', summary.revenueSplit.other);
+  // Numéros de ligne Excel (1-based) des trois montants dont dépend la
+  // marge brute : ses cellules sont des formules qui les référencent.
+  const revenueRow = rows.length + 1;
   dataRow('Revenue', summary.produits, 'total');
   rows.push([]);
+  const foodCostRow = rows.length + 1;
   dataRow('Food Cost', summary.foodBeverage.food);
   ratioDataRow(ratioById.food);
+  const beverageCostRow = rows.length + 1;
   dataRow('Beverage Cost', summary.foodBeverage.beverage);
   ratioDataRow(ratioById.beverage);
   rows.push([]);
-  // Marge brute : CA − Food Cost − Beverage Cost, ligne de total et son ratio.
-  const grossMargin = pnlGrossMargin(summary);
-  dataRow('Gross Margin', grossMargin.months, 'total');
-  ratioDataRow(grossMargin.ratio);
+  // Marge brute : CA − Food Cost − Beverage Cost, ligne de total et son
+  // ratio — en FORMULES Excel (Alexis, 09/10/2026 : « ajoute les formules
+  // Excel pour la Gross Margin »), comme dans son classeur modèle
+  // (`=B13-B15-B17`, `=B20/B13`). Elles suivent donc une correction faite à
+  // la main dans le classeur. Le ratio passe par SIERREUR (IFERROR) : sans
+  // CA, la case reste vide comme les autres ratios, au lieu d'un #DIV/0!.
+  // Valeurs à jour dès l'ouverture : `fullCalcOnLoad` (voir `cellXml`).
+  const grossMarginRow = rows.length + 1;
+  const columns = ['B'].concat(MONTH_LABELS.map(function (_, i) { return columnName(2 + i); }));
+  rows.push([xc('Gross Margin', XLSX_STYLE.labelTotal)].concat(columns.map(function (col) {
+    return { f: col + revenueRow + '-' + col + foodCostRow + '-' + col + beverageCostRow, s: XLSX_STYLE.moneyTotal };
+  })));
+  rows.push([xc('Gross Margin Ratio', XLSX_STYLE.subtitle)].concat(columns.map(function (col) {
+    return { f: 'IFERROR(' + col + grossMarginRow + '/' + col + revenueRow + ',"")', s: XLSX_STYLE.percent };
+  })));
   rows.push([]);
   // Masse salariale : même place qu'à l'écran et dans le CSV (voir `pnlRows`).
   dataRow('Payroll', summary.payroll || emptyMonths());

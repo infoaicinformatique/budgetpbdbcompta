@@ -6325,11 +6325,24 @@ check('P&L Synthèse : trame du classeur modèle « pnl_Medusa_2027 », à l’�
   const labels = sheet.rows.slice(4).map((r) => (r && r.length ? String(valueOf(r[0])) : ''));
   assert.deepEqual(labels, MODEL, 'colonne A de la Synthèse ≠ classeur modèle');
 
-  // Gross Margin = Revenue − Food Cost − Beverage Cost, mois par mois, et son ratio.
+  // Gross Margin = Revenue − Food Cost − Beverage Cost, en FORMULES Excel
+  // (« ajoute les formules Excel pour la Gross Margin », 09/10/2026) qui
+  // pointent les bonnes lignes : B à N, comme `=B13-B15-B17` du modèle.
   const at = (name) => sheet.rows[4 + MODEL.indexOf(name)];
+  const rowNo = (name) => 5 + MODEL.indexOf(name);
+  const [rev, food, bev, gmRow] = ['Revenue', 'Food Cost', 'Beverage Cost', 'Gross Margin'].map(rowNo);
+  assert.deepEqual([rev, food, bev, gmRow], [13, 15, 17, 20], 'mêmes lignes que le classeur modèle');
+  const cols = ['B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N'];
+  cols.forEach((col, i) => {
+    assert.equal(at('Gross Margin')[1 + i].f, col + rev + '-' + col + food + '-' + col + bev, 'formule Gross Margin, colonne ' + col);
+    assert.equal(at('Gross Margin Ratio')[1 + i].f, 'IFERROR(' + col + gmRow + '/' + col + rev + ',"")', 'formule du ratio, colonne ' + col);
+  });
+  // Ce que la formule calcule, sur les montants écrits dans le classeur, est
+  // bien la marge brute de l'application.
   for (let m = 0; m < 12; m++) {
-    const want = Math.round(summary.produits[m] - summary.foodBeverage.food[m] - summary.foodBeverage.beverage[m]);
-    assert.ok(Math.abs(valueOf(at('Gross Margin')[2 + m]) - want) <= 1, 'Gross Margin faux au mois ' + m);
+    const computed = valueOf(at('Revenue')[2 + m]) - valueOf(at('Food Cost')[2 + m]) - valueOf(at('Beverage Cost')[2 + m]);
+    const want = summary.produits[m] - summary.foodBeverage.food[m] - summary.foodBeverage.beverage[m];
+    assert.ok(Math.abs(computed - want) <= 2, 'Gross Margin faux au mois ' + m);
   }
   const gm = app.pnlGrossMargin(summary);
   assert.ok(Math.abs(gm.ratio.value - summary.ratios.grossMargin) < 1e-9, 'ratio annuel = celui du noyau (ratios.grossMargin)');
