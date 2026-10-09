@@ -544,6 +544,13 @@ const app = await importApp(
     'export function __setAuthPermissionsIdForTest(v) { authPermissionsId = v; }\n' +
     'export function __setAuthEditingId(v) { authEditingId = v; }\n' +
     'export function __setAuthPermissionsId(v) { authPermissionsId = v; }\n' +
+    // Rôles personnalisés (09/10/2026).
+    'export { setServerRoles, customRoles, customRoleById, userRoleLabel, roleChoiceOf, defaultRightsForRole,\n' +
+    '  applyRoleChoice, knownPermissions, parametresRolesPanel, roleEditorPanel, serverRightsRolePanel,\n' +
+    '  roleDraftError, saveRoleEditor, deleteCustomRole, roleRightsSummary, viewParametresServeur };\n' +
+    'export function __setRoleEditor(v) { roleEditor = v; }\n' +
+    'export function __getRoleEditor() { return roleEditor; }\n' +
+    'export function __getServerRoles() { return serverRoles; }\n' +
     'export { toggleSocieteSelection, setSocieteSelection, clearSocieteSelection,\n' +
     '  applySocieteBulkPlan, applySocieteBulkGroup };\n' +
     'export function __getSocieteSelection() { return societeSelection; }\n' +
@@ -1171,6 +1178,142 @@ check('Droits mis à jour sans recharger la page (02/10/2026)', () => {
   } finally {
     app.__clearServerSession();
     app.__setTab(savedTab);
+  }
+});
+
+await checkAsync('Rôles personnalisés : créés dans Paramètres, choisis comme Directeur ou Contrôleur (09/10/2026)', async () => {
+  // Alexis : « créer des rôles sélectionnables comme Directeur et Contrôleur
+  // de gestion, mais avoir une interface pour créer un rôle et ses droits
+  // par défaut nous-même ».
+  const chef = {
+    label: 'Chef de cuisine', description: 'Saisit les charges F&B', base: 'directeur',
+    permissions: { saisie: ['saisie-ajouter'], payroll: [], ongletDisparu: ['x'] }, allowedCostCenters: ['F&B'],
+  };
+  const originalGetElementById = globalThis.document.getElementById;
+  const originalQuerySelectorAll = globalThis.document.querySelectorAll;
+  try {
+    // Un réaffichage repart du brouillon : il doit suivre chaque frappe et chaque case.
+    assert.ok(/addEventListener\(type, function \(event\) \{\s*if \(event\.target\.closest && event\.target\.closest\('\[data-panel="parametres-role-editeur"\]'\)\) syncRoleEditorDraft\(\);/.test(html),
+      'l’éditeur de rôle recopie la saisie dans son brouillon (input/change)');
+    // Le SAS réseau laisse passer le chemin des rôles, et rien de plus.
+    assert.ok(/droits\(\\\/roles\)\?\(\\\/\[A-Za-z0-9\._@%-\]\+\)\?/.test(html), 'serverRequest accepte /api/droits/roles/<id>');
+
+    // Le catalogue arrive avec mes droits ; la fiche garde role = vue de base.
+    app.adoptServerSession({ method: 'ldap', account: 'chef', displayName: 'Chef', roles: { role_chef: chef }, rights: {
+      role: 'directeur', roleId: 'role_chef', isAdmin: false, permissions: null,
+      allowedCompanies: null, allowedCostCenters: ['F&B'], environmentIds: [],
+    } }, null);
+    const me = app.currentUser();
+    assert.equal(me.role, 'directeur', 'toutes les règles « directeur » s’appliquent telles quelles');
+    assert.equal(app.userRoleLabel(me), 'Chef de cuisine');
+    assert.ok(app.tabAllowedNow('saisie'), 'permissions null = droits par défaut du rôle personnalisé');
+    assert.equal(app.tabAllowedNow('pnl'), false, 'pas les droits par défaut d’un directeur');
+    assert.ok(app.viewParametres().includes('Chef de cuisine'), 'Paramètres › Mon compte nomme le rôle personnalisé');
+    assert.equal(app.serverRightsPayload(me).roleId, 'role_chef', 'le rôle repart au serveur');
+    assert.deepEqual(app.knownPermissions(chef.permissions).saisie, ['saisie-ajouter'], 'rubriques existantes gardées');
+    assert.ok(!('ongletDisparu' in app.knownPermissions(chef.permissions)), 'un onglet inconnu n’ouvre rien');
+
+    // Rôle supprimé ailleurs : nom de la vue de base, droits intacts.
+    app.setServerRoles({});
+    assert.equal(app.userRoleLabel(me), 'Directeur');
+    assert.equal(app.roleChoiceOf(me), 'directeur');
+
+    // Attribuer un rôle : droits et centres de départ ; garder le même rôle ne touche à rien.
+    app.setServerRoles({ role_chef: chef, '<x>': { label: '' }, directeur: { label: 'Pirate', base: 'controleur' } });
+    assert.deepEqual(Object.keys(app.__getServerRoles()), ['role_chef'], 'catalogue nettoyé : ni rôle sans nom, ni rôle intégré remplacé');
+    const person = app.serverUserFromRights('bob', 'Bob', { role: 'controleur', permissions: { conso: [] },
+      allowedCompanies: null, allowedCostCenters: null, environmentIds: [] }, '');
+    assert.equal(app.applyRoleChoice(person, 'role_chef'), true);
+    assert.equal(person.role, 'directeur');
+    assert.equal(person.roleId, 'role_chef');
+    assert.deepEqual(person.allowedCostCenters, ['F&B'], 'le rôle apporte ses centres de coûts modifiables');
+    assert.deepEqual(Object.keys(person.permissions).sort(), Object.keys(app.knownPermissions(chef.permissions)).sort());
+    person.permissions.pnl = ['graphiques'];
+    assert.equal(app.applyRoleChoice(person, 'role_chef'), false, 'même rôle : l’affinage de la personne reste');
+    assert.deepEqual(person.permissions.pnl, ['graphiques']);
+    app.applyRoleChoice(person, 'controleur');
+    assert.equal(person.roleId, '', 'retour à un rôle intégré');
+    assert.ok(!('roleId' in app.serverRightsPayload(person)), 'fiche à rôle intégré : forme d’avant les rôles personnalisés');
+
+    // Écran : le rôle se choisit à côté de Directeur et Contrôleur de gestion.
+    person.roleId = 'role_chef';
+    const rolePanel = app.serverRightsRolePanel(person);
+    assert.ok(rolePanel.includes('<optgroup label="Rôles créés">'), 'les rôles créés sont proposés');
+    assert.ok(/<option value="role_chef" selected>Chef de cuisine/.test(rolePanel), 'le rôle de la personne est présélectionné');
+    assert.ok(rolePanel.includes('<option value="directeur">Directeur</option>'), 'les rôles intégrés restent proposés');
+
+    // Paramètres › Rôles : liste, création, garde-fous.
+    app.adoptServerSession({ method: 'ldap', account: 'alexis', roles: { role_chef: chef }, rights: {
+      role: 'controleur', isAdmin: true, permissions: null, allowedCompanies: null, allowedCostCenters: null, environmentIds: [],
+    } }, null);
+    app.__setServerDirectory({ loading: false, rows: [], list: [] });
+    const page = app.viewParametresServeur();
+    assert.ok(page.includes('data-panel="parametres-roles"'), 'la rubrique Rôles est dans Paramètres');
+    assert.ok(page.includes('data-role-new="directeur"') && page.includes('data-role-edit="role_chef"'));
+    app.adoptServerSession({ method: 'ldap', account: 'chef', roles: { role_chef: chef }, rights: {
+      role: 'directeur', roleId: 'role_chef', isAdmin: false, permissions: null,
+      allowedCompanies: null, allowedCostCenters: null, environmentIds: [],
+    } }, null);
+    assert.ok(!app.viewParametresServeur().includes('data-panel="parametres-roles"'), 'réservée aux administrateurs');
+    app.adoptServerSession({ method: 'ldap', account: 'alexis', roles: { role_chef: chef }, rights: {
+      role: 'controleur', isAdmin: true, permissions: null, allowedCompanies: null, allowedCostCenters: null, environmentIds: [],
+    } }, null);
+    app.__setServerDirectory({ loading: false, rows: [], list: [] });
+
+    const draft = (o) => Object.assign({ label: 'Gouvernante', description: '', base: 'directeur', permissions: { saisie: [] }, allowedCostCenters: null }, o);
+    assert.equal(app.roleDraftError(draft({ label: '' }), null), 'Donnez un nom au rôle.');
+    assert.ok(app.roleDraftError(draft({ label: 'directeur' }), null).includes('rôle intégré'));
+    assert.ok(app.roleDraftError(draft({ label: 'CHEF DE CUISINE' }), null).includes('déjà'));
+    assert.equal(app.roleDraftError(draft({ label: 'Chef de cuisine' }), 'role_chef'), '', 'garder son propre nom est permis');
+    assert.ok(app.roleDraftError(draft({ permissions: {} }), null).includes('au moins un onglet'));
+
+    // L'éditeur part des droits d'un rôle intégré, et le nom saisi est échappé.
+    app.__setRoleEditor({ id: null, draft: draft({ label: '<b>x</b>', allowedCostCenters: ['F&B'] }) });
+    const editor = app.roleEditorPanel();
+    assert.ok(editor.includes('&lt;b&gt;x&lt;/b&gt;') && !editor.includes('<b>x</b>'), 'nom du rôle échappé');
+    assert.ok(editor.includes('data-role-tab-check="saisie"') && !editor.includes('data-role-tab-check="autorisations"'),
+      'matrice des onglets, sans Autorisations');
+    assert.ok(/id="role-editor-restrict-centers" checked/.test(editor), 'centres de coûts choisis');
+
+    // Enregistrement : lu à l'écran, envoyé au serveur, aussitôt sélectionnable.
+    const fields = { 'role-editor-label': { value: '  Gouvernante  ' }, 'role-editor-description': { value: 'Étages' },
+      'role-editor-base': { value: 'directeur' }, 'role-editor-restrict-centers': { checked: true } };
+    globalThis.document.getElementById = (id) => fields[id] || originalGetElementById.call(globalThis.document, id);
+    globalThis.document.querySelectorAll = (selector) => {
+      if (selector === '[data-role-tab-check]') return [{ checked: true, dataset: { roleTabCheck: 'saisie' } }];
+      if (selector === '[data-role-page-check]') return [{ checked: true, dataset: { rolePageTab: 'saisie', rolePageCheck: 'saisie-ajouter' } }];
+      if (selector === '[data-role-center]:checked') return [{ dataset: { roleCenter: 'F&B' } }];
+      return originalQuerySelectorAll.call(globalThis.document, selector);
+    };
+    const calls = [];
+    const previous = app.__swapServerRequest(function (method, path, body) {
+      calls.push({ method, path, body });
+      return Promise.resolve(method === 'PUT' && /roles/.test(path) ? { role: body } : { users: {}, roles: app.__getServerRoles() });
+    });
+    try {
+      app.__setRoleEditor({ id: null, draft: draft({}) });
+      await app.saveRoleEditor();
+      const put = calls.find((c) => c.method === 'PUT');
+      assert.ok(put && /^\/api\/droits\/roles\/role_[0-9a-f]{12}$/.test(put.path), 'PUT /api/droits/roles/<id> : ' + (put && put.path));
+      assert.equal(put.body.label, 'Gouvernante', 'nom nettoyé');
+      assert.deepEqual(put.body.allowedCostCenters, ['F&B']);
+      assert.equal(app.__getRoleEditor(), null, 'éditeur refermé');
+      assert.ok(app.customRoles().some((r) => r.label === 'Gouvernante'), 'le nouveau rôle est aussitôt au catalogue');
+
+      // Suppression confirmée : DELETE, et le rôle quitte le catalogue.
+      answerConfirmations(true);
+      await app.deleteCustomRole('role_chef');
+      assert.ok(calls.some((c) => c.method === 'DELETE' && c.path === '/api/droits/roles/role_chef'));
+      assert.equal(app.customRoleById('role_chef'), null);
+    } finally {
+      app.__swapServerRequest(previous);
+    }
+  } finally {
+    globalThis.document.getElementById = originalGetElementById;
+    globalThis.document.querySelectorAll = originalQuerySelectorAll;
+    app.__setRoleEditor(null);
+    app.setServerRoles({});
+    app.__clearServerSession();
   }
 });
 
