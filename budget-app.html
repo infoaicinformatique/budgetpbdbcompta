@@ -1361,6 +1361,25 @@
     background: var(--surface);
     box-shadow: var(--shadow-sm);
   }
+  /* LIGNE DES MOIS FIGÉE (Saisie) — Alexis, 10/10/2026 : « bloquer la
+     ligne des mois quand on descend dans les comptes, comme si on figeait
+     les lignes sur Excel ».
+
+     Le `position: sticky` de `th` ne pouvait pas le faire ici : il se cale
+     sur le conteneur de défilement le plus proche, et `.table-wrap` en est
+     un (`overflow-x: auto`, indispensable — le tableau de Saisie est plus
+     large que l'écran). Or `.table-wrap` ne défile jamais verticalement :
+     c'est <main> qui défile, et la ligne des mois partait avec les comptes.
+
+     Le figement est donc fait par `syncFrozenHeads()` : à chaque défilement
+     de <main>, l'en-tête est décalé (`translateY`) d'autant que le haut du
+     tableau est passé sous le haut de l'écran, sans jamais sortir du
+     tableau. Il reste DANS le tableau, donc suit aussi le défilement
+     horizontal des mois. `z-index` : au-dessus de la colonne figée des
+     lignes (`.sticky-col`, z-index 1) qui, sinon, passerait par-dessus. */
+  table[data-frozen-head] > thead { position: relative; z-index: 5; }
+  table[data-frozen-head] > thead.is-frozen th { box-shadow: 0 3px 6px -2px rgba(0, 0, 0, .18); }
+  @media print { table[data-frozen-head] > thead { transform: none !important; } }
   /* <main> est une colonne flex : sans cette règle, ses enfants directs se
      laisseraient comprimer quand le contenu dépasse la hauteur de l'écran,
      au lieu de garder leur taille et de faire défiler la page. C'est ce qui
@@ -3501,7 +3520,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-09.5';
+const APP_BUILD = '2026-10-10.1';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -13120,6 +13139,70 @@ document.addEventListener('keydown', trapModalTab, true);
 /** Élément à refocaliser quand la fenêtre en cours se referme (voir render()). */
 let modalFocusReturnTo = null;
 
+/* ---------------- Ligne des mois figée ----------------
+ * Demande d'Alexis (10/10/2026) : garder la ligne des mois en haut de
+ * l'écran quand on descend dans les comptes de la Saisie, comme les volets
+ * figés d'Excel. Voir la règle CSS `table[data-frozen-head]` pour la raison
+ * de ce décalage calculé (un `position: sticky` ne peut pas marcher dans un
+ * `.table-wrap` qui défile en largeur). */
+
+/**
+ * Décalage vertical (px) à donner à l'en-tête d'un tableau pour qu'il reste
+ * collé à `viewportTop` : nul tant que le haut du tableau est visible, et
+ * jamais au point de faire sortir l'en-tête du bas du tableau.
+ */
+function frozenHeadShift(tableTop, tableHeight, headHeight, viewportTop) {
+  const shift = viewportTop - tableTop;
+  if (!(shift > 0)) return 0;
+  return Math.round(Math.min(shift, Math.max(0, tableHeight - headHeight)));
+}
+
+/** Recale les en-têtes figés (`table[data-frozen-head]`) de la vue affichée. */
+function syncFrozenHeads() {
+  const main = document.getElementById('view');
+  if (!main || typeof main.querySelectorAll !== 'function' || typeof main.getBoundingClientRect !== 'function') return;
+  const tables = main.querySelectorAll('table[data-frozen-head]');
+  if (!tables.length) return;
+  let viewportTop = main.getBoundingClientRect().top;
+  // « X a la main sur ce budget » est lui-même collé en haut de <main> :
+  // la ligne des mois se cale sous lui, pas dessous.
+  const banner = main.querySelector('.hand-banner');
+  if (banner) viewportTop = Math.max(viewportTop, banner.getBoundingClientRect().bottom);
+  Array.prototype.forEach.call(tables, function (table) {
+    const head = table.tHead;
+    if (!head) return;
+    const rect = table.getBoundingClientRect();
+    const shift = frozenHeadShift(rect.top, rect.height, head.offsetHeight, viewportTop);
+    head.style.transform = shift ? 'translateY(' + shift + 'px)' : '';
+    head.classList.toggle('is-frozen', shift > 0);
+  });
+}
+
+let frozenHeadsQueued = false;
+/** Un seul recalage par image, quel que soit le nombre d'événements reçus. */
+function scheduleFrozenHeadsSync() {
+  if (frozenHeadsQueued) return;
+  if (typeof requestAnimationFrame !== 'function') { syncFrozenHeads(); return; }
+  frozenHeadsQueued = true;
+  requestAnimationFrame(function () { frozenHeadsQueued = false; syncFrozenHeads(); });
+}
+
+(function wireFrozenHeads() {
+  const main = document.getElementById('view');
+  if (!main || typeof main.addEventListener !== 'function') return;
+  main.addEventListener('scroll', scheduleFrozenHeadsSync, { passive: true });
+  // Ce qui déplace le tableau sans faire défiler : panneau replié ou
+  // déplié au-dessus (`toggle` ne remonte pas, d'où la capture), clic qui
+  // ajoute ou retire une ligne, fin d'une transition d'onglet, fenêtre
+  // redimensionnée.
+  main.addEventListener('toggle', scheduleFrozenHeadsSync, true);
+  main.addEventListener('click', scheduleFrozenHeadsSync, true);
+  main.addEventListener('animationend', scheduleFrozenHeadsSync, true);
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener('resize', scheduleFrozenHeadsSync, { passive: true });
+  }
+})();
+
 function render() {
   if (bulkRenderSuppressed) { bulkRenderPending = true; return; }
   // Capturés avant toute reconstruction du DOM par ce rendu : c'est le seul
@@ -13178,6 +13261,9 @@ function render() {
   // droits en paramètre à la trentaine de fonctions qui produisent un
   // panneau — et garantit qu'aucune n'est oubliée.
   applyPagePermissions();
+  // Le tableau vient d'être reconstruit, en-tête à sa place naturelle :
+  // on le recale aussitôt si la page était déjà descendue.
+  syncFrozenHeads();
 
   document.querySelectorAll('#tabs button[data-tab], #account-panel button[data-tab]').forEach(function (button) {
     button.classList.toggle('active', button.dataset.tab === tab);
@@ -13989,9 +14075,10 @@ function viewSaisie() {
     // Le tableau de saisie reste toujours visible : c'est le cœur de
     // l'onglet, le replier n'aurait pas de sens. Comme partout ailleurs,
     // il s'affiche en entier (`.table-wrap`) : la page défile, le tableau
-    // n'a pas sa propre barre de défilement verticale. Les en-têtes de
-    // colonnes restent figées grâce au `position: sticky` de `th`,
-    // relatif à <main>.
+    // n'a pas sa propre barre de défilement verticale. La ligne des mois
+    // reste figée en haut de l'écran grâce à `data-frozen-head` (voir
+    // `syncFrozenHeads`) : le `position: sticky` de `th` ne suffisait pas,
+    // `.table-wrap` défilant en largeur.
     '<div class="section-header" style="margin-bottom:8px">' +
     '<div class="row" style="gap:8px">' +
     '<strong>' + escapeHtml(centerLabel) + '</strong>' +
@@ -14007,7 +14094,7 @@ function viewSaisie() {
     '</div>' +
     '<span class="section-meta muted">' + centerMeta + '</span>' +
     '</div>' +
-    '<div class="table-wrap"><table><thead><tr>' +
+    '<div class="table-wrap"><table data-frozen-head="1"><thead><tr>' +
     '<th class="sticky-col" style="min-width:230px">Compte / ligne nommée</th>' +
     MONTH_LABELS.map(function (m) { return '<th class="num">' + m + '</th>'; }).join('') +
     '<th class="num">Total</th><th></th>' +
