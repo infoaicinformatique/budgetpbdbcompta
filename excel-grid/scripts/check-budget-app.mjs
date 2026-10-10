@@ -343,6 +343,7 @@ const app = await importApp(
     '  calculatorInputSelector, calculatorInputLabel,\n' +
     '  calculatorMemoryAdd, calculatorMemorySubtract, calculatorMemoryRecall, calculatorMemoryClear,\n' +
     '  calculatorRecallHistory,\n' +
+    '  frozenHeadShift, syncFrozenHeads,\n' +
     '  recomputeRateLinkedLines, recomputeAllRateLinkedLines,\n' +
     '  rateLinkRefAccountResults, rateLinkSourceLineOptions, rateLinkSourceLabel,\n' +
     '  rateLinkExpenseCategoryMonths, rateLinkRevenueCategoryMonths, rateLinkOneRevenueCategoryMonths,\n' +
@@ -21625,6 +21626,26 @@ await checkAsync('Sociétés : boutons import/export par ligne, affichés selon 
     app.resetStateIndexes();
     if (savedTab !== undefined) { app.__setTab(savedTab); app.render(); }
   }
+});
+
+check('Saisie : la ligne des mois reste figée en haut de l’écran (10/10/2026)', () => {
+  // Demande d'Alexis : voir sur quel mois on saisit en descendant dans les
+  // comptes. Le `position: sticky` de `th` ne marche pas dans `.table-wrap`
+  // (qui défile en largeur) : c'est `syncFrozenHeads` qui décale l'en-tête.
+  assert.equal(app.frozenHeadShift(300, 2000, 40, 120), 0, 'haut du tableau visible : aucun décalage');
+  assert.equal(app.frozenHeadShift(-500, 2000, 40, 120), 620, 'tableau passé sous le haut : l’en-tête le rejoint');
+  assert.equal(app.frozenHeadShift(-5000, 2000, 40, 120), 1960, 'jamais plus bas que le bas du tableau');
+  assert.equal(app.frozenHeadShift(-10.4, 2000, 40, 0), 10, 'décalage arrondi au pixel');
+  assert.match(appSource, /<div class="table-wrap"><table data-frozen-head="1"><thead><tr>' \+\s*'<th class="sticky-col" style="min-width:230px">Compte \/ ligne nommée/,
+    'le tableau de Saisie doit porter data-frozen-head');
+  assert.match(html, /table\[data-frozen-head\] > thead \{ position: relative; z-index: 5; \}/,
+    'l’en-tête figé doit passer au-dessus de la colonne figée des lignes');
+  assert.match(appSource, /main\.addEventListener\('scroll', scheduleFrozenHeadsSync, \{ passive: true \}\)/,
+    'le défilement de <main> doit recaler l’en-tête');
+  assert.match(appSource, /applyPagePermissions\(\);[\s\S]{0,200}syncFrozenHeads\(\);/,
+    'render() doit recaler l’en-tête après reconstruction du tableau');
+  // Dans le faux DOM, le recalage ne doit jamais lever d'exception.
+  app.syncFrozenHeads();
 });
 
 /* --- 5. Verdict ------------------------------------------------------- */

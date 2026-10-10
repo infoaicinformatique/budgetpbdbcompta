@@ -77,6 +77,38 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Saisie : ligne des mois figée en haut de l'écran (10/10/2026)
+
+Demande : « bloquer la ligne des mois sur l'onglet Saisie quand on descend
+dans les comptes, comme si on figeait les lignes sur Excel ».
+
+- Constat (navigateur réel) : la ligne des mois partait avec les comptes.
+  Le `position: sticky` de `th` était censé la figer, mais il se cale sur le
+  conteneur de défilement le plus proche, et `.table-wrap` en est un
+  (`overflow-x: auto`, indispensable : le tableau de Saisie est plus large
+  que l'écran — 1 651 px pour 1 350 visibles à 1 400 px de large). Comme
+  `.table-wrap` ne défile jamais verticalement (c'est `<main>` qui défile),
+  le figement ne se déclenchait jamais. Le commentaire de `viewSaisie` qui
+  l'affirmait est corrigé.
+- Correctif : le tableau de Saisie porte `data-frozen-head`, et
+  `syncFrozenHeads()` décale son `<thead>` (`translateY`) d'autant que le
+  haut du tableau est passé sous le haut de `<main>` (ou sous le bandeau
+  « X a la main », lui-même collé en haut), sans jamais sortir du bas du
+  tableau (`frozenHeadShift`, pur). L'en-tête reste dans le tableau : il
+  suit donc aussi le défilement horizontal des mois. Recalé au défilement
+  de `<main>` (un seul calcul par image), à chaque `render()`, au
+  redimensionnement, et après ce qui déplace le tableau sans défiler
+  (panneau replié/déplié, clic, fin de transition d'onglet). `thead` en
+  `z-index: 5` pour passer au-dessus de la colonne figée des lignes ;
+  légère ombre quand il est figé ; décalage annulé à l'impression.
+- Vérifié dans Chromium : à 600 px puis 1 500 px de défilement, la ligne
+  des mois reste à 120 px (haut de `<main>`) au lieu de partir à 53 puis
+  −847 px ; elle suit le défilement horizontal.
+- Contrôle ajouté (`check-budget-app.mjs`, « Saisie : la ligne des mois
+  reste figée… ») : calcul du décalage (avant, pendant, butée en bas,
+  arrondi), marqueur sur le tableau, règle CSS, écoute du défilement et
+  recalage dans `render()`. `APP_BUILD` 2026-10-10.1.
+
 ### Excel « Synthèse » : Gross Margin en formules (09/10/2026)
 
 Demande : « Ajoute les formules Excel pour la Gross Margin. »
