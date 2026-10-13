@@ -77,9 +77,41 @@ Comportement :
   mot de passe.
 
 Préférer `ldaps://` ou `LDAP_STARTTLS=true` : en `ldap://` simple, les mots de
-passe traversent le réseau en clair. Pour une autorité de certification
-interne, voir le bloc `volumes` commenté de `docker-compose.yml` et
-`LDAP_CA_FILE`.
+passe traversent le réseau en clair.
+
+**En production, depuis le 13/10/2026 :**
+`LDAP_URL=ldaps://SRV-DC-01.pbcannes.org:636` et
+`LDAP_CA_FILE=/certs/ldap-ca.pem`. Deux pièges l'imposent :
+
+- le certificat du contrôleur de domaine est signé par l'autorité interne
+  `pbcannes-SRV-DC-01-CA`, inconnue de Node : sans `LDAP_CA_FILE`, la
+  connexion échoue par « unable to verify the first certificate » ;
+- ce certificat ne porte que le nom `SRV-DC-01.pbcannes.org`, pas l'adresse
+  IP : avec `ldaps://192.168.100.226:636` elle échoue par « IP is not in the
+  cert's list ». **Toujours le nom d'hôte**, qui se résout depuis le
+  conteneur.
+
+L'autorité est publiée dans l'annuaire lui-même, il n'y a rien à demander au
+service informatique : l'attribut `cACertificate` de
+`CN=<autorité>,CN=Certification Authorities,CN=Public Key Services,
+CN=Services,CN=Configuration,DC=…` (binaire DER, à réenrober en PEM). Le
+fichier obtenu se dépose en `ldap-ca.pem` à côté de `docker-compose.yml`
+(hors git, comme `.env`), le `volumes` du compose le monte en
+`/certs/ldap-ca.pem`. Il vaut jusqu'en 2074 ; **le certificat du contrôleur,
+lui, est renouvelé chaque année** (expiration en cours : 14/01/2027) — sans
+effet tant que l'autorité ne change pas.
+
+Vérifier que la liaison chiffrée tient, sans aucun mot de passe d'utilisateur
+(le compte de service suffit) :
+
+```bash
+sudo docker exec budgetpbdbcompta node --input-type=module -e "
+import { ldapConfigFromEnv, describeLdapConfig, ldapListGroupMembers } from '/app/auth-ldap.mjs';
+const c = ldapConfigFromEnv(process.env);
+console.log(describeLdapConfig(c));
+console.log((await ldapListGroupMembers(c)).length, 'membres');
+process.exit(0);"
+```
 
 Vérification sur le serveur après `sudo docker compose up -d` :
 
@@ -434,7 +466,7 @@ Watchtower (il ne remplace que l'image) : après un changement de
 | 502 Bad Gateway | conteneur démarré (`sudo docker ps`) ; IP / port du Proxy Host ; depuis la machine NPM : `curl -I http://<IP hôte Docker>:3000` → 401 |
 | Page d'un autre site | nom de domaine exact dans le Proxy Host |
 | Mot de passe refusé | valeurs de `.env`, puis `sudo docker compose up -d` pour les recharger |
-| LDAP : 503 « Annuaire indisponible » | `sudo docker logs budgetpbdbcompta` : `ECONNREFUSED`/`ETIMEDOUT` → réseau ou port ; `certificate` → `LDAP_CA_FILE` ; « compte de service LDAP refusé » → `LDAP_BIND_DN` / `LDAP_BIND_PASSWORD` |
+| LDAP : 503 « Annuaire indisponible » | `sudo docker logs budgetpbdbcompta` : `ECONNREFUSED`/`ETIMEDOUT` → réseau ou port ; `unable to verify the first certificate` → `LDAP_CA_FILE` absent ou périmé ; `is not in the cert's list` → `LDAP_URL` donne une adresse IP alors que le certificat ne porte qu'un nom d'hôte ; « compte de service LDAP refusé » → `LDAP_BIND_DN` / `LDAP_BIND_PASSWORD` |
 | LDAP : identifiants corrects mais refusés | journal « Connexion LDAP refusée » : vérifier `LDAP_USER_DN` / `LDAP_SEARCH_FILTER`, puis l'appartenance à `LDAP_GROUP_DN` (membre direct, pas via un sous-groupe) |
 | LDAP : 429 « Trop d'essais » | 5 échecs en 15 min depuis la même adresse ; attendre, ou `sudo docker restart budgetpbdbcompta` |
 | Droits : « Droits illisibles » ou 500 sur `/api/droits` | `sudo docker logs budgetpbdbcompta` : `EACCES` → volume `droits` absent (`docker compose up -d` après `git pull`) ; « Fichier des droits illisible » → JSON abîmé, restaurer une sauvegarde |

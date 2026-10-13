@@ -6,3 +6,5 @@ dist/
 data/
 npm-debug.log*
 CLAUDE.local.md
+# Autorité de certification de l'annuaire, montée dans le conteneur
+ldap-ca.pem
