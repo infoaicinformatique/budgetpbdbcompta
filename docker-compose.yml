@@ -36,10 +36,12 @@ services:
       # Lire : docker exec budgetpbdbcompta cat /data/droits.json
       #        docker exec budgetpbdbcompta cat /data/budget.json
       - droits:/data
-      # Autorité de certification de l'annuaire LDAP, si elle est interne :
-      # déposer le fichier à côté de ce compose, décommenter, et renseigner
-      # LDAP_CA_FILE=/certs/ldap-ca.pem dans .env.
-      # - ./ldap-ca.pem:/certs/ldap-ca.pem:ro
+      # Autorité de certification de l'annuaire LDAP (interne) : le fichier
+      # ldap-ca.pem vit à côté de ce compose, hors git, et .env le désigne par
+      # LDAP_CA_FILE=/certs/ldap-ca.pem. Sans lui, ldaps:// est refusé
+      # (« unable to verify the first certificate »). Le récupérer : README,
+      # « Authentification LDAP ».
+      - ./ldap-ca.pem:/certs/ldap-ca.pem:ro
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/healthz"]
       interval: 30s

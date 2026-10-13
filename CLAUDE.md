@@ -156,7 +156,10 @@ fichiers de `excel-grid/` ont bougé. Les sections 1 à 6 s'éditent à la main.
   puis `docker compose up -d` (README, « Désigner les administrateurs »). Tout
   changement de `auth-ldap.mjs` passe par `npm test`. Piège : ldapts passe en
   TLS dès qu'il reçoit des `tlsOptions`, même sur `ldap://` — ne les donner
-  qu'en `ldaps://`.
+  qu'en `ldaps://`. **Depuis le 13/10/2026 la liaison est chiffrée** :
+  `ldaps://SRV-DC-01.pbcannes.org:636` + `LDAP_CA_FILE=/certs/ldap-ca.pem`
+  (autorité interne, fichier `ldap-ca.pem` hors git monté par le compose).
+  Par nom d'hôte obligatoirement : le certificat ne porte pas l'adresse IP.
   Un nouveau fichier servi doit aussi être ajouté au `Dockerfile` et au
   `.dockerignore` (liste blanche).
 - **Où tourne cette session ?** Vérifier avant de proposer des commandes à

@@ -77,6 +77,45 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Annuaire : la connexion passe en LDAPS (13/10/2026)
+
+Demande : « peux tu essayer de le passer en ldaps ? ». Jusqu'ici le serveur
+interrogeait l'annuaire en clair (`ldap://192.168.100.226:389`) : les mots de
+passe des cinquante-six personnes du groupe traversaient le réseau local en
+clair à chaque ouverture de page. La production est passée à
+`ldaps://SRV-DC-01.pbcannes.org:636`, avec vérification du certificat.
+
+Aucune ligne de code : `auth-ldap.mjs` savait déjà le faire (`LDAP_CA_FILE`,
+`tlsOptions` donnés uniquement en `ldaps://`). Deux obstacles de
+configuration, tous deux constatés avant de toucher au conteneur :
+
+- le certificat du contrôleur est signé par l'autorité interne
+  `pbcannes-SRV-DC-01-CA`, que Node ne connaît pas → « unable to verify the
+  first certificate ». L'autorité se récupère dans l'annuaire lui-même
+  (`cACertificate` sous `CN=Certification Authorities,…,CN=Configuration`),
+  déposée en `ldap-ca.pem` à côté du compose (hors git, comme `.env`) et
+  montée en `/certs/ldap-ca.pem` ;
+- ce certificat ne porte que `SRV-DC-01.pbcannes.org`, sans adresse IP →
+  `ldaps://192.168.100.226:636` est refusé (« IP is not in the cert's
+  list »). L'URL doit donc nommer l'hôte ; le conteneur le résout.
+
+Vérifications faites dans cet ordre, la dernière depuis le conteneur de
+production : liaison acceptée par le nom d'hôte avec la CA (56 membres du
+groupe lus, 97 ms), refusée par IP, refusée sans la CA, puis
+`docker compose up -d`, journal (« annuaire LDAP : ldaps://… »), `/healthz`
+→ `ok`, `/` → 401, et enfin un vrai bind LDAPS depuis le conteneur (56
+membres, 122 ms). Paramètres › LDAP affiche désormais le chiffrement
+« ldaps ».
+
+Pas de contrôle ajouté à `check-budget-app.mjs` : rien n'a changé dans
+`budget-app.html`, et la configuration vit hors du dépôt. Ce qui protège la
+correction est le fichier `.env` de production, sauvegardé avant la bascule
+dans `/root/sauvegardes-budgetpbdbcompta/`.
+
+Piège à retenir : le certificat du contrôleur est renouvelé chaque année
+(expiration en cours 14/01/2027) ; tant que l'autorité ne change pas (valable
+jusqu'en 2074), `ldap-ca.pem` n'est pas à retoucher.
+
 ### Saisie : ligne des mois figée en haut de l'écran (10/10/2026)
 
 Demande : « bloquer la ligne des mois sur l'onglet Saisie quand on descend
