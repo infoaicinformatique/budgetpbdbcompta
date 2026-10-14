@@ -77,6 +77,129 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Menu « Charges », multiplicateur saisonnier, soumission du budget, % Food / Beverage sans CA (14/10/2026)
+
+Quatre évolutions livrées ensemble (`APP_BUILD` 2026-10-14.1), dans l'ordre
+demandé.
+
+#### 1. Menu « Saisie ▾ » : « Charges » et nouvel ordre
+
+- L'entrée « Saisie » s'appelle **Charges** ; ordre du menu : CA, Payroll,
+  Charges, Ajustements, Import. Le menu garde son nom « Saisie ▾ », le titre
+  de page « Saisie budgétaire — … » ne change pas.
+- Rien d'interne ne bouge : l'identifiant reste `saisie` (`data-tab`,
+  droits, `serverLandingTab`, palette Ctrl+K, liens « ouvrir dans … »).
+  Seuls changent `TAB_GROUPS` (ordre), le bouton de la barre, `TAB_LABELS`
+  (fil d'Ariane « … › Saisie › Charges », palette), `APP_PAGES` (écran des
+  droits, même ordre que la barre) et les textes qui désignaient la page
+  (aide « Charges — au clavier / au double-clic », « dans Charges »…).
+- `APP_PAGES` ayant changé d'ordre, `firstAllowedTab` suit désormais
+  `LANDING_TAB_ORDER` (l'ancien ordre) : la page d'arrivée d'un périmètre
+  donné est exactement celle d'avant.
+
+#### 2. Multiplicateur saisonnier
+
+- `rateLink.rate` accepte l'ancien nombre ou
+  `{ mode: 'fixed'|'period'|'monthly', unit: 'percent'|'coef', values: [12], periods }`.
+  `values` (toujours en coefficient) est la forme du calcul ; `rateSpecOf`
+  lit les deux formats sans jamais lever, `storedRateOf` réécrit un fixe en
+  coefficient comme un simple nombre — les liens existants ne changent pas
+  d'un octet, aucune migration. `charge[m] = arrondi(référence[m] × values[m])`
+  (`recomputeRateLinkedLines`, base factorisée dans `rateLinkBaseMonths`,
+  référence Payroll comprise).
+- Fenêtre, section « 4. Multiplicateur » : mode (Fixe / Par période / Mois
+  par mois), unité (% par défaut sur une catégorie de produits, coefficient
+  sinon ; « 20 % » accepté partout, virgule ou point ; conversion des
+  valeurs tapées au changement d'unité), périodes à pastilles (un mois dans
+  une seule période, Basse saison / Haute saison par défaut), douze cases
+  avec « appliquer à tous les mois », « remplir depuis les périodes »,
+  « copier depuis… » et collage d'une ligne Excel, contrôle en direct
+  (« Mois non couverts », « Valeur manquante », enregistrement bloqué),
+  aperçu 12 mois (référence, multiplicateur, charge) et **ratio annuel
+  effectif** pondéré. Passages de mode avec préremplissage (règles de la
+  demande, `switchRateLinkMode`). Nom vide → « Food cost », « Bev cost »…
+  La frappe ne reconstruit pas la fenêtre (`patchRateLinkModal`) ; les gestes
+  qui en changent la forme la reconstruisent sans rejouer l'animation ni
+  remonter en haut (`rerenderRateLinkModal`).
+- Affichage : sous-libellé « = × 24 % basse saison / 20 % haute saison de CA
+  Beverage », « = × mensuel (26 % → 32 %) de CA Food », cliquable pour
+  rouvrir la fenêtre, 12 valeurs au survol ; cases « Mai : 120 000 × 20 % ».
+- Cohérence : un enregistrement = une étape d'annulation ; « ajuster » ne
+  touche jamais une ligne liée (inchangé) ; « répartir » refusé à la source
+  sur une ligne calculée (`applySpread`) ; Résultats › P&L : tableau
+  « Multiplicateurs — ratios effectifs » (mensuel et annuel), repris à
+  l'impression ; exports Excel détail et P&L : feuille « Ratios
+  multiplicateurs ». Versions figées : `categoryIds` est désormais conservé
+  (l'ancien `categoryId` seul perdait les liens à plusieurs catégories).
+
+#### 3. Soumission du budget
+
+- Serveur (`data.mjs`) : `budgetSubmissions[companyId]` = `{ submitted, year,
+  at, by, history }`, dans `SERVER_OWNED_DICTS` — transmis avec la société,
+  jamais repris d'un envoi. `setSubmission` (route
+  `POST /api/donnees/soumission`, `server.mjs`) soumet (fiche avec un onglet
+  de saisie, société du périmètre) ou rouvre (administrateur seulement),
+  trace qui et quand, avec une nouvelle révision. `write` refuse (409,
+  `extra.submitted`) toute écriture qui modifie une société soumise —
+  administrateurs compris, suppression comprise, avant le contrôle de
+  révision pour donner la vraie raison.
+- Application : bouton « Soumettre » à gauche des initiales (`#submit-slot`),
+  cadenas « Soumis le … par … » ensuite (heure exacte au survol). Fenêtre de
+  confirmation (texte, Produits / Total charges / EBITDA, avertissement,
+  Annuler par défaut, Échap et clic à côté = Annuler). Budget figé :
+  `budgetFrozen()` ferme la structure et les montants de Charges comme la
+  main tenue par un autre, et `applyBudgetFreeze` met en lecture seule les
+  cases des cinq onglets de saisie et retire les gestes de modification
+  (`BUDGET_FROZEN_HIDDEN`) ; modale du multiplicateur, « ajuster »,
+  « répartir » refusés à la source ; Annuler / Rétablir désactivés,
+  `budgetSubmissions` hors historique. Garde-fou de `save()`
+  (`frozenEditRejected`) : une modification qui échapperait à la lecture
+  seule est défaite. Bandeau collé en haut des pages de l'entité, bouton
+  « Rouvrir le budget » pour un administrateur. Notification sur l'Accueil
+  (au-dessus des indicateurs), « Voir le budget » / « J'ai compris »
+  (mémoire de la page : elle revient à chaque connexion).
+- Onglet resté ouvert pendant la soumission : l'envoi suivant est refusé par
+  le serveur ; la page recharge l'état (donc figé) et affiche « Ce budget a
+  été soumis par … : vos modifications n'ont pas été enregistrées ». Un
+  budget connu comme soumis n'est jamais déclaré modifié (un recalcul ne
+  fait pas refuser l'envoi des autres sociétés).
+
+#### 4. % Food / Beverage saisissables sans CA
+
+- « Ventilation du CA par compte » : sans CA, les deux pourcentages restent
+  affichés et modifiables, enregistrés aussitôt (inchangé :
+  `caCategoryVentilation`, donnée de la société), montants « — » et message
+  « Aucun CA n'est encore saisi : … ». Dès que la matrice produit du CA, ils
+  s'appliquent tels quels. Le niveau des comptes et « Appliquer aux comptes »
+  attendent le CA (appliquer une ventilation de zéro effacerait le budget
+  des comptes suivis). Budget soumis : cases figées.
+- Saisir Food puis cliquer dans Beverage perdait le clic (le `change` de la
+  première case reconstruisait l'écran pendant le clic) :
+  `renderKeepingVentilationFocus` rend après le clic et remet le curseur.
+- Droits inchangés : les pourcentages restent posés par le contrôle de
+  gestion (`canEditCaVentilation`).
+
+#### Contrôles
+
+- `check-budget-app.mjs` (569) : menu (ordre, libellés, ancre, fil
+  d'Ariane, droits, aide, palette, atterrissage) ; multiplicateur (formats,
+  saisie %/coef, jeu de la maquette — Bev cost 24/20 % par période, Food cost
+  mensuel 32 → 26 %, Boulangerie 3 %, Frais bancaires 0,008 sur Food + Bev +
+  Event —, 3 périodes, mois non couvert bloqué, mensuel, collage, passages
+  de mode, undo/redo, ratio pondéré, référence Payroll, référence nulle,
+  « ajuster » et « répartir » sans effet, sous-libellés, P&L, export) ;
+  soumission (fenêtre, figé partout, garde-fou, notification, directeur
+  sans réouverture, administrateur, autre entité, mode serveur avec refus 409
+  d'un onglet resté ouvert) ; ventilation sans CA (24 % / 76 %, rechargement,
+  CA saisi ensuite). Quatre contrôles existants adaptés à la nouvelle forme
+  (ordre du menu, état de la fenêtre du multiplicateur, `categoryIds` des
+  versions).
+- `npm test` (62) : soumission côté serveur (droits, refus d'écriture, envoi
+  qui tenterait de dé-soumettre, réouverture réservée et tracée).
+- Vérifié dans Chromium : fenêtre du multiplicateur (modes, pastilles,
+  collage, unité), soumission en local, puis serveur local à deux
+  navigateurs (refus, lecture seule, réouverture), ventilation sans CA.
+
 ### Annuaire : la connexion passe en LDAPS (13/10/2026)
 
 Demande : « peux tu essayer de le passer en ldaps ? ». Jusqu'ici le serveur
@@ -12530,6 +12653,7 @@ const app = await importApp(
     '  calculatorInputSelector, calculatorInputLabel,\n' +
     '  calculatorMemoryAdd, calculatorMemorySubtract, calculatorMemoryRecall, calculatorMemoryClear,\n' +
     '  calculatorRecallHistory,\n' +
+    '  frozenHeadShift, syncFrozenHeads,\n' +
     '  recomputeRateLinkedLines, recomputeAllRateLinkedLines,\n' +
     '  rateLinkRefAccountResults, rateLinkSourceLineOptions, rateLinkSourceLabel,\n' +
     '  rateLinkExpenseCategoryMonths, rateLinkRevenueCategoryMonths, rateLinkOneRevenueCategoryMonths,\n' +
@@ -12665,6 +12789,22 @@ const app = await importApp(
     'export { DEFAULT_NAVY_COLOR, darkenHex, applyEnvironmentTheme,\n' +
     '  setSuperGroupNavyColor, resetSuperGroupNavyColor };\n' +
     'export { duplicateLine };\n' +
+    // Soumission du budget (14/10/2026).
+    'export { BUDGET_INPUT_TABS, BUDGET_FROZEN_HIDDEN, budgetSubmissionOf, budgetSubmitted, budgetFrozen, canReopenBudget,\n' +
+    '  canSubmitBudgetNow, submitSlotHtml, openSubmitBudgetModal, closeSubmitBudgetModal, submitBudgetModalHtml,\n' +
+    '  submitBudget, reopenBudget, budgetFrozenBannerHtml, submissionNoticeHtml, dismissSubmissionNotice,\n' +
+    '  frozenEditRejected, applyBudgetFreeze, setLocalSubmission };\n' +
+    'export function __getSubmitBudgetModal() { return submitBudgetModal; }\n' +
+    'export function __resetSubmissionNotices() { dismissedSubmissionNotices = new Set(); }\n' +
+    // Multiplicateur saisonnier (14/10/2026).
+    'export { rateSpecOf, rateMonthValues, storedRateOf, cloneRate, parseRateInput, formatRateIn, rateInputText,\n' +
+    '  rateLinkDefaultUnit, rateLinkBaseMonths, rateLinkBaseMonthsOf, rateLinkEffectiveRatios, rateLinkLineRatios,\n' +
+    '  rateLinkReferenceLabel, rateLinkFactorLabel, rateLinkMonthsTitle, rateLinkRuleLabel, rateLinkCellTitle,\n' +
+    '  rateLinkDraftValues, rateLinkDraftIssues, rateLinkIssuesHtml, rateLinkPreviewData, rateLinkPreviewHtml,\n' +
+    '  rateLinkCanSave, switchRateLinkMode, setRateLinkUnit, toggleRateLinkPeriodMonth, addRateLinkPeriod,\n' +
+    '  removeRateLinkPeriod, fillRateLinkMonths, fillRateLinkMonthsFromPeriods, rateLinkCopyCandidates,\n' +
+    '  copyRateLinkMonthsFrom, pasteRateLinkMonths, rateLinkSuggestedName, rateLinkRatioRows, rateLinkRatiosHtml,\n' +
+    '  styledRateRatiosSheet, applySpread, RATE_LINK_MODES, defaultRatePeriods };\n' +
     'export { setConsoSort, setConsoCompareGroup };\n' +
     'export function __getConsoSort() { return consoSort; }\n' +
     'export function __getConsoCompareGroup() { return consoCompareGroup; }\n' +
@@ -15369,15 +15509,16 @@ check('accueil : salutation et rappel des chiffres à chaque ouverture, fermetur
 check('barre d’onglets : glissé vertical dans un même menu, horizontal en changeant de menu', () => {
   const savedTab = app.__getLastRenderedTab();
   try {
-    // Rester dans le même menu (Saisie : saisie, ca, ajustements, payroll, import) :
-    // glissé vertical, bas en avançant dans l'ordre du menu.
+    // Rester dans le même menu (Saisie : ca, payroll, saisie = Charges,
+    // ajustements, import — ordre du 14/10/2026) : glissé vertical, bas en
+    // avançant dans l'ordre du menu.
     app.__setLastRenderedTab('saisie');
-    assert.equal(app.viewTransitionFor('payroll'), 'view-enter-bottom',
-      'Saisie → Payroll avance dans le menu Saisie, le contenu doit entrer par le bas');
+    assert.equal(app.viewTransitionFor('import'), 'view-enter-bottom',
+      'Charges → Import avance dans le menu Saisie, le contenu doit entrer par le bas');
     // Reculer dans le même menu : glissé vertical, haut.
-    app.__setLastRenderedTab('payroll');
-    assert.equal(app.viewTransitionFor('saisie'), 'view-enter-top',
-      'Payroll → Saisie recule dans le menu Saisie, le contenu doit entrer par le haut');
+    app.__setLastRenderedTab('saisie');
+    assert.equal(app.viewTransitionFor('payroll'), 'view-enter-top',
+      'Charges → Payroll recule dans le menu Saisie, le contenu doit entrer par le haut');
     // Avancer d'un menu (Saisie → Résultats) : glissé horizontal, droite → gauche.
     app.__setLastRenderedTab('saisie');
     assert.equal(app.viewTransitionFor('pnl'), 'view-enter-right',
@@ -17805,8 +17946,13 @@ check('saveRateLink crée une nouvelle dépense calculée sur la ligne de réfé
     // en écrivant directement le compte choisi (le clic sur un résultat de
     // recherche fait la même chose : `rateLinkModal.refAccount = ...`).
     app.openRateLinkModal(target.account, null);
-    assert.deepEqual(app.__getRateLinkModal(),
+    const pick = (m) => ({ account: m.account, editingLineId: m.editingLineId, refKind: m.refKind,
+      categoryIds: m.categoryIds, refAccountQuery: m.refAccountQuery, refAccount: m.refAccount });
+    assert.deepEqual(pick(app.__getRateLinkModal()),
       { account: target.account, editingLineId: null, refKind: 'line', categoryIds: [], refAccountQuery: '', refAccount: null });
+    // Multiplicateur saisonnier (14/10/2026) : une création part en fixe, en coefficient sur une ligne précise.
+    assert.equal(app.__getRateLinkModal().mode, 'fixed');
+    assert.equal(app.__getRateLinkModal().unit, 'coef');
     app.__getRateLinkModal().refAccount = source.account;
 
     // Étape 2 : la ligne de référence EXACTE, parmi les lignes du compte de
@@ -17840,8 +17986,9 @@ check('saveRateLink crée une nouvelle dépense calculée sur la ligne de réfé
     // Modification depuis le formulaire : nouveau compte de référence,
     // nouvelle ligne de référence exacte, nouveau multiplicateur.
     app.openRateLinkModal(target.account, created.id);
-    assert.deepEqual(app.__getRateLinkModal(),
+    assert.deepEqual(pick(app.__getRateLinkModal()),
       { account: target.account, editingLineId: created.id, refKind: 'line', categoryIds: [], refAccountQuery: '', refAccount: source.account });
+    assert.equal(app.__getRateLinkModal().fixedText, '0,08', 'le multiplicateur enregistré se relit dans la fenêtre');
     app.__getRateLinkModal().refAccount = otherSource.account;
     document.getElementById('ratelink-source-line').value = 'save_rl_other';
     document.getElementById('ratelink-rate').value = '0.02';
@@ -18163,6 +18310,7 @@ check('rateLinkModalHtml : cases à cocher pour plusieurs catégories, dont l’
     const modal = app.__getRateLinkModal();
     modal.refKind = 'revenueCategory';
     modal.categoryIds = ['food'];
+    modal.fixedText = '20'; // valeur saisie : seule la référence est en jeu ici
     let rendered = app.rateLinkModalHtml();
     assert.ok(/data-ratelink-category="food"[^>]*checked/.test(rendered), 'Food doit être coché');
     assert.ok(!/data-ratelink-category="beverage"[^>]*checked/.test(rendered), 'Beverage ne doit pas être coché');
@@ -18284,13 +18432,15 @@ check('duplicateCompany, freezeVersion + restoreVersion : un lien par catégorie
     version = app.freezeVersion(source.id, 'Version test catégorie');
     const versionLine = version.lines.find((l) => l.name === 'Quote-part Marketing');
     assert.ok(versionLine, 'la ligne calculée devrait exister dans l’instantané');
-    assert.deepEqual(versionLine.rateLink, { rate: 0.1, categoryKind: 'expense', categoryId: 'MARK' });
+    // Depuis le 14/10/2026 la version garde `categoryIds` (l'ancien
+    // `categoryId` seul perdait les liens à plusieurs catégories).
+    assert.deepEqual(versionLine.rateLink, { rate: 0.1, categoryKind: 'expense', categoryIds: ['MARK'] });
 
     catLine.amounts = months(0); // le budget vivant change ; la restauration doit reposer sur l'instantané, pas sur l'état courant
     app.restoreVersion(version.id);
     const restoredLine = app.state.lines.find((l) => l.companyId === source.id && l.name === 'Quote-part Marketing');
     assert.ok(restoredLine, 'la ligne calculée devrait exister après restauration');
-    assert.deepEqual(restoredLine.rateLink, { rate: 0.1, categoryKind: 'expense', categoryId: 'MARK' });
+    assert.deepEqual(restoredLine.rateLink, { rate: 0.1, categoryKind: 'expense', categoryIds: ['MARK'] });
   } finally {
     app.state.lines = app.state.lines.filter((l) =>
       l.id !== 'catrl_dup' && !(copy && l.companyId === copy.id) &&
@@ -23888,7 +24038,7 @@ check('Saisie simultanée : la personne arrivée ensuite est en lecture seule, e
 
     // Le chemin doit être autorisé par le SAS réseau, sinon l'appel est
     // refusé avant même de partir (« Sortie réseau interdite »).
-    assert.ok(appSource.includes('donnees(\\/(revision|main))?'),
+    assert.ok(appSource.includes('donnees(\\/(revision|main|soumission))?'),
       'le SAS réseau doit laisser passer /api/donnees/main');
   } finally {
     app.state.companies = saved.companies; app.state.activeCompany = saved.active;
@@ -30215,7 +30365,7 @@ check('Assistant : le récapitulatif dit ce qui reste à faire', () => {
     assert.ok(blank.done.length, 'le récapitulatif doit lister ce qui va être créé');
     assert.ok(blank.todo.some((t) => /matrice/i.test(t)),
       'la matrice couverts / ticket doit être annoncée comme restant à remplir');
-    assert.ok(blank.todo.some((t) => /Saisie/.test(t)),
+    assert.ok(blank.todo.some((t) => /onglet Charges/.test(t)),
       'partir d’une page blanche laisse les lignes de budget à créer');
 
     // Avec un modèle, les lignes ne sont plus « à créer » mais « à vérifier ».
@@ -33811,6 +33961,675 @@ await checkAsync('Sociétés : boutons import/export par ligne, affichés selon 
     app.state.lines = savedLines;
     app.resetStateIndexes();
     if (savedTab !== undefined) { app.__setTab(savedTab); app.render(); }
+  }
+});
+
+check('Saisie : la ligne des mois reste figée en haut de l’écran (10/10/2026)', () => {
+  // Demande d'Alexis : voir sur quel mois on saisit en descendant dans les
+  // comptes. Le `position: sticky` de `th` ne marche pas dans `.table-wrap`
+  // (qui défile en largeur) : c'est `syncFrozenHeads` qui décale l'en-tête.
+  assert.equal(app.frozenHeadShift(300, 2000, 40, 120), 0, 'haut du tableau visible : aucun décalage');
+  assert.equal(app.frozenHeadShift(-500, 2000, 40, 120), 620, 'tableau passé sous le haut : l’en-tête le rejoint');
+  assert.equal(app.frozenHeadShift(-5000, 2000, 40, 120), 1960, 'jamais plus bas que le bas du tableau');
+  assert.equal(app.frozenHeadShift(-10.4, 2000, 40, 0), 10, 'décalage arrondi au pixel');
+  assert.match(appSource, /<div class="table-wrap"><table data-frozen-head="1"><thead><tr>' \+\s*'<th class="sticky-col" style="min-width:230px">Compte \/ ligne nommée/,
+    'le tableau de Saisie doit porter data-frozen-head');
+  assert.match(html, /table\[data-frozen-head\] > thead \{ position: relative; z-index: 5; \}/,
+    'l’en-tête figé doit passer au-dessus de la colonne figée des lignes');
+  assert.match(appSource, /main\.addEventListener\('scroll', scheduleFrozenHeadsSync, \{ passive: true \}\)/,
+    'le défilement de <main> doit recaler l’en-tête');
+  assert.match(appSource, /applyPagePermissions\(\);[\s\S]{0,200}syncFrozenHeads\(\);/,
+    'render() doit recaler l’en-tête après reconstruction du tableau');
+  // Dans le faux DOM, le recalage ne doit jamais lever d'exception.
+  app.syncFrozenHeads();
+});
+
+check('Menu Saisie : CA, Payroll, Charges, Ajustements, Import ; « Charges » garde l’identifiant saisie (14/10/2026)', () => {
+  const group = app.TAB_GROUPS.find((g) => g.id === 'saisie');
+  assert.equal(group.label, 'Saisie', 'le menu garde son nom');
+  assert.deepEqual(group.tabs, ['ca', 'payroll', 'saisie', 'ajustements', 'import'], 'nouvel ordre du menu');
+  assert.equal(app.TAB_LABELS.saisie, 'Charges', 'l’écran saisie s’appelle Charges');
+  // Barre : même ordre, libellé Charges, ancre data-tab="saisie" inchangée.
+  const nav = html.slice(html.indexOf('data-dropdown="saisie"'), html.indexOf('data-group="resultats"'));
+  const order = [...nav.matchAll(/data-tab="([a-z]+)"[^>]*>(?:<svg[\s\S]*?<\/svg>)?([^<]+)</g)].map((m) => m[1] + ':' + m[2]);
+  assert.deepEqual(order, ['ca:CA', 'payroll:Payroll', 'saisie:Charges', 'ajustements:Ajustements', 'import:Import']);
+  assert.match(html, /data-group-btn="saisie">Saisie <span class="caret">/, 'le bouton du menu reste « Saisie ▾ »');
+  // Écran des droits : même ordre et même libellé.
+  const rights = app.APP_PAGES.map((t) => t.tab);
+  const i = rights.indexOf('ca');
+  assert.deepEqual(rights.slice(i, i + 5), ['ca', 'payroll', 'saisie', 'ajustements', 'import']);
+  assert.equal(app.APP_PAGES.find((t) => t.tab === 'saisie').label, 'Charges');
+  // Fil d'Ariane : … › Saisie › Charges.
+  const savedTab = app.__getTab();
+  try {
+    const crumb = app.breadcrumbHtml('saisie');
+    assert.match(crumb, /Saisie<span class="breadcrumb-sep" aria-hidden="true">›<\/span><strong>Charges<\/strong>/);
+    // Titre de page inchangé.
+    app.__setTab('saisie'); app.render();
+    assert.ok(dom.elements.get('view').innerHTML.includes('Saisie budgétaire — '), 'le titre de page ne change pas');
+  } finally { app.__setTab(savedTab); app.render(); }
+  // Raccourcis clavier : sections renommées.
+  const titles = app.HELP_SECTIONS.map((sec) => sec.title);
+  assert.ok(titles.includes('Charges — au clavier') && titles.includes('Charges — au double-clic'));
+  assert.ok(!titles.some((t) => /^Saisie —/.test(t)));
+  // Palette (Ctrl+K) : l'onglet se trouve sous le nom Charges.
+  const found = app.commandPaletteResults('Charges').filter((r) => r.kind === 'tab').map((r) => r.id);
+  assert.ok(found.includes('saisie'), 'Ctrl+K « Charges » mène à l’écran saisie');
+  // Page d'arrivée : même premier onglet permis qu'avant le réordonnancement.
+  const onlyLater = { role: 'directeur', permissions: { payroll: [], ajustements: ['ajustements-scenarios'] } };
+  assert.equal(app.firstAllowedTab(onlyLater), 'ajustements', 'ordre d’atterrissage historique conservé');
+  const both = { role: 'directeur', permissions: { ca: ['ca-couverts'], saisie: ['saisie-ajouter'] } };
+  assert.equal(app.firstAllowedTab(both), 'saisie', 'Charges reste prioritaire sur CA à l’arrivée');
+});
+
+/* ==================================================================
+   MULTIPLICATEUR SAISONNIER (14/10/2026)
+
+   Jeu de données de la maquette : Bev cost 24 % / 20 % par période sur le
+   CA Beverage, Food cost mensuel 32 → 26 % sur le CA Food, Boulangerie 3 %
+   fixe sur le CA Food, Frais bancaires 0,008 sur CA Food + Beverage + Event.
+   ================================================================== */
+function withSeasonalFixture(fn) {
+  const company = app.state.companies.find((c) => c.name === 'Palm Beach Test') || app.state.companies[0];
+  const y = company.year;
+  const saved = {
+    lines: app.state.lines, matrix: app.state.serviceMatrix, cat: app.state.caCategoryVentilation,
+    active: app.state.activeCompany, tab: app.__getTab(),
+  };
+  app.state.serviceMatrix = {};
+  app.state.caCategoryVentilation = {};
+  app.state.activeCompany = company.id;
+  // CA hors Event : 10 couverts × un prix qui suit la saison, un jour par mois.
+  const tickets = [1000, 1000, 1200, 1500, 2500, 4000, 6000, 6000, 3000, 1500, 1000, 1000];
+  tickets.forEach((t, m) => {
+    const key = y + '-' + String(m + 1).padStart(2, '0') + '-05';
+    app.setServiceMatrixValue(company.id, 'covers', 'lunch', key, '10');
+    app.setServiceMatrixValue(company.id, 'ticket', 'lunch', key, String(t));
+  });
+  app.setServiceMatrixValue(company.id, 'amount', 'event', y + '-06-12', '5000');
+  app.setCaCategoryVentilationPercent(company.id, 'food', 60);
+  app.setCaCategoryVentilationPercent(company.id, 'beverage', 40);
+  const charge = ts.ACCOUNTS.filter((a) => a.kind === 'charge' && a.center === 'F&B');
+  try {
+    return fn({ company, y, tickets, charge });
+  } finally {
+    app.state.lines = saved.lines;
+    app.state.serviceMatrix = saved.matrix;
+    app.state.caCategoryVentilation = saved.cat;
+    app.state.activeCompany = saved.active;
+    app.closeRateLinkModal();
+    app.resetStateIndexes();
+    app.__setTab(saved.tab);
+    app.render();
+  }
+}
+
+check('Multiplicateur saisonnier : formats, saisie % / coefficient, ancien format inchangé', () => {
+  // Ancien nombre : lu comme un fixe en coefficient, et réécrit tel quel.
+  assert.deepEqual(app.rateSpecOf(0.008), { mode: 'fixed', unit: 'coef', values: months(0.008), periods: null });
+  assert.equal(app.storedRateOf(app.rateSpecOf(0.008)), 0.008, 'un fixe en coefficient reste un simple nombre');
+  assert.deepEqual(app.storedRateOf({ mode: 'fixed', unit: 'percent', values: months(0.2), periods: null }),
+    { mode: 'fixed', unit: 'percent', values: months(0.2), periods: null });
+  // Saisie : « 20 » en % vaut 0,20 ; « 20 % » accepté dans les deux unités ; virgule ou point.
+  assert.equal(app.parseRateInput('20', 'percent'), 0.2);
+  assert.equal(app.parseRateInput('20 %', 'coef'), 0.2);
+  assert.equal(app.parseRateInput('20%', 'percent'), 0.2);
+  assert.equal(app.parseRateInput('0,008', 'coef'), 0.008);
+  assert.equal(app.parseRateInput('0.008', 'coef'), 0.008);
+  assert.equal(app.parseRateInput('0,8', 'percent'), 0.008);
+  assert.equal(app.parseRateInput('', 'coef'), null);
+  assert.ok(Number.isNaN(app.parseRateInput('abc', 'coef')));
+  // Affichage : % à deux décimales au plus, coefficient à quatre.
+  assert.equal(app.formatRateIn(0.24, 'percent'), '24 %');
+  assert.equal(app.formatRateIn(0.123456, 'percent'), '12,35 %');
+  assert.equal(app.formatRateIn(0.00812345, 'coef'), '0,0081');
+  // Champ de saisie : jamais arrondi (rouvrir puis enregistrer ne change rien).
+  assert.equal(app.rateInputText(0.00175, 'coef'), '0,00175');
+  // Valeur illisible : 0, sans lever.
+  assert.deepEqual(app.rateMonthValues({ mode: 'monthly', values: ['x'] }), months(0));
+});
+
+check('Multiplicateur saisonnier : calcul mensuel, 2 et 3 périodes, mensuel, multi-catégories, ratio effectif', () => {
+  withSeasonalFixture(({ company, tickets, charge }) => {
+    const foodCa = tickets.map((t) => t * 10 * 0.6);
+    const bevCa = tickets.map((t) => t * 10 * 0.4);
+    const low = [0, 1, 2, 3, 9, 10, 11];
+    const bevRate = { mode: 'period', unit: 'percent', values: months(0).map((v, m) => (low.includes(m) ? 0.24 : 0.2)),
+      periods: [{ name: 'Basse saison', months: low, value: 0.24 }, { name: 'Haute saison', months: [4, 5, 6, 7, 8], value: 0.2 }] };
+    const foodValues = [0.32, 0.32, 0.31, 0.3, 0.28, 0.27, 0.26, 0.26, 0.28, 0.3, 0.31, 0.32];
+    const three = { mode: 'period', unit: 'percent', values: months(0).map((v, m) => (m < 4 ? 0.1 : m < 8 ? 0.2 : 0.3)),
+      periods: [{ name: 'A', months: [0, 1, 2, 3], value: 0.1 }, { name: 'B', months: [4, 5, 6, 7], value: 0.2 }, { name: 'C', months: [8, 9, 10, 11], value: 0.3 }] };
+    const lines = [
+      { id: 'ss_bev', companyId: company.id, account: charge[0].account, name: 'Bev cost', amounts: months(0),
+        rateLink: { rate: bevRate, categoryKind: 'revenue', categoryIds: ['beverage'] } },
+      { id: 'ss_food', companyId: company.id, account: charge[1].account, name: 'Food cost', amounts: months(0),
+        rateLink: { rate: { mode: 'monthly', unit: 'percent', values: foodValues, periods: null }, categoryKind: 'revenue', categoryIds: ['food'] } },
+      { id: 'ss_boul', companyId: company.id, account: charge[2].account, name: 'Boulangerie', amounts: months(0),
+        rateLink: { rate: { mode: 'fixed', unit: 'percent', values: months(0.03), periods: null }, categoryKind: 'revenue', categoryIds: ['food'] } },
+      { id: 'ss_bank', companyId: company.id, account: charge[3].account, name: 'Frais bancaires', amounts: months(0),
+        rateLink: { rate: 0.008, categoryKind: 'revenue', categoryIds: ['food', 'beverage', 'event'] } },
+      { id: 'ss_three', companyId: company.id, account: charge[4].account, name: 'Trois périodes', amounts: months(0),
+        rateLink: { rate: three, categoryKind: 'revenue', categoryIds: ['food'] } },
+    ];
+    app.state.lines = app.state.lines.filter((l) => l.companyId !== company.id).concat(lines);
+    app.resetStateIndexes();
+    app.recomputeRateLinkedLines(company.id);
+    const [bev, food, boul, bank, threeLine] = lines;
+    // charge[m] = référence[m] × multiplicateur[m], arrondi à l'euro.
+    assert.deepEqual(bev.amounts, bevCa.map((v, m) => Math.round(v * (low.includes(m) ? 0.24 : 0.2))), 'Bev cost par période');
+    assert.equal(bev.amounts[0], 960, 'janvier : 4 000 × 24 %');
+    assert.equal(bev.amounts[6], 4800, 'juillet : 24 000 × 20 %');
+    assert.deepEqual(food.amounts, foodCa.map((v, m) => Math.round(v * foodValues[m])), 'Food cost mensuel');
+    assert.deepEqual(boul.amounts, foodCa.map((v) => Math.round(v * 0.03)), 'Boulangerie fixe 3 %');
+    const event = months(0); event[5] = 5000;
+    assert.deepEqual(bank.amounts, foodCa.map((v, m) => Math.round((v + bevCa[m] + event[m]) * 0.008)), 'Frais bancaires sur Food + Bev + Event');
+    assert.deepEqual(threeLine.amounts, foodCa.map((v, m) => Math.round(v * (m < 4 ? 0.1 : m < 8 ? 0.2 : 0.3))), 'trois périodes');
+    // Totaux et KPI reflètent le calcul mensuel.
+    const summary = app.__summarize(app.state.lines.filter((l) => l.companyId === company.id));
+    const sum = (a) => a.reduce((x, y) => x + y, 0);
+    assert.ok(sum(summary.charges) >= sum(bev.amounts) + sum(food.amounts) + sum(boul.amounts), 'Total charges inclut les lignes liées');
+    // Ratio annuel effectif : pondéré par la référence, pas la moyenne des douze.
+    const ratios = app.rateLinkLineRatios(bev);
+    assert.equal(ratios.year, sum(bev.amounts) / sum(bevCa));
+    const naive = sum(ratios.months) / 12;
+    assert.ok(Math.abs(ratios.year - naive) > 1e-4, 'le ratio annuel n’est pas la moyenne des ratios mensuels');
+    assert.equal(ratios.months[0], 0.24);
+    // Sous-libellés.
+    const plan = app.accountIndexForPlan(company.planId);
+    assert.equal(app.rateLinkRuleLabel(company.id, boul.rateLink, plan), '= × 3 % de CA Food');
+    assert.equal(app.rateLinkRuleLabel(company.id, bev.rateLink, plan), '= × 24 % basse saison / 20 % haute saison de CA Beverage');
+    assert.equal(app.rateLinkRuleLabel(company.id, food.rateLink, plan), '= × mensuel (26 % → 32 %) de CA Food');
+    assert.equal(app.rateLinkRuleLabel(company.id, bank.rateLink, plan), '= × 0,008 de CA Food + CA Beverage + CA Event');
+    assert.match(app.rateLinkMonthsTitle(food.rateLink.rate), /^Janv\. 32 % · Févr\. 32 % · Mars 31 %/);
+    assert.equal(app.rateLinkCellTitle(app.rateLinkBaseMonthsOf(boul), boul.rateLink.rate, 4), 'Mai : ' + app.money(15000) + ' × 3 %');
+    // À l'écran (Charges, centre F&B) : sous-libellé cliquable et info-bulles des cases.
+    app.__setTab('saisie'); app.__setCenter('F&B'); app.render();
+    const view = document.getElementById('view').innerHTML;
+    assert.ok(view.includes('data-edit-ratelink="ss_bev" title="Janv. 24 %'), 'le sous-libellé rouvre la fenêtre et liste les 12 valeurs');
+    assert.ok(view.includes('title="Mai : ' + app.money(15000) + ' × 3 %"'), 'info-bulle « Mai : 15 000 × 3 % »');
+    assert.ok(!view.includes('data-spread="ss_bev"'), '« répartir » n’est pas proposé sur une ligne liée');
+    // Résultats : une ligne « ratio effectif » par ligne liée, et l'export Excel.
+    const ratiosHtml = app.rateLinkRatiosHtml(app.state.lines.filter((l) => l.companyId === company.id));
+    assert.ok(ratiosHtml.includes('Bev cost</strong> — ratio effectif'));
+    app.__setTab('pnl'); app.render();
+    assert.ok(document.getElementById('view').innerHTML.includes('Multiplicateurs — ratios effectifs'), 'P&L : tableau des ratios');
+    const sheet = app.styledRateRatiosSheet(app.state.lines.filter((l) => l.companyId === company.id), 't', 's');
+    const bevRow = sheet.rows.find((r) => r[2] === 'Bev cost');
+    assert.equal(bevRow[4], 'Par période');
+    assert.equal(bevRow[5].v !== undefined ? bevRow[5].v : bevRow[5], ratios.year, 'ratio annuel effectif exporté');
+    assert.equal(app.styledRateRatiosSheet([], 't', 's'), null, 'pas de feuille sans ligne liée');
+    assert.match(appSource, /styledRateRatiosSheet\(selectedLines[\s\S]{0,200}Ratios multiplicateurs/, 'feuille ajoutée aux exports Excel');
+  });
+});
+
+check('Multiplicateur saisonnier : référence nulle, référence Payroll, « ajuster » et « répartir » sans effet', () => {
+  withSeasonalFixture(({ company, charge }) => {
+    // Référence nulle → charge 0, ratio « — ».
+    const zero = { id: 'ss_zero', companyId: company.id, account: charge[0].account, name: 'Sur rien', amounts: months(9),
+      rateLink: { rate: { mode: 'monthly', unit: 'percent', values: months(0.5), periods: null }, categoryKind: 'expense', categoryIds: ['SECU'] } };
+    // Ligne Payroll prise pour référence (6411 du centre, calculée par l'onglet Payroll).
+    const payrollAccount = ts.ACCOUNTS.find((a) => /^6411/.test(a.account));
+    const payroll = { id: 'ss_pay', companyId: company.id, account: payrollAccount.account, name: 'Rémunérations F&B',
+      amounts: months(10000), payrollLink: { etp: 2, grossMonthly: 2500, chargeRate: 0, fromMonth: 0, toMonth: 11 } };
+    const mutuelle = { id: 'ss_mut', companyId: company.id, account: charge[1].account, name: 'Mutuelle', amounts: months(0),
+      rateLink: { rate: { mode: 'period', unit: 'percent', values: months(0).map((v, m) => (m < 6 ? 0.02 : 0.03)),
+        periods: [{ name: 'H1', months: [0, 1, 2, 3, 4, 5], value: 0.02 }, { name: 'H2', months: [6, 7, 8, 9, 10, 11], value: 0.03 }] },
+      sourceLineId: 'ss_pay' } };
+    app.state.lines = app.state.lines.filter((l) => l.companyId !== company.id).concat([zero, payroll, mutuelle]);
+    app.resetStateIndexes();
+    app.recomputeRateLinkedLines(company.id);
+    assert.deepEqual(zero.amounts, months(0), 'référence nulle : charge 0');
+    assert.equal(app.rateLinkLineRatios(zero).year, null);
+    const payMonth = app.payrollMonthlyCost(payroll.payrollLink, 0);
+    assert.equal(mutuelle.amounts[0], Math.round(payMonth * 0.02), 'Payroll comme référence, basse période');
+    assert.equal(mutuelle.amounts[11], Math.round(payMonth * 0.03), 'Payroll comme référence, haute période');
+    // « ajuster » (ligne, centre, toutes les charges) ne touche jamais une ligne liée.
+    app.__setCenter('F&B');
+    for (const scope of ['account', 'center', 'company']) {
+      assert.ok(!app.bulkAdjustTargets(scope, charge[1].account).some((l) => l.id === 'ss_mut'), 'ajuster : ' + scope);
+    }
+    // « répartir » : sans effet sur une ligne liée, même si le champ est resté ouvert.
+    const before = JSON.stringify(mutuelle.rateLink);
+    const logBefore = (app.state.editLog || []).length;
+    const originalQuery = document.querySelector;
+    document.querySelector = (sel) => (String(sel).includes('data-spread-input') ? { value: '120000' } : null);
+    try {
+      app.__setSpreadingLineId('ss_mut');
+      app.applySpread('ss_mut');
+    } finally { document.querySelector = originalQuery; }
+    assert.equal(JSON.stringify(mutuelle.rateLink), before, 'les 12 valeurs restent');
+    assert.equal((app.state.editLog || []).length, logBefore, 'aucune répartition journalisée');
+    assert.equal(mutuelle.amounts[11], Math.round(payMonth * 0.03));
+  });
+});
+
+check('Multiplicateur saisonnier : fenêtre — périodes, mois non couvert bloqué, mensuel, collage, unités, passages de mode, undo/redo', () => {
+  withSeasonalFixture(({ company, charge }) => {
+    app.state.lines = app.state.lines.filter((l) => l.companyId !== company.id);
+    app.resetStateIndexes();
+    app.__setTab('saisie');
+    app.openRateLinkModal(charge[0].account, null);
+    let modal = app.__getRateLinkModal();
+    // Unité par défaut : coefficient sur une ligne ; % sur une catégorie de produits.
+    assert.equal(modal.unit, 'coef');
+    assert.equal(app.rateLinkDefaultUnit('revenueCategory'), 'percent');
+    modal.refKind = 'revenueCategory';
+    app.setRateLinkUnit('percent');
+    modal.categoryIds = ['beverage'];
+    assert.equal(app.rateLinkSuggestedName(modal), 'Bev cost', 'nom proposé');
+    // Fixe → Période : deux périodes par défaut préremplies avec la valeur fixe.
+    modal.fixedText = '24';
+    app.switchRateLinkMode('period');
+    assert.deepEqual(modal.periods.map((p) => [p.name, p.months.join(','), p.text]),
+      [['Basse saison', '0,1,2,3,9,10,11', '24'], ['Haute saison', '4,5,6,7,8', '24']]);
+    modal.periods[1].text = '20';
+    assert.ok(app.rateLinkDraftIssues(modal).ok);
+    assert.match(app.rateLinkIssuesHtml(modal), /Les 12 mois sont couverts/);
+    // Un mois retiré : non couvert, validation bloquée.
+    app.toggleRateLinkPeriodMonth(1, 6);
+    assert.deepEqual(app.rateLinkDraftIssues(modal).uncovered, ['Juil.']);
+    assert.match(app.rateLinkIssuesHtml(modal), /Mois non couverts : Juil\./);
+    assert.equal(app.rateLinkCanSave(), false, 'mois non couvert : enregistrement bloqué');
+    assert.ok(app.rateLinkModalHtml().includes('data-save-ratelink="1" disabled'));
+    // Cliquer le mois dans une période l'enlève des autres.
+    app.toggleRateLinkPeriodMonth(0, 6);
+    assert.ok(modal.periods[0].months.includes(6) && !modal.periods[1].months.includes(6));
+    app.toggleRateLinkPeriodMonth(1, 6);
+    assert.ok(!modal.periods[0].months.includes(6) && modal.periods[1].months.includes(6), 'un mois n’appartient qu’à une période');
+    // Troisième période sans valeur : « Valeur manquante ».
+    app.addRateLinkPeriod();
+    app.toggleRateLinkPeriodMonth(2, 11);
+    assert.deepEqual(app.rateLinkDraftIssues(modal).missing, ['Période 3']);
+    assert.match(app.rateLinkIssuesHtml(modal), /Valeur manquante : Période 3/);
+    modal.periods[2].text = '30';
+    assert.ok(app.rateLinkDraftIssues(modal).ok, 'trois périodes complètes');
+    app.removeRateLinkPeriod(2);
+    app.toggleRateLinkPeriodMonth(0, 11);
+    assert.equal(modal.periods.length, 2);
+    // Aperçu : référence, multiplicateur, charge et ratio annuel effectif.
+    const preview = app.rateLinkPreviewData(modal);
+    assert.equal(preview.charges[0], 960);
+    assert.equal(preview.ratio, preview.totalCharge / preview.totalBase);
+    assert.match(app.rateLinkPreviewHtml(modal), /Ratio annuel effectif/);
+    // Période → Mensuel : les valeurs de chaque période ; puis collage Excel.
+    app.switchRateLinkMode('monthly');
+    assert.deepEqual(modal.monthlyTexts, ['24', '24', '24', '24', '20', '20', '20', '20', '20', '24', '24', '24']);
+    assert.equal(app.pasteRateLinkMonths(0, '32 %\t32 %\t31 %\t30 %\t28 %\t27 %\t26 %\t26 %\t28 %\t30 %\t31 %\t32 %'), 12);
+    assert.equal(modal.monthlyTexts[6], '26%');
+    assert.equal(app.pasteRateLinkMonths(0, '32;32;31;30;28;27;26;26;28;30;31;32'), 12, 'point-virgule');
+    assert.equal(app.pasteRateLinkMonths(0, '32\n32\n31\n30\n28\n27\n26\n26\n28\n30\n31\n32'), 12, 'retour à la ligne');
+    assert.equal(app.pasteRateLinkMonths(0, '32'), 0, 'une valeur seule : collage normal');
+    modal.monthlyTexts[3] = '';
+    assert.deepEqual(app.rateLinkDraftIssues(modal).missing, ['Avril']);
+    assert.ok(app.rateLinkPreviewHtml(modal).includes('rl-missing'), 'mois manquant en rouge « — » dans l’aperçu');
+    modal.monthlyTexts[3] = '30';
+    // % ↔ coefficient : les valeurs sont converties, pas réinterprétées.
+    app.setRateLinkUnit('coef');
+    assert.equal(modal.monthlyTexts[0], '0,32');
+    app.setRateLinkUnit('percent');
+    assert.equal(modal.monthlyTexts[0], '32');
+    // Raccourcis : appliquer à tous, remplir depuis les périodes.
+    assert.ok(app.fillRateLinkMonths('25'));
+    assert.deepEqual(modal.monthlyTexts, months('25'));
+    app.fillRateLinkMonthsFromPeriods();
+    assert.equal(modal.monthlyTexts[0], '24');
+    // Mensuel → Période : une période par valeur distincte (≤ 4).
+    app.switchRateLinkMode('period');
+    assert.equal(modal.periods.length, 2);
+    // Mensuel → Période avec plus de 4 valeurs : périodes par défaut, moyenne de leurs mois.
+    app.switchRateLinkMode('monthly');
+    app.pasteRateLinkMonths(0, '10 11 12 13 14 15 16 17 18 19 20 21');
+    app.switchRateLinkMode('period');
+    assert.deepEqual(modal.periods.map((p) => p.name), ['Basse saison', 'Haute saison']);
+    assert.equal(modal.periods[1].text, '16', 'moyenne de mai → sept.');
+    // Vers Fixe : valeurs différentes → ratio annuel effectif ; toutes égales → la valeur.
+    app.switchRateLinkMode('fixed');
+    const effective = app.parseRateInput(modal.fixedText, 'percent');
+    assert.ok(effective > 0.14 && effective < 0.17, 'ratio annuel effectif pondéré : ' + modal.fixedText);
+    app.switchRateLinkMode('monthly');
+    assert.deepEqual(modal.monthlyTexts, months(modal.fixedText), 'Fixe → Mensuel : 12 × la valeur fixe');
+    app.switchRateLinkMode('fixed');
+    // Enregistrement : une seule étape d'annulation.
+    app.switchRateLinkMode('period');
+    modal.periods[0].text = '24'; modal.periods[1].text = '20';
+    app.__forceUndoStep();
+    const depth = app.__getUndoDepth().undo;
+    document.getElementById('ratelink-name').value = '';
+    document.getElementById('ratelink-rate').value = '';
+    app.saveRateLink();
+    app.__forceUndoStep();
+    const created = app.state.lines.find((l) => l.companyId === company.id && l.name === 'Bev cost');
+    assert.ok(created, 'nom vide → « Bev cost » proposé');
+    assert.deepEqual(created.rateLink.rate.periods.map((p) => p.value), [0.24, 0.2]);
+    assert.equal(created.rateLink.rate.unit, 'percent');
+    assert.equal(created.amounts[0], 960);
+    assert.equal(app.__getUndoDepth().undo, depth + 1, 'un multiplicateur = une action');
+    // Rouvrir : même mode, même unité, titre et bouton d'édition.
+    app.openRateLinkModal(created.account, created.id);
+    modal = app.__getRateLinkModal();
+    assert.equal(modal.mode, 'period');
+    assert.equal(modal.unit, 'percent');
+    assert.deepEqual(modal.periods.map((p) => p.text), ['24', '20']);
+    const html = app.rateLinkModalHtml();
+    assert.ok(html.includes('<h3>Modifier le multiplicateur</h3>') && html.includes('>Enregistrer</button>'));
+    // Passage en mensuel puis enregistrement, annulé et rétabli d'un coup.
+    app.switchRateLinkMode('monthly');
+    modal.monthlyTexts[6] = '18';
+    app.saveRateLink();
+    app.__forceUndoStep();
+    let line = app.state.lines.find((l) => l.id === created.id);
+    assert.equal(line.rateLink.rate.mode, 'monthly');
+    assert.equal(line.rateLink.rate.values[6], 0.18);
+    app.undo();
+    line = app.state.lines.find((l) => l.id === created.id);
+    assert.equal(line.rateLink.rate.mode, 'period', 'Ctrl+Z ramène le multiplicateur précédent');
+    app.redo();
+    line = app.state.lines.find((l) => l.id === created.id);
+    assert.equal(line.rateLink.rate.values[6], 0.18, 'Ctrl+Y le rétablit');
+    // « copier depuis… » : 12 valeurs et unité d'une autre ligne de l'entité.
+    app.openRateLinkModal(charge[1].account, null);
+    modal = app.__getRateLinkModal();
+    modal.mode = 'monthly';
+    assert.ok(app.rateLinkCopyCandidates().some((l) => l.id === created.id));
+    assert.ok(app.copyRateLinkMonthsFrom(created.id));
+    assert.equal(modal.unit, 'percent');
+    assert.equal(modal.monthlyTexts[6], '18');
+    // Champ vide en mode fixe : enregistrement refusé.
+    app.switchRateLinkMode('fixed');
+    modal.fixedText = '';
+    modal.sourceLineId = '';
+    assert.equal(app.rateLinkCanSave(), false);
+  });
+});
+
+/* ==================================================================
+   SOUMISSION DU BUDGET (14/10/2026)
+   ================================================================== */
+await checkAsync('Soumission du budget : fenêtre, budget figé partout, garde-fous, notification, autre entité intacte', async () => {
+  const saved = snapshotAppState();
+  const savedTab = app.__getTab();
+  try {
+    const company = { id: 'sub_c', name: 'Palm Beach', currency: 'EUR', year: 2026, groupId: null };
+    const other = { id: 'sub_o', name: 'Anna Cannes', currency: 'EUR', year: 2026, groupId: null };
+    app.state.companies = [company, other];
+    app.state.activeCompany = company.id;
+    app.state.budgetSubmissions = {};
+    app.state.lines = [
+      { id: 'sub_p', companyId: company.id, account: '70105100', name: 'CA restaurant', note: '', amounts: months(10000) },
+      { id: 'sub_l', companyId: company.id, account: '60103100', name: 'Achat F&B', note: '', amounts: months(3000) },
+      { id: 'sub_k', companyId: other.id, account: '60103100', name: 'Achat F&B', note: '', amounts: months(100) },
+    ];
+    app.resetStateIndexes();
+    app.resetUndoHistory();
+    app.__setTab('saisie'); app.__setCenter('F&B'); app.render();
+
+    // Bouton « Soumettre » à gauche des initiales.
+    assert.ok(app.submitSlotHtml().includes('data-submit-budget="1"') && app.submitSlotHtml().includes('Soumettre'));
+    assert.ok(html.indexOf('id="submit-slot"') < html.indexOf('id="header-menu-button"'), 'à gauche des initiales');
+
+    // Fenêtre : titre, texte, récapitulatif, avertissement, Annuler / OK.
+    assert.ok(app.openSubmitBudgetModal());
+    const modal = app.submitBudgetModalHtml();
+    assert.ok(modal.includes('Soumettre le budget Palm Beach 2026'));
+    assert.ok(modal.includes('Vous êtes sur le point de soumettre le budget. Une fois soumis, il sera figé : plus aucune saisie, ligne ou multiplicateur ne pourra être modifié. Seule l’entité Palm Beach est concernée ; les autres entités restent modifiables. Seul un administrateur pourra rouvrir ce budget.'));
+    for (const label of ['Produits', 'Total charges', 'EBITDA']) assert.ok(modal.includes('<td>' + label + '</td>'), label);
+    assert.ok(modal.includes(app.money(120000) + ' €') && modal.includes(app.money(84000) + ' €'), 'montants du récapitulatif');
+    assert.ok(modal.includes('Cette action est définitive. Cliquez sur OK pour soumettre, ou sur Annuler pour continuer à travailler.'));
+    assert.ok(/id="submit-budget-cancel" data-close-submit-budget="1">Annuler<\/button>/.test(modal));
+    assert.ok(modal.includes('data-confirm-submit-budget="1">OK</button>'));
+    assert.ok(/class="modal-backdrop" data-close-submit-budget="1"/.test(modal), 'clic à côté = Annuler');
+    // Annuler (et Échap) : rien n'est soumis.
+    assert.ok(app.escapeGoBack(), 'Échap ferme la fenêtre');
+    assert.equal(app.__getSubmitBudgetModal(), null);
+    assert.equal(app.budgetSubmitted(company.id), false, 'annuler ne soumet rien');
+    app.openSubmitBudgetModal();
+    app.closeSubmitBudgetModal();
+    assert.equal(app.budgetSubmitted(company.id), false);
+
+    // OK : soumis, sans toucher aux données du budget.
+    const before = JSON.stringify(app.state.lines);
+    app.openSubmitBudgetModal();
+    assert.equal(await app.submitBudget(), true);
+    assert.equal(JSON.stringify(app.state.lines), before, 'la soumission ne modifie aucune donnée du budget');
+    assert.ok(app.budgetFrozen());
+    assert.equal(document.getElementById('toast-text').textContent, 'Budget soumis. Il est maintenant figé en lecture seule.');
+    const entry = app.budgetSubmissionOf(company.id);
+    assert.equal(entry.year, 2026);
+    assert.deepEqual(entry.history.map((h) => h.action), ['submit']);
+    // En-tête : cadenas « Soumis le … par … », non cliquable, date et heure au survol.
+    const slot = app.submitSlotHtml();
+    assert.ok(/<span class="submit-status" title="Soumis le \d{2}\/\d{2}\/\d{4} à [^"]+">/.test(slot) && !slot.includes('<button'));
+    assert.ok(/Soumis le \d{2}\/\d{2}\/\d{4} par /.test(slot));
+    // Bandeau sur toutes les pages de l'entité ; jamais sur l'administration.
+    for (const tabId of ['saisie', 'ca', 'payroll', 'ajustements', 'import', 'directeur', 'pnl']) {
+      app.__setTab(tabId); app.render();
+      const view = document.getElementById('view').innerHTML;
+      assert.ok(/Budget Palm Beach 2026 soumis le \d{2}\/\d{2}\/\d{4} à \d{2}:\d{2} par [^.]+\.<\/strong> Il est figé : consultation uniquement\./.test(view), 'bandeau sur ' + tabId);
+    }
+    app.__setTab('societes'); app.render();
+    assert.ok(!document.getElementById('view').innerHTML.includes('frozen-banner'), 'pas de bandeau hors des pages de l’entité');
+    // Charges : tout en lecture seule, gestes de modification absents.
+    app.__setTab('saisie'); app.__setCenter('F&B'); app.render();
+    const saisie = document.getElementById('view').innerHTML;
+    assert.ok(saisie.includes('Achat F&amp;B'), 'consultation : les lignes restent visibles');
+    const cells = saisie.match(/<input class="month-input[^>]*>/g) || [];
+    assert.ok(cells.length >= 12 && cells.every((c) => c.includes('readonly')), 'cases en lecture seule');
+    for (const gesture of ['data-add-line=', 'data-open-ratelink-modal=', 'data-bulk-center=', 'data-bulk-company=',
+      'data-spread=', 'data-toggle-note=', 'data-delete=', 'data-open-payroll-modal=', 'data-bulk-account=']) {
+      assert.ok(!saisie.includes(gesture), gesture + ' doit être masqué');
+    }
+    assert.equal(app.canEditLineStructure(), false);
+    // Les autres onglets : passés par le DOM rendu (`applyBudgetFreeze`), tous les gestes listés.
+    for (const selector of ['[data-apply-ca-ventilation]', '[data-add-employee]', '[data-delete-employee]', '[data-add-scenario]',
+      '#import-matrix-button', '[data-add-ca-account]', '[data-lock-rate]']) {
+      assert.ok(app.BUDGET_FROZEN_HIDDEN.includes(selector), selector);
+    }
+    assert.match(appSource, /applyBudgetFreeze\(\);\s*applyPagePermissions\(\);/, 'render() fige le DOM de chaque onglet');
+    // Fenêtre du multiplicateur inaccessible ; Annuler / Rétablir désactivés.
+    app.openRateLinkModal('60103100', null);
+    assert.equal(app.__getRateLinkModal(), null, 'modale du multiplicateur inaccessible');
+    assert.equal(app.undo(), false);
+    assert.equal(app.redo(), false);
+    assert.ok(app.UNDO_IGNORED_KEYS.includes('budgetSubmissions'), 'Ctrl+Z ne dé-soumet jamais');
+    // Garde-fou : une modification qui échapperait à la lecture seule est défaite.
+    app.state.lines.find((l) => l.id === 'sub_l').amounts[0] = 1;
+    app.save();
+    assert.equal(app.state.lines.find((l) => l.id === 'sub_l').amounts[0], 3000, 'modification défaite');
+    assert.equal(app.frozenEditRejected(), false, 'rien à défaire ensuite');
+
+    // Notification de l'Accueil (administrateur / poste sans comptes).
+    app.__setTab('directeur'); app.render();
+    let home = document.getElementById('view').innerHTML;
+    assert.ok(home.indexOf('submission-notice') < home.indexOf('data-panel="directeur-kpi"'), 'au-dessus des indicateurs clés');
+    assert.ok(home.includes('>Notification</span>') && home.includes('Le budget Palm Beach 2026 a été soumis'));
+    assert.ok(/Soumis le \d{2}\/\d{2}\/\d{4} à \d{2}:\d{2} par [^.]+\. Il est figé : consultation uniquement\./.test(home));
+    assert.ok(home.includes('Vous pouvez le rouvrir avec le bouton « Rouvrir le budget » du bandeau ci-dessus.'));
+    assert.ok(home.includes('data-dir-goto="saisie">Voir le budget</button>') && home.includes('J’ai compris'));
+    app.dismissSubmissionNotice();
+    assert.ok(!document.getElementById('view').innerHTML.includes('submission-notice'), 'masquée jusqu’à la prochaine connexion');
+    app.__resetSubmissionNotices(); // nouvelle connexion
+    app.render();
+    assert.ok(document.getElementById('view').innerHTML.includes('submission-notice'), 'réapparaît à la connexion suivante');
+    assert.match(appSource, /async function signIn\(username, password\) \{\s*\/\/[^\n]*\n\s*dismissedSubmissionNotices = new Set\(\);/);
+
+    // Autre entité : pas affectée.
+    app.state.activeCompany = other.id;
+    assert.equal(app.budgetFrozen(), false);
+    assert.ok(app.submitSlotHtml().includes('data-submit-budget'));
+    app.state.lines.find((l) => l.id === 'sub_k').amounts[0] = 555;
+    app.__setTab('saisie'); app.save();
+    assert.equal(app.state.lines.find((l) => l.id === 'sub_k').amounts[0], 555, 'l’autre entité reste modifiable');
+    app.state.activeCompany = company.id;
+
+    // Directeur (non administrateur) : pas de bouton, le texte le dit, la réouverture est refusée.
+    app.adoptServerSession({ method: 'ldap', account: 'm.dupont', displayName: 'Marie Dupont', rights: {
+      role: 'directeur', isAdmin: false, permissions: { directeur: [], saisie: ['saisie-ajouter'] },
+      allowedCompanies: null, allowedCostCenters: null, environmentIds: [],
+    } }, null);
+    assert.equal(app.canReopenBudget(), false);
+    const banner = app.budgetFrozenBannerHtml('saisie');
+    assert.ok(banner.includes('Seul un administrateur peut le rouvrir.') && !banner.includes('data-reopen-budget'));
+    app.__resetSubmissionNotices();
+    assert.ok(app.submissionNoticeHtml(company).includes('Seul un administrateur peut le rouvrir.'));
+    assert.equal(await app.reopenBudget(), false);
+    assert.ok(app.budgetFrozen(), 'toujours figé');
+    app.__clearServerSession();
+
+    // Administrateur : bouton « Rouvrir le budget », réouverture tracée.
+    assert.ok(app.budgetFrozenBannerHtml('saisie').includes('data-reopen-budget="1">Rouvrir le budget</button>'));
+    answerConfirmations(true);
+    assert.equal(await app.reopenBudget(), true);
+    assert.equal(app.budgetFrozen(), false);
+    assert.deepEqual(app.budgetSubmissionOf(company.id).history.map((h) => h.action), ['submit', 'reopen']);
+    app.state.lines.find((l) => l.id === 'sub_l').amounts[0] = 4000;
+    app.save();
+    assert.equal(app.state.lines.find((l) => l.id === 'sub_l').amounts[0], 4000, 'de nouveau modifiable');
+  } finally {
+    app.__clearServerSession();
+    app.__setServerData(null);
+    app.__clearSaveTimer();
+    restoreAppState(saved);
+    app.__setTab(savedTab);
+    app.render();
+  }
+});
+
+await checkAsync('Soumission du budget : mode serveur — envoi, budget soumis non déclaré, refus 409 d’un onglet resté ouvert', async () => {
+  const saved = snapshotAppState();
+  const savedTab = app.__getTab();
+  const calls = [];
+  let serverState = null;
+  const previous = app.__swapServerRequest(function (method, path, body) {
+    calls.push({ method, path, body });
+    if (method === 'GET' && path === '/api/donnees') {
+      return Promise.resolve({ revision: 9, empty: false, state: JSON.parse(JSON.stringify(serverState)), access: { unrestricted: true, shared: true } });
+    }
+    if (method === 'POST' && path === '/api/donnees/soumission') return Promise.resolve({ revision: 9 });
+    if (method === 'PUT' && path === '/api/donnees') {
+      const error = new Error('Ce budget a été soumis par Marie Dupont : vos modifications n’ont pas été enregistrées.');
+      error.status = 409;
+      error.data = { submitted: [{ company: 'srv_c', name: 'Palm Beach', by: 'Marie Dupont' }] };
+      return Promise.reject(error);
+    }
+    return Promise.resolve({});
+  });
+  try {
+    const company = { id: 'srv_c', name: 'Palm Beach', currency: 'EUR', year: 2026, groupId: null };
+    app.state.companies = [company];
+    app.state.activeCompany = company.id;
+    app.state.budgetSubmissions = {};
+    app.state.lines = [{ id: 'srv_l', companyId: company.id, account: '60103100', name: 'Achat F&B', note: '', amounts: months(3000) }];
+    app.resetStateIndexes();
+    app.adoptServerSession({ method: 'ldap', account: 'a.porrati', displayName: 'Alexis Porrati', rights: {
+      role: 'controleur', isAdmin: true, permissions: null, allowedCompanies: null, allowedCostCenters: null, environmentIds: [] } }, null);
+    app.__setServerData({ ready: true, revision: 8, empty: false, access: { unrestricted: true, shared: true },
+      updatedAt: null, updatedBy: null, error: null, sending: false, lastSentJson: null, localCopy: null, retryTimer: null, hand: null });
+    app.markServerDataInSync();
+
+    // Un autre poste soumet : l'état du serveur porte le statut.
+    serverState = JSON.parse(JSON.stringify(app.state));
+    serverState.budgetSubmissions = { srv_c: { submitted: true, year: 2026, at: '2026-10-14T13:42:00.000Z',
+      by: { account: 'm.dupont', name: 'Marie Dupont' }, history: [] } };
+    // Ce poste-ci, qui l'ignore encore, enregistre une saisie : refus clair, rechargement, lecture seule.
+    app.state.lines[0].amounts[0] = 9999;
+    await app.persist();
+    const put = calls.find((c) => c.method === 'PUT');
+    assert.ok(put && put.body.changedCompanies.includes('srv_c'), 'la saisie est bien partie au serveur');
+    assert.ok(app.budgetFrozen(), 'la page passe en lecture seule');
+    assert.equal(app.state.lines[0].amounts[0], 3000, 'l’état du serveur fait foi : la saisie refusée disparaît');
+    assert.equal(document.getElementById('toast-text').textContent,
+      'Ce budget a été soumis par Marie Dupont : vos modifications n’ont pas été enregistrées.', 'message clair');
+
+    // Budget connu comme soumis : jamais déclaré modifié (un recalcul ne fait pas refuser l'envoi).
+    calls.length = 0;
+    app.state.lines[0].amounts[1] = 1;
+    await app.persist();
+    const second = calls.find((c) => c.method === 'PUT');
+    assert.ok(!second || !second.body.changedCompanies.includes('srv_c'), 'un budget soumis n’est pas déclaré');
+    app.state.lines[0].amounts[1] = 3000;
+
+    // Soumettre en mode serveur passe par /api/donnees/soumission.
+    serverState.budgetSubmissions = {};
+    await app.reopenBudget().catch(() => {});
+    calls.length = 0;
+    app.state.budgetSubmissions = {};
+    app.markServerDataInSync();
+    app.openSubmitBudgetModal();
+    serverState.budgetSubmissions = { srv_c: { submitted: true, year: 2026, at: '2026-10-14T15:00:00.000Z',
+      by: { account: 'a.porrati', name: 'Alexis Porrati' }, history: [] } };
+    assert.equal(await app.submitBudget(), true);
+    assert.ok(calls.some((c) => c.method === 'POST' && c.path === '/api/donnees/soumission' && c.body.action === 'submit' && c.body.company === 'srv_c'));
+    assert.ok(app.budgetFrozen());
+  } finally {
+    app.__swapServerRequest(previous);
+    app.__clearServerSession();
+    app.__setServerData(null);
+    app.__clearSaveTimer();
+    restoreAppState(saved);
+    app.__setTab(savedTab);
+    app.render();
+  }
+});
+
+check('Ventilation du CA : % Food / Beverage saisissables avant tout CA, conservés, puis appliqués tels quels (14/10/2026)', () => {
+  const saved = snapshotAppState();
+  try {
+    const company = { id: 'vent_c', name: 'MAMO', currency: 'EUR', year: 2026, groupId: null };
+    app.state.companies = [company];
+    app.state.activeCompany = company.id;
+    app.state.serviceMatrix = {};
+    app.state.caCategoryVentilation = {};
+    app.state.caVentilation = {};
+    app.state.caLines = [];
+    app.state.lines = [];
+    app.state.budgetSubmissions = {};
+    app.resetStateIndexes();
+
+    // Sans CA ni compte suivi : les deux cases sont là, modifiables ; « — » pour les montants ; le message.
+    let panel = app.caVentilationPanel(company);
+    assert.ok(panel.includes('data-ca-category-ventilation="food"') && panel.includes('data-ca-category-ventilation="beverage"'),
+      'champs % Food et Beverage affichés sans CA');
+    assert.ok(panel.includes('Aucun CA n’est encore saisi : les pourcentages Food et Beverage sont enregistrés et serviront dès que le CA sera saisi.'));
+    assert.ok(!panel.includes('data-apply-ca-ventilation'), 'rien à appliquer sans CA');
+    assert.ok(panel.includes('<span class="muted">—</span>'), 'montants « — »');
+
+    // Saisie 24 % / 76 %, enregistrée tout de suite (donnée de la société, partie au serveur).
+    app.setCaCategoryVentilationPercent(company.id, 'food', 24);
+    app.setCaCategoryVentilationPercent(company.id, 'beverage', 76);
+    assert.deepEqual(app.state.caCategoryVentilation.vent_c, { food: 24, beverage: 76 });
+    assert.ok(app.COMPANY_KEYED_STATE.includes('caCategoryVentilation'), 'rattachée à la société (envoyée au serveur)');
+    panel = app.caVentilationPanel(company);
+    assert.ok(/data-ca-category-ventilation="food" value="24"/.test(panel) && /data-ca-category-ventilation="beverage" value="76"/.test(panel));
+    assert.ok(panel.includes('<td><strong>100 %</strong></td>'), 'contrôle Food + Beverage = 100 % inchangé');
+
+    // « Recharger » : l'état relu garde les deux pourcentages.
+    const reloaded = app.adoptState(JSON.parse(JSON.stringify(app.state)));
+    assert.deepEqual(reloaded.caCategoryVentilation.vent_c, { food: 24, beverage: 76 }, 'valeurs conservées après rechargement');
+
+    // Le CA arrive : la ventilation utilise 24 % / 76 % sans ressaisie.
+    app.setServiceMatrixValue(company.id, 'covers', 'lunch', '2026-03-10', '100');
+    app.setServiceMatrixValue(company.id, 'ticket', 'lunch', '2026-03-10', '50');
+    const food = app.rateLinkOneRevenueCategoryMonths(company.id, [], 'food');
+    const bev = app.rateLinkOneRevenueCategoryMonths(company.id, [], 'beverage');
+    assert.equal(food[2], 1200, 'CA Food = 5 000 × 24 %');
+    assert.equal(bev[2], 3800, 'CA Beverage = 5 000 × 76 %');
+    panel = app.caVentilationPanel(company);
+    assert.ok(!panel.includes('Aucun CA n’est encore saisi'), 'le message disparaît avec le CA');
+    assert.ok(panel.includes(app.money(1200)) && panel.includes(app.money(3800)), 'montants calculés avec 24 % / 76 %');
+
+    // Avec des comptes suivis : comportement inchangé (ventilation par compte, « Appliquer aux comptes »).
+    app.addCaLine(company.id, '70105100', 'Restaurant');
+    panel = app.caVentilationPanel(company);
+    assert.ok(panel.includes('data-ca-ventilation="70105100"') && panel.includes('data-apply-ca-ventilation="vent_c"'));
+    assert.ok(panel.includes('Part de la catégorie'));
+
+    // Budget soumis : champs non modifiables (DOM figé) et geste refusé à la source.
+    assert.match(appSource, /if \(!canEditCaVentilation\(\) \|\| budgetFrozen\(\)\) return;\s*setCaCategoryVentilationPercent/);
+    // Food puis clic dans Beverage : le clic n'est plus perdu par le re-rendu.
+    assert.match(appSource, /setCaCategoryVentilationPercent\(company\.id, event\.target\.dataset\.caCategoryVentilation, event\.target\.value\);\s*renderKeepingVentilationFocus\(\);/);
+    assert.ok(app.BUDGET_INPUT_TABS.includes('ca'), 'l’onglet CA est figé avec le budget');
+  } finally {
+    restoreAppState(saved);
   }
 });
 

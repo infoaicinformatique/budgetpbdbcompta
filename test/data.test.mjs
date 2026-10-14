@@ -238,3 +238,71 @@ test('périmètre par groupes de sociétés : seuls ou en plus des environnement
   assert.deepEqual(out.companies.map((c) => c.id), ['c']);
   assert.deepEqual(out.superGroups.map((sg) => sg.id), ['sgrp_db'], 'l’environnement du groupe suit');
 });
+
+/* Soumission du budget (14/10/2026) : statut tenu par le serveur seul,
+   budget soumis figé pour tout le monde, réouverture par un administrateur. */
+test('soumission : figée côté serveur, réouverture réservée aux administrateurs, tracée', () => {
+  const store = createDataStore(tmpFile());
+  store.write(controleur, 0, sample(), 'alexis');
+  const admin = Object.assign({}, controleur, { isAdmin: true });
+  const dirSansSaisie = Object.assign({}, dirA, { permissions: { pnl: ['graphiques'] } });
+  const dirSaisie = Object.assign({}, dirA, { permissions: { saisie: ['saisie-ajouter'] } });
+
+  // Hors périmètre ou sans onglet de saisie : refusé.
+  assert.throws(() => store.setSubmission(dirSaisie, 'b', 'submit', { account: 'dir' }), (e) => e.status === 403);
+  assert.throws(() => store.setSubmission(dirSansSaisie, 'a', 'submit', { account: 'dir' }), (e) => e.status === 403);
+  assert.throws(() => store.setSubmission(dirSaisie, 'a', 'autre', { account: 'dir' }), (e) => e.status === 400);
+
+  // Le directeur soumet son budget : nouvelle révision, statut lisible par chacun de son périmètre.
+  const before = store.read(dirSaisie).revision;
+  const sub = store.setSubmission(dirSaisie, 'a', 'submit', { account: 'm.dupont', name: 'Marie Dupont' });
+  assert.equal(sub.revision, before + 1);
+  assert.equal(sub.submission.submitted, true);
+  assert.equal(sub.submission.by.name, 'Marie Dupont');
+  assert.deepEqual(sub.submission.history.map((h) => h.action), ['submit']);
+  const seen = store.read(dirA).state.budgetSubmissions;
+  assert.equal(seen.a.submitted, true);
+  assert.equal(store.read(Object.assign({}, dirA, { allowedCompanies: ['b'] })).state.budgetSubmissions.a, undefined,
+    'le statut d’une société hors périmètre n’est pas transmis');
+  assert.throws(() => store.setSubmission(dirSaisie, 'a', 'submit', { account: 'dir' }), (e) => e.status === 409, 'déjà soumis');
+
+  // Toute écriture sur ce budget est refusée — administrateur compris — avec un message clair.
+  const edited = sample();
+  edited.lines[0].amounts = [999];
+  let refusal = null;
+  try { store.write(admin, sub.revision, edited, 'alexis', { companies: new Set(['a']), shared: false }); } catch (e) { refusal = e; }
+  assert.ok(refusal instanceof DataError && refusal.status === 409);
+  assert.match(refusal.message, /Ce budget a été soumis par Marie Dupont : vos modifications n’ont pas été enregistrées\./);
+  assert.equal(refusal.extra.submitted[0].company, 'a');
+  // Même sans déclaration (publication complète) et pour une suppression.
+  assert.throws(() => store.write(admin, sub.revision, edited, 'alexis'), (e) => e.status === 409);
+  const withoutA = sample();
+  withoutA.companies = withoutA.companies.filter((c) => c.id !== 'a');
+  assert.throws(() => store.write(admin, sub.revision, withoutA, 'alexis'), (e) => e.status === 409);
+  // Un poste dont la base est antérieure à la soumission reçoit le même refus (pas un « conflit »).
+  assert.throws(() => store.write(dirA, before, edited, 'm.dupont', { companies: new Set(['a']), shared: false }),
+    (e) => e.status === 409 && /soumis/.test(e.message));
+
+  // Les autres sociétés restent modifiables.
+  const otherEdit = sample();
+  otherEdit.lines[1].amounts = [42];
+  const ok = store.write(controleur, sub.revision, otherEdit, 'alexis', { companies: new Set(['b']), shared: false });
+  assert.deepEqual(ok.changedCompanies, ['b']);
+
+  // Un envoi ne peut pas « dé-soumettre » : le statut envoyé est ignoré.
+  const forged = sample();
+  forged.budgetSubmissions = { a: { submitted: false } };
+  store.write(admin, ok.revision, forged, 'alexis', { companies: new Set(['c']), shared: false });
+  assert.equal(store.read(admin).state.budgetSubmissions.a.submitted, true);
+
+  // Réouverture : refusée à un directeur, acceptée pour un administrateur, tracée.
+  assert.throws(() => store.setSubmission(dirSaisie, 'a', 'reopen', { account: 'dir' }),
+    (e) => e.status === 403 && /Seul un administrateur/.test(e.message));
+  const reopened = store.setSubmission(admin, 'a', 'reopen', { account: 'a.porrati', name: 'Alexis Porrati' });
+  assert.equal(reopened.submission.submitted, false);
+  assert.deepEqual(reopened.submission.history.map((h) => [h.action, h.by.account]), [['submit', 'm.dupont'], ['reopen', 'a.porrati']]);
+  assert.throws(() => store.setSubmission(admin, 'a', 'reopen', { account: 'a.porrati' }), (e) => e.status === 409);
+  // Rouvert : de nouveau modifiable.
+  const after = store.write(dirA, reopened.revision, edited, 'm.dupont', { companies: new Set(['a']), shared: false });
+  assert.deepEqual(after.changedCompanies, ['a']);
+});

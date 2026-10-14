@@ -233,6 +233,15 @@ budgets, collaborateurs, CA, objectifs… sont lus et écrits sur le serveur
   expirée entre deux battements, par exemple) est refusée (409) ; la page
   recharge les données à jour et le dit. Les modifications des autres arrivent
   à la relecture (chaque minute, et au retour sur l'onglet).
+- **Soumission du budget** (14/10/2026) : « Soumettre » (en-tête) fige le
+  budget d'une société (`POST /api/donnees/soumission`, `action: 'submit'`,
+  toute personne qui a un onglet de saisie sur cette société). Le statut est
+  tenu par le serveur (`budgetSubmissions` dans `/data/budget.json`, avec
+  l'historique « qui, quand ») et ne peut pas être modifié par un envoi
+  ordinaire ; toute écriture sur un budget soumis est **refusée** (409, « Ce
+  budget a été soumis par … »), administrateurs compris. Seul un
+  administrateur le rouvre (`action: 'reopen'`, bouton « Rouvrir le budget »
+  du bandeau).
 - **Stockage** : `DATA_FILE` (Docker : `/data/budget.json`, même volume que
   les droits), écrit de façon atomique, et `historique/` à côté : une copie
   au plus toutes les dix minutes, les 200 dernières gardées.
