@@ -1910,6 +1910,11 @@
   .submission-notice-actions { display: flex; gap: var(--space-2); margin-top: var(--space-25); }
   .submit-modal .submit-recap { width: 100%; margin-bottom: var(--space-3); }
   .submit-modal .submit-warning { font-weight: 600; margin: 0; }
+  /* Ventilation du CA sans CA encore saisi (14/10/2026). */
+  .ca-no-revenue-notice {
+    margin: 0 0 var(--space-3); padding: var(--space-25) var(--space-3); font-size: var(--text-md);
+    border-left: 3px solid var(--accent-text); background: var(--gold-soft); border-radius: 0 var(--radius) var(--radius) 0;
+  }
   /* Jauge de stockage local (onglet Sécurité) : verte tant qu'il y a de la
      marge, ambre puis rouge à l'approche et au-delà de la limite estimée. */
   .quota-bar { height: 8px; border-radius: var(--radius-sm); background: var(--bg); overflow: hidden; }
@@ -3597,7 +3602,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-10.1';
+const APP_BUILD = '2026-10-14.1';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -20289,6 +20294,28 @@ function setCaCategoryVentilationPercent(companyId, categoryId, percent) {
 }
 
 /**
+ * Re-rendu après un pourcentage de ventilation (14/10/2026). Le `change`
+ * part quand on quitte la case — c'est-à-dire PENDANT le clic dans la case
+ * suivante (Food puis Beverage, le geste ordinaire) : reconstruire l'écran
+ * tout de suite faisait perdre ce clic, il fallait cliquer deux fois. On
+ * laisse le clic aboutir, puis on rend et on remet le curseur dans la case
+ * de pourcentage où il était arrivé.
+ */
+function renderKeepingVentilationFocus() {
+  if (typeof setTimeout !== 'function' || typeof document === 'undefined') { render(); return; }
+  setTimeout(function () {
+    const active = document.activeElement;
+    const data = active && active.dataset ? active.dataset : {};
+    const selector = data.caCategoryVentilation !== undefined
+      ? 'input[data-ca-category-ventilation="' + data.caCategoryVentilation + '"]'
+      : data.caVentilation !== undefined ? 'input[data-ca-ventilation="' + data.caVentilation + '"]' : null;
+    render();
+    const again = selector && typeof document.querySelector === 'function' ? document.querySelector(selector) : null;
+    if (again && typeof again.focus === 'function') { again.focus(); if (again.select) again.select(); }
+  }, 0);
+}
+
+/**
  * Somme des pourcentages Food + Beverage posés — doit faire 100 pour
  * affecter tout le CA aux deux catégories. Event n'y participe pas : son
  * CA vient en totalité et automatiquement du service Event de la matrice
@@ -21583,22 +21610,23 @@ function caVentilationPanel(company) {
   // `caCategoryOf`/`setCaCategory`).
   const lines = allLines.filter(function (c) { return caCategoryOf(c) !== 'hors-exploitation'; });
 
-  // Sans matrice remplie, il n'y a rien à ventiler : on le dit plutôt que
-  // d'afficher un tableau de zéros qui laisserait croire à un bug.
-  if (!totalYearRevenue) {
-    return panel('ca-ventilation', 'Ventilation du CA par compte',
-      emptyState(canEdit
-        ? 'Le directeur n’a pas encore renseigné sa matrice couverts × ticket moyen pour cet exercice. ' +
-          'La ventilation s’applique sur le chiffre d’affaires qu’elle produit, mois par mois — ' +
-          'elle attend donc cette saisie.'
-        // Le directeur, lui, est la personne qui doit remplir cette matrice :
-        // on le lui dit à la première personne plutôt que de parler de lui.
-        : 'La ventilation répartit le chiffre d’affaires de votre matrice couverts × ticket moyen, ' +
-          'qui n’est pas encore renseignée pour cet exercice. Remplissez-la ci-dessus : la répartition ' +
-          'apparaîtra ici.'),
-      { open: true, meta: canEdit ? 'en attente du directeur' : 'en attente de la matrice' });
-  }
-  if (!lines.length) {
+  // Sans CA (matrice vide pour l'exercice) : les pourcentages Food et
+  // Beverage se saisissent quand même (14/10/2026 — « on doit pouvoir la
+  // saisir avant »). Ils sont enregistrés tout de suite, comme toujours
+  // (`setCaCategoryVentilationPercent`), et serviront tels quels dès que le
+  // CA sera saisi ; les montants, eux, affichent « — ». Le niveau des
+  // comptes et « Appliquer aux comptes » attendent le CA : appliquer une
+  // ventilation de zéro effacerait le budget des comptes suivis.
+  const noRevenue = !totalYearRevenue;
+  const noRevenueNotice = noRevenue
+    ? '<p class="ca-no-revenue-notice">Aucun CA n’est encore saisi : les pourcentages Food et Beverage sont ' +
+      'enregistrés et serviront dès que le CA sera saisi.</p>'
+    : '';
+  // Montant d'une cellule : « — » tant qu'il n'y a pas de CA.
+  const amountCell = function (amount) {
+    return noRevenue ? '<span class="muted">—</span>' : money(amount);
+  };
+  const accountsMessage = !lines.length ? (function () {
     // Alexis, 02/09/2026 : « fait en sorte que je puisse ajouter des
     // comptes dans Comptes suivis et non la ventilation » — le bouton
     // d'ajout ne vit plus ici : « Comptes suivis » (et la barre de
@@ -21613,10 +21641,8 @@ function caVentilationPanel(company) {
         // comptes : il n'en a pas la main. On dit ce qui manque, et à qui.
         : 'Le contrôle de gestion n’a pas encore désigné les comptes de produits entre lesquels répartir ' +
           'votre chiffre d’affaires : il n’y a donc rien à afficher ici pour l’instant.');
-    return panel('ca-ventilation', 'Ventilation du CA par compte',
-      emptyState(message),
-      { open: true, meta: money(totalYearRevenue) + ' € à ventiler' });
-  }
+    return message;
+  })() : '';
 
   const headerMonths = MONTH_LABELS.map(function (label) {
     return '<th class="num">' + label + '</th>';
@@ -21641,17 +21667,17 @@ function caVentilationPanel(company) {
     }).join('');
     return '<tr><td class="sticky-col"><strong>' + escapeHtml(label) + '</strong></td>' +
       percentCell('data-ca-category-ventilation', id, percent) + cells +
-      '<td class="num"><strong>' + money((yearRevenue * percent) / 100) + '</strong></td></tr>';
+      '<td class="num"><strong>' + amountCell((yearRevenue * percent) / 100) + '</strong></td></tr>';
   }).join('');
 
   const categoryRemaining = 100 - categoryTotalPercent;
   const categoryTone = Math.abs(categoryRemaining) < 0.005 ? '' : ' vp-row-alert';
   const categoryTotalCells = revenue.map(function (amount) {
-    return '<td class="num">' + money((amount * categoryTotalPercent) / 100) + '</td>';
+    return '<td class="num">' + amountCell((amount * categoryTotalPercent) / 100) + '</td>';
   }).join('');
   const categoryControlRow = '<tr class="matrix-total' + categoryTone + '"><td class="sticky-col"><strong>Total catégories</strong></td>' +
     '<td><strong>' + formatRateValue(Math.round(categoryTotalPercent * 100) / 100) + ' %</strong></td>' +
-    categoryTotalCells + '<td class="num"><strong>' + money((yearRevenue * categoryTotalPercent) / 100) + '</strong></td></tr>';
+    categoryTotalCells + '<td class="num"><strong>' + amountCell((yearRevenue * categoryTotalPercent) / 100) + '</strong></td></tr>';
 
   const categoryLabelsJoined = categoryIds.map(function (id) {
     return CA_CATEGORIES.find(function (c) { return c.id === id; }).label;
@@ -21661,8 +21687,8 @@ function caVentilationPanel(company) {
       escapeHtml(categoryLabelsJoined) + '.</p>'
     : categoryRemaining > 0
       ? '<p style="margin:10px 0 0;font-size:13px" class="vp-alert">⚠ ' +
-        formatRateValue(Math.round(categoryRemaining * 100) / 100) + ' % du chiffre d’affaires ne sont affectés à aucune catégorie, soit ' +
-        money((yearRevenue * categoryRemaining) / 100) + ' € sur l’année.</p>'
+        formatRateValue(Math.round(categoryRemaining * 100) / 100) + ' % du chiffre d’affaires ne sont affectés à aucune catégorie' +
+        (noRevenue ? '.' : ', soit ' + money((yearRevenue * categoryRemaining) / 100) + ' € sur l’année.') + '</p>'
       : '<p style="margin:10px 0 0;font-size:13px" class="vp-alert">⚠ ' + escapeHtml(categoryLabelsJoined) + ' dépassent 100 % de ' +
         formatRateValue(Math.round(-categoryRemaining * 100) / 100) + ' % du chiffre d’affaires.</p>';
 
@@ -21830,12 +21856,26 @@ function caVentilationPanel(company) {
       'pourcentages sont posés par le contrôle de gestion : vous les lisez ici, vous ne les modifiez pas. Les ' +
       'comptes « Hors exploitation » n’y figurent pas — ils se saisissent en montant direct.';
 
-  return panel('ca-ventilation', 'Ventilation du CA par compte',
-    '<p class="muted" style="margin:0 0 12px;font-size:13px">' + intro + '</p>' +
-    '<div class="table-wrap"><table><thead><tr>' +
+  const categoryTable = '<div class="table-wrap"><table><thead><tr>' +
     '<th class="sticky-col" style="width:' + colWidths.caCompte + 'px">Catégorie</th><th>Part du CA hors Event</th>' +
     headerMonths + '<th class="num">Année</th></tr></thead>' +
-    '<tbody>' + categoryRows + categoryControlRow + '</tbody></table></div>' + categoryNotice +
+    '<tbody>' + categoryRows + categoryControlRow + '</tbody></table></div>' + categoryNotice;
+  // Pas encore de CA : les pourcentages Food / Beverage seulement.
+  if (noRevenue) {
+    return panel('ca-ventilation', 'Ventilation du CA par compte',
+      noRevenueNotice + categoryTable,
+      { open: true, meta: canEdit ? 'en attente du CA' : 'en attente de la matrice' });
+  }
+  // CA saisi mais aucun compte à ventiler : les pourcentages, puis ce qui manque.
+  if (!lines.length) {
+    return panel('ca-ventilation', 'Ventilation du CA par compte',
+      categoryTable + emptyState(accountsMessage),
+      { open: true, meta: money(totalYearRevenue) + ' € à ventiler' });
+  }
+
+  return panel('ca-ventilation', 'Ventilation du CA par compte',
+    '<p class="muted" style="margin:0 0 12px;font-size:13px">' + intro + '</p>' +
+    categoryTable +
     '<div class="table-wrap" style="margin-top:18px"><table><thead><tr>' +
     '<th class="sticky-col" style="width:' + colWidths.caCompte + 'px">Compte</th><th>Part de la catégorie</th>' +
     headerMonths + '<th class="num">Année</th>' + actionsHeader + '</tr></thead>' +
@@ -34169,9 +34209,9 @@ document.getElementById('view').addEventListener('change', function (event) {
     // même pas rendues pour lui (`caVentilationPanel`), mais le geste est
     // refusé ici aussi — un pourcentage posé par qui n'en a pas le droit
     // réécrirait le budget de tous les comptes de la catégorie.
-    if (!canEditCaVentilation()) return;
+    if (!canEditCaVentilation() || budgetFrozen()) return;
     setCaCategoryVentilationPercent(company.id, event.target.dataset.caCategoryVentilation, event.target.value);
-    render();
+    renderKeepingVentilationFocus();
     return;
   }
 
@@ -34182,9 +34222,9 @@ document.getElementById('view').addEventListener('change', function (event) {
   if (event.target.dataset.caVentilation !== undefined) {
     const company = activeCompany();
     if (!company) return;
-    if (!canEditCaVentilation()) return;
+    if (!canEditCaVentilation() || budgetFrozen()) return;
     setCaVentilationPercent(company.id, event.target.dataset.caVentilation, event.target.value);
-    render();
+    renderKeepingVentilationFocus();
     return;
   }
 

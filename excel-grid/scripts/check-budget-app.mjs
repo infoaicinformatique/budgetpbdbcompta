@@ -22261,6 +22261,68 @@ await checkAsync('Soumission du budget : mode serveur — envoi, budget soumis n
   }
 });
 
+check('Ventilation du CA : % Food / Beverage saisissables avant tout CA, conservés, puis appliqués tels quels (14/10/2026)', () => {
+  const saved = snapshotAppState();
+  try {
+    const company = { id: 'vent_c', name: 'MAMO', currency: 'EUR', year: 2026, groupId: null };
+    app.state.companies = [company];
+    app.state.activeCompany = company.id;
+    app.state.serviceMatrix = {};
+    app.state.caCategoryVentilation = {};
+    app.state.caVentilation = {};
+    app.state.caLines = [];
+    app.state.lines = [];
+    app.state.budgetSubmissions = {};
+    app.resetStateIndexes();
+
+    // Sans CA ni compte suivi : les deux cases sont là, modifiables ; « — » pour les montants ; le message.
+    let panel = app.caVentilationPanel(company);
+    assert.ok(panel.includes('data-ca-category-ventilation="food"') && panel.includes('data-ca-category-ventilation="beverage"'),
+      'champs % Food et Beverage affichés sans CA');
+    assert.ok(panel.includes('Aucun CA n’est encore saisi : les pourcentages Food et Beverage sont enregistrés et serviront dès que le CA sera saisi.'));
+    assert.ok(!panel.includes('data-apply-ca-ventilation'), 'rien à appliquer sans CA');
+    assert.ok(panel.includes('<span class="muted">—</span>'), 'montants « — »');
+
+    // Saisie 24 % / 76 %, enregistrée tout de suite (donnée de la société, partie au serveur).
+    app.setCaCategoryVentilationPercent(company.id, 'food', 24);
+    app.setCaCategoryVentilationPercent(company.id, 'beverage', 76);
+    assert.deepEqual(app.state.caCategoryVentilation.vent_c, { food: 24, beverage: 76 });
+    assert.ok(app.COMPANY_KEYED_STATE.includes('caCategoryVentilation'), 'rattachée à la société (envoyée au serveur)');
+    panel = app.caVentilationPanel(company);
+    assert.ok(/data-ca-category-ventilation="food" value="24"/.test(panel) && /data-ca-category-ventilation="beverage" value="76"/.test(panel));
+    assert.ok(panel.includes('<td><strong>100 %</strong></td>'), 'contrôle Food + Beverage = 100 % inchangé');
+
+    // « Recharger » : l'état relu garde les deux pourcentages.
+    const reloaded = app.adoptState(JSON.parse(JSON.stringify(app.state)));
+    assert.deepEqual(reloaded.caCategoryVentilation.vent_c, { food: 24, beverage: 76 }, 'valeurs conservées après rechargement');
+
+    // Le CA arrive : la ventilation utilise 24 % / 76 % sans ressaisie.
+    app.setServiceMatrixValue(company.id, 'covers', 'lunch', '2026-03-10', '100');
+    app.setServiceMatrixValue(company.id, 'ticket', 'lunch', '2026-03-10', '50');
+    const food = app.rateLinkOneRevenueCategoryMonths(company.id, [], 'food');
+    const bev = app.rateLinkOneRevenueCategoryMonths(company.id, [], 'beverage');
+    assert.equal(food[2], 1200, 'CA Food = 5 000 × 24 %');
+    assert.equal(bev[2], 3800, 'CA Beverage = 5 000 × 76 %');
+    panel = app.caVentilationPanel(company);
+    assert.ok(!panel.includes('Aucun CA n’est encore saisi'), 'le message disparaît avec le CA');
+    assert.ok(panel.includes(app.money(1200)) && panel.includes(app.money(3800)), 'montants calculés avec 24 % / 76 %');
+
+    // Avec des comptes suivis : comportement inchangé (ventilation par compte, « Appliquer aux comptes »).
+    app.addCaLine(company.id, '70105100', 'Restaurant');
+    panel = app.caVentilationPanel(company);
+    assert.ok(panel.includes('data-ca-ventilation="70105100"') && panel.includes('data-apply-ca-ventilation="vent_c"'));
+    assert.ok(panel.includes('Part de la catégorie'));
+
+    // Budget soumis : champs non modifiables (DOM figé) et geste refusé à la source.
+    assert.match(appSource, /if \(!canEditCaVentilation\(\) \|\| budgetFrozen\(\)\) return;\s*setCaCategoryVentilationPercent/);
+    // Food puis clic dans Beverage : le clic n'est plus perdu par le re-rendu.
+    assert.match(appSource, /setCaCategoryVentilationPercent\(company\.id, event\.target\.dataset\.caCategoryVentilation, event\.target\.value\);\s*renderKeepingVentilationFocus\(\);/);
+    assert.ok(app.BUDGET_INPUT_TABS.includes('ca'), 'l’onglet CA est figé avec le budget');
+  } finally {
+    restoreAppState(saved);
+  }
+});
+
 /* --- 5. Verdict ------------------------------------------------------- */
 
 if (problems.length) {
