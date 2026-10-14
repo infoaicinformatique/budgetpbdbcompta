@@ -449,6 +449,10 @@ async function handleApi(req, res, url, auth) {
    GET  /api/donnees/revision   numéro de la dernière révision (relecture légère)
    PUT  /api/donnees            { baseRevision, state, changedCompanies, sharedChanged } :
                                 enregistre ce que j'ai modifié (déclaré), dans mon périmètre
+   POST /api/donnees/main       { company, release? } : qui a la main (presence.mjs)
+   POST /api/donnees/soumission { company, action: 'submit' | 'reopen' } : soumet le budget
+                                d'une société (droit de saisie) ou le rouvre (administrateur) ;
+                                un budget soumis refuse ensuite toute écriture (409)
 
    Le filtrage et les règles d'écriture sont dans data.mjs. Une personne
    sans fiche ne reçoit aucune société et ne peut rien écrire. */
@@ -508,6 +512,19 @@ async function handleDataApi(req, res, url, auth) {
       }
       const claimed = presence.claim(by, name, companyId);
       return sendJson(res, 200, Object.assign({ company: companyId, ttlMs: PRESENCE_TTL_MS }, claimed));
+    }
+    /* Soumission du budget (14/10/2026) : le statut est tenu par le
+       serveur seul (data.mjs, `setSubmission`) ; un envoi ordinaire ne peut
+       ni soumettre ni rouvrir. */
+    if (url.pathname === DATA_PREFIX + '/soumission' && req.method === 'POST') {
+      if (!sameOriginWrite(req)) return sendJson(res, 403, { error: 'Requête refusée : origine non vérifiée.' });
+      if (!own) return sendJson(res, 403, { error: 'Aucun droit enregistré pour ce compte.' });
+      const body = await readJsonBody(req);
+      const companyId = body && typeof body.company === 'string' ? body.company : '';
+      const action = body && body.action === 'reopen' ? 'reopen' : body && body.action === 'submit' ? 'submit' : '';
+      const result = dataStore.setSubmission(own, companyId, action, { account: by, name: auth.displayName || by });
+      console.log(`Budget ${action === 'submit' ? 'soumis' : 'rouvert'} par « ${by} » : ${companyId} (révision ${result.revision})`);
+      return sendJson(res, 200, result);
     }
     if (url.pathname !== DATA_PREFIX) return sendJson(res, 404, { error: 'Introuvable.' });
     if (req.method === 'GET') return sendDataJson(req, res, 200, dataStore.read(own));

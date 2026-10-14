@@ -1873,6 +1873,43 @@
     position: sticky; top: 0; z-index: 4;
     margin: 0 0 var(--space-4); box-shadow: 0 2px 8px rgba(0, 0, 0, .12);
   }
+  /* Budget soumis (14/10/2026) : même bandeau collé en haut, aux couleurs
+     de l'environnement (cadenas, texte, bouton « Rouvrir » à droite). */
+  .frozen-banner {
+    display: flex; align-items: center; gap: var(--space-25); flex-wrap: wrap;
+    border-left-color: var(--accent-text); background: var(--gold-soft);
+  }
+  .frozen-banner .submit-icon { width: 16px; height: 16px; flex: 0 0 auto; stroke: var(--accent-text); }
+  .frozen-banner-text { flex: 1 1 320px; }
+  /* En-tête : « Soumettre » à gauche des initiales, ou le cadenas une fois soumis. */
+  .submit-slot { display: flex; align-items: center; }
+  .submit-slot:empty { display: none; }
+  .submit-icon { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
+  header .submit-button {
+    display: inline-flex; align-items: center; gap: var(--space-15);
+    background: var(--gold); border-color: var(--gold); color: var(--navy-deep); font-weight: 700;
+  }
+  header .submit-button:hover { filter: brightness(1.08); }
+  header .submit-status {
+    display: inline-flex; align-items: center; gap: var(--space-15); cursor: default;
+    padding: var(--space-15) var(--space-3); border-radius: var(--radius-pill);
+    border: 1px solid rgba(255,255,255,.28); color: rgba(255,255,255,.9); font-size: var(--text-sm);
+  }
+  /* Notification de l'Accueil : au-dessus des indicateurs clés. */
+  .submission-notice {
+    background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--accent-text);
+    border-radius: var(--radius); box-shadow: var(--shadow-sm);
+    padding: var(--space-4) var(--space-5); margin-bottom: var(--space-4);
+  }
+  .submission-notice-eyebrow {
+    display: inline-flex; align-items: center; gap: var(--space-15); color: var(--muted);
+    font-size: var(--text-xs); font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+  }
+  .submission-notice-title { display: block; font-size: var(--text-lg); margin: var(--space-1) 0 var(--space-15); }
+  .submission-notice p { margin: 0 0 var(--space-1); }
+  .submission-notice-actions { display: flex; gap: var(--space-2); margin-top: var(--space-25); }
+  .submit-modal .submit-recap { width: 100%; margin-bottom: var(--space-3); }
+  .submit-modal .submit-warning { font-weight: 600; margin: 0; }
   /* Jauge de stockage local (onglet Sécurité) : verte tant qu'il y a de la
      marge, ambre puis rouge à l'approche et au-delà de la limite estimée. */
   .quota-bar { height: 8px; border-radius: var(--radius-sm); background: var(--bg); overflow: hidden; }
@@ -2006,7 +2043,7 @@
   .rate-link-tag .rate-link-rule { font-size: inherit; color: inherit; text-align: left; padding: 0; cursor: pointer; }
   .rate-link-tag .rate-link-rule:hover { color: var(--accent-text); text-decoration: underline; }
   /* Fenêtre du multiplicateur saisonnier (14/10/2026). */
-  .modal-backdrop.no-anim, .modal-backdrop.no-anim .modal-box { animation: none; }
+  .modal-backdrop.no-anim, .modal-backdrop.no-anim .ratelink-modal { animation: none; }
   .ratelink-modal .rl-toolbar { display: flex; flex-wrap: wrap; gap: var(--space-3); margin-bottom: var(--space-25); }
   .ratelink-modal label.rl-inline, .ratelink-modal .rl-inline { display: inline-flex; align-items: center; gap: var(--space-15); margin: 0; color: var(--text); }
   .ratelink-modal .rl-inline select, .ratelink-modal .rl-inline input { width: auto; }
@@ -3133,6 +3170,10 @@
   <button class="action ghost icon-only" id="undo-button" title="Annuler (Ctrl+Z)" disabled>↶</button>
   <button class="action ghost icon-only" id="redo-button" title="Rétablir (Ctrl+Y)" disabled>↷</button>
   <div class="spacer"></div>
+  <!-- Soumission du budget (14/10/2026) : « Soumettre », ou le cadenas
+       « Soumis le … par … » une fois le budget figé. Rempli par
+       `renderHeader()` (voir `submitSlotHtml`). -->
+  <div class="submit-slot" id="submit-slot"></div>
   <!-- Menu « compte » (Alexis : « ajoute une petite icône avec un menu
        déroulant pour accéder à toutes les fonctionnalités standard
        présentes dans la plupart des apps », puis « je veux un vrai menu
@@ -3434,7 +3475,7 @@ let serverData = null;
   const nativeFetch = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null;
   if (nativeFetch) {
     serverRequest = function (method, path, body) {
-      if (!/^\/api\/(droits(\/roles)?(\/[A-Za-z0-9._@%-]+)?|donnees(\/(revision|main))?|preferences)$/.test(String(path))) {
+      if (!/^\/api\/(droits(\/roles)?(\/[A-Za-z0-9._@%-]+)?|donnees(\/(revision|main|soumission))?|preferences)$/.test(String(path))) {
         return Promise.reject(new Error('Sortie réseau interdite (' + path + ').'));
       }
       const options = { method: method, credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers: {} };
@@ -5080,6 +5121,10 @@ function adoptState(parsed) {
     // antérieurs, et rien que de l'affichage — une forme illisible retombe
     // sur les réglages par défaut, jamais sur une erreur.
     parsed.userPreferences = normalizeUserPreferencesMap(parsed.userPreferences);
+    // Soumission du budget (14/10/2026) : absente des états antérieurs.
+    if (!parsed.budgetSubmissions || typeof parsed.budgetSubmissions !== 'object' || Array.isArray(parsed.budgetSubmissions)) {
+      parsed.budgetSubmissions = {};
+    }
     parsed.payrollExtras = Array.isArray(parsed.payrollExtras) ? parsed.payrollExtras : [];
     for (const extra of parsed.payrollExtras) {
       if (typeof extra.name !== 'string') extra.name = '';
@@ -7791,7 +7836,10 @@ let undoApplying = false;
  *     là-dedans n'est du budget.
  */
 const UNDO_IGNORED_KEYS = ['users', 'authLog', 'editLog', 'lastSavedAt',
-  'activeCompany', 'activeEnvironmentId', 'activeScenario'];
+  'activeCompany', 'activeEnvironmentId', 'activeScenario',
+  // Soumission du budget (14/10/2026) : ni Ctrl+Z ni Ctrl+Y ne soumettent
+  // ou ne rouvrent un budget.
+  'budgetSubmissions'];
 
 /** L'état tel que l'historique le voit : le budget sérialisé, sans ce qui ne le concerne pas. */
 function undoSerialize(source) {
@@ -7982,7 +8030,15 @@ function rebaseUndoHistory(expected) {
   return false;
 }
 
+/** Budget soumis : la soumission n'est pas annulable, Annuler / Rétablir sont désactivés. */
+function undoBlockedByFreeze() {
+  if (!budgetFrozen()) return false;
+  showToast('Budget soumis : Annuler et Rétablir sont désactivés.', true);
+  return true;
+}
+
 function undo() {
+  if (undoBlockedByFreeze()) return false;
   // Ctrl+Z juste après avoir tapé : la rafale n'est pas encore close, son
   // étape n'est donc pas sur la pile. On la clôt d'abord, sans quoi
   // l'annulation semblerait ignorée pendant la seconde qui suit la frappe.
@@ -8000,6 +8056,7 @@ function undo() {
 }
 
 function redo() {
+  if (undoBlockedByFreeze()) return false;
   if (undoSnapshotTimer !== null) commitUndoSnapshot();
   if (!redoStack.length) { showToast('Rien à rétablir.'); return false; }
   const target = applyUndoDelta(undoSnapshot, redoStack.pop());
@@ -8012,6 +8069,9 @@ function redo() {
 }
 
 function save() {
+  // Budget soumis : une modification qui aurait échappé à la lecture seule
+  // est défaite plutôt qu'enregistrée (voir `frozenEditRejected`).
+  if (frozenEditRejected()) return;
   captureUndoStep();
   if (saveTimer !== null) clearTimeout(saveTimer);
   saveTimer = setTimeout(function () {
@@ -9394,6 +9454,8 @@ function canEditLineStructure() {
   // les montants : créer une ligne serait refusé par le serveur, autant ne
   // pas proposer le bouton.
   if (budgetHandHeldByOther()) return false;
+  // Budget soumis (14/10/2026) : la structure est figée pour tout le monde.
+  if (budgetFrozen()) return false;
   return !directorModeActive();
 }
 
@@ -9408,7 +9470,7 @@ function canEditLineStructure() {
  */
 function canAddLineInCenter(centerId) {
   if (canEditLineStructure()) return true;
-  if (budgetHandHeldByOther() || !directorModeActive()) return false;
+  if (budgetHandHeldByOther() || budgetFrozen() || !directorModeActive()) return false;
   // Un directeur n'ajoute que dans un vrai centre de son périmètre : jamais
   // sur un compte sans centre (à classer) ni sur les produits.
   return Boolean(centerId) && centerId !== 'PRODUITS' && isCenterAllowed(currentUser(), centerId);
@@ -9794,6 +9856,8 @@ const SIGNIN_DECOY_USER = { passwordHash: '0'.repeat(64), passwordSalt: 'decoy',
  * d'essais autorisés (voir `signInLockRemainingMinutes`).
  */
 async function signIn(username, password) {
+  // Nouvelle connexion : les notifications de budget soumis réapparaissent.
+  dismissedSubmissionNotices = new Set();
   const locked = signInLockRemainingMinutes(username);
   if (locked) {
     logAuthEvent('sign-in-blocked', 'Tentatives bloquées pour « ' + String(username || '').trim() + ' »');
@@ -10417,6 +10481,13 @@ async function persistToServer() {
   // Base vide : première publication, tout l'envoi fait foi (pas de déclaration).
   const changes = serverData.empty ? null
     : serverChangesBetween(serverData.lastSentJson ? JSON.parse(serverData.lastSentJson) : {}, payload);
+  // Budget soumis (14/10/2026) : jamais déclaré modifié. L'écran est en
+  // lecture seule ; seul un recalcul (plan comptable changé ailleurs, par
+  // exemple) peut encore bouger ses lignes calculées, et le serveur
+  // refuserait tout l'envoi à cause de lui.
+  if (changes) {
+    changes.changedCompanies = changes.changedCompanies.filter(function (id) { return !budgetSubmitted(id); });
+  }
   serverData.sending = true;
   try {
     const res = await serverRequest('PUT', '/api/donnees', Object.assign(
@@ -10432,6 +10503,14 @@ async function persistToServer() {
     state.lastSavedAt = new Date().toISOString();
   } catch (e) {
     serverData.sending = false;
+    if (e.status === 409 && e.data && Array.isArray(e.data.submitted)) {
+      // Budget soumis entre-temps par quelqu'un d'autre : rien n'est
+      // enregistré, la page recharge l'état à jour (donc en lecture seule)
+      // et le dit en clair, dans une fenêtre et pas un toast fugace.
+      await reloadServerData(null);
+      showAppError(e.message);
+      return;
+    }
     if (e.status === 409) {
       // Refus parce qu'une autre personne a la main (et non parce que la
       // société a bougé entre-temps) : le message du serveur la nomme déjà,
@@ -10549,7 +10628,8 @@ function budgetHandHolderName() {
  * que la situation dure.
  */
 function budgetHandBannerHtml() {
-  if (!budgetHandHeldByOther()) return '';
+  // Budget soumis : son propre bandeau dit déjà « consultation uniquement ».
+  if (!budgetHandHeldByOther() || budgetFrozen()) return '';
   const company = activeCompany();
   return '<div class="alert hand-banner">' +
     '<strong>Lecture seule — ' + escapeHtml(budgetHandHolderName()) + ' a la main' +
@@ -10604,6 +10684,385 @@ function onActiveCompanyChanged() {
   if (previous && previous !== company) releaseBudgetHand(previous);
   if (!company) return;
   claimBudgetHand(company).then(function (hand) { if (hand) render(); });
+}
+
+/* ==================================================================
+   SOUMISSION DU BUDGET (14/10/2026)
+
+   Demande : « soumettre le budget de l'entité courante. Une fois soumis,
+   il est figé en lecture seule pour tout le monde ; seul un administrateur
+   peut le rouvrir. »
+
+   Le statut vit dans `state.budgetSubmissions[companyId]` :
+     { submitted, year, at, by: { account, name }, history: [{ action, at, by }] }
+   Chaque société est un exercice (une société = une entité × une année) :
+   le statut par société EST donc le statut « par entité et exercice ».
+
+   En mode serveur, ce dictionnaire est tenu par le serveur seul
+   (data.mjs, `SERVER_OWNED_DICTS`) : on soumet et on rouvre par
+   `/api/donnees/soumission`, jamais par un envoi ordinaire, et le serveur
+   refuse toute écriture sur un budget soumis (409). L'écran n'est donc pas
+   la seule barrière : il met en lecture seule ce que le serveur refuserait
+   de toute façon. Hors mode serveur (fichier local), le statut s'écrit
+   dans l'état comme le reste.
+
+   La soumission ne touche à aucune donnée du budget, et ne s'annule pas :
+   `budgetSubmissions` est hors de l'historique d'annulation
+   (`UNDO_IGNORED_KEYS`), et Annuler / Rétablir sont désactivés sur un
+   budget soumis.
+   ================================================================== */
+
+/** Onglets de saisie : ceux qu'un budget soumis met en lecture seule (même liste que BUDGET_INPUT_TABS dans data.mjs). */
+const BUDGET_INPUT_TABS = ['saisie', 'ca', 'payroll', 'ajustements', 'import'];
+
+/**
+ * Gestes qui modifient le budget, masqués sur un budget soumis. Les cases
+ * (montants, pourcentages, matrices…) passent, elles, en lecture seule —
+ * voir `applyBudgetFreeze`. Ce qui sert à CONSULTER (exports, détail,
+ * historique, navigation) reste.
+ */
+const BUDGET_FROZEN_HIDDEN = [
+  // Charges
+  '[data-add-line]', '[data-open-ratelink-modal]', '[data-open-payroll-modal]', '[data-bulk-account]',
+  '[data-bulk-center]', '[data-bulk-company]', '[data-spread]', '[data-spread-apply]', '[data-toggle-note]',
+  '[data-delete]', '[data-delete-note]', '[data-move-line]', '[data-duplicate-line]', '[data-detach-ratelink]',
+  '[data-detach-payroll]', '[data-edit-ratelink]', '[data-edit-payroll]', '[data-calc-insert]',
+  // CA
+  '[data-add-ca-account]', '#ca-matrix-import-button', '[data-apply-ca-ventilation]', '[data-delete-ca-account]',
+  '[data-migrate-ca]', '[data-add-ca-season]', '[data-remove-ca-season]', '[data-save-ca-account]',
+  '[data-paste-daily]', '[data-clear-daily]',
+  // Payroll
+  '[data-add-employee]', '[data-sync-payroll]', '[data-edit-employee]', '[data-duplicate-employee]',
+  '[data-delete-employee]', '[data-save-employee]', '[data-add-payroll-extra]', '[data-delete-payroll-extra]',
+  '[data-lock-rate]', '[data-unlock-rate]',
+  // Ajustements
+  '[data-add-scenario]', '[data-delete-scenario]', '[data-add-ratio]', '[data-delete-ratio]',
+  // Import
+  '#import-matrix-button',
+].join(', ');
+
+/** Champs qui servent à chercher ou filtrer, pas à saisir : ils restent actifs sur un budget soumis. */
+const BUDGET_FROZEN_KEEP = '#account-search, #show-all, #payroll-team-search, [data-frozen-keep]';
+
+/** Statut de soumission d'une société, ou `null`. */
+function budgetSubmissionOf(companyId) {
+  const all = state && state.budgetSubmissions;
+  const entry = all && typeof all === 'object' ? all[companyId] : null;
+  return entry && typeof entry === 'object' ? entry : null;
+}
+
+/** Le budget de cette société est-il soumis (figé) ? */
+function budgetSubmitted(companyId) {
+  const entry = budgetSubmissionOf(companyId);
+  return Boolean(entry && entry.submitted === true);
+}
+
+/** Le budget de la société affichée est-il figé ? Seul point de décision de l'écran. */
+function budgetFrozen() {
+  return Boolean(state && state.activeCompany) && budgetSubmitted(state.activeCompany);
+}
+
+/** Peut-on rouvrir ? Un administrateur — sans comptes du tout (fichier local ouvert à tous), la personne au poste. */
+function canReopenBudget() {
+  if (!authEnabled()) return true;
+  return isAdminUser(currentUser());
+}
+
+/** A-t-on le droit de saisie sur l'entité affichée (au moins un onglet de saisie ouvert) ? */
+function canSubmitBudgetNow() {
+  const company = state && state.companies && state.companies.length ? activeCompany() : null;
+  if (!company || budgetSubmitted(company.id)) return false;
+  if (serverData && !serverDataWritable()) return false;
+  if (!authEnabled()) return true;
+  return BUDGET_INPUT_TABS.some(function (tabId) { return tabAllowedNow(tabId); });
+}
+
+/** Nom de la personne connectée, tel qu'on l'inscrit dans la trace. */
+function submissionActor() {
+  if (serverSession && serverSession.user) {
+    return { account: serverSession.user.account || '', name: serverSession.user.displayName || serverSession.user.account || '' };
+  }
+  const user = authEnabled() ? currentUser() : null;
+  if (user) return { account: user.username || user.id || '', name: user.displayName || user.username || '' };
+  return { account: 'local', name: 'Poste local' };
+}
+
+/** « 14/10/2026 », « 15:42 » et l'horodatage complet (info-bulle) d'une soumission. */
+function submissionWhen(iso) {
+  const date = new Date(iso);
+  if (!iso || isNaN(date.getTime())) return { day: '—', time: '—', full: '' };
+  return {
+    day: date.toLocaleDateString('fr-FR'),
+    time: date.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
+    full: date.toLocaleDateString('fr-FR') + ' à ' + date.toLocaleTimeString('fr-FR'),
+  };
+}
+
+function submissionByName(entry) {
+  const by = entry && entry.by && typeof entry.by === 'object' ? entry.by : {};
+  return by.name || by.account || 'une personne inconnue';
+}
+
+/** « soumis le 14/10/2026 à 15:42 par Marie Dupont » */
+function submissionSentence(entry) {
+  const when = submissionWhen(entry && entry.at);
+  return 'soumis le ' + when.day + ' à ' + when.time + ' par ' + submissionByName(entry);
+}
+
+/* ---------------- En-tête : bouton « Soumettre » / statut ---------------- */
+
+const SUBMIT_ICON = '<svg class="submit-icon" viewBox="0 0 14 14" aria-hidden="true"><path d="M1.6 6.6L12.4 1.8 9.6 12.4 6.9 8.1z"/><path d="M6.9 8.1L12.4 1.8"/></svg>';
+const LOCK_ICON = '<svg class="submit-icon" viewBox="0 0 14 14" aria-hidden="true"><rect x="2.5" y="6.2" width="9" height="6.3" rx="1.2"/><path d="M4.6 6.2V4.4a2.4 2.4 0 0 1 4.8 0v1.8"/></svg>';
+
+/** Contenu de l'emplacement à gauche des initiales : bouton, statut figé, ou rien. */
+function submitSlotHtml() {
+  const company = state && state.companies && state.companies.length ? activeCompany() : null;
+  if (!company || tab === 'parametres' || TAB_GROUPS[3].tabs.indexOf(tab) !== -1) return '';
+  const entry = budgetSubmissionOf(company.id);
+  if (entry && entry.submitted === true) {
+    const when = submissionWhen(entry.at);
+    return '<span class="submit-status" title="Soumis le ' + escapeHtml(when.full) + ' par ' +
+      escapeHtml(submissionByName(entry)) + '">' + LOCK_ICON +
+      'Soumis le ' + escapeHtml(when.day) + ' par ' + escapeHtml(submissionByName(entry)) + '</span>';
+  }
+  if (!canSubmitBudgetNow()) return '';
+  return '<button type="button" class="action submit-button" data-submit-budget="1" title="Soumettre le budget ' +
+    escapeHtml(company.name + ' ' + company.year) + ' : il sera figé en lecture seule">' + SUBMIT_ICON + 'Soumettre</button>';
+}
+
+/* ---------------- Fenêtre de confirmation ---------------- */
+
+/** `{ companyId }` pendant la confirmation, `null` sinon. */
+let submitBudgetModal = null;
+
+function openSubmitBudgetModal() {
+  if (!canSubmitBudgetNow()) return false;
+  submitBudgetModal = { companyId: state.activeCompany };
+  render();
+  // « Annuler » a le focus : Entrée par réflexe ne doit pas figer un budget.
+  if (typeof document !== 'undefined') {
+    const cancel = document.getElementById('submit-budget-cancel');
+    if (cancel && typeof cancel.focus === 'function') cancel.focus();
+  }
+  return true;
+}
+
+function closeSubmitBudgetModal() {
+  if (!submitBudgetModal) return false;
+  submitBudgetModal = null;
+  render();
+  return true;
+}
+
+function submitBudgetModalHtml() {
+  if (!submitBudgetModal) return '';
+  const company = companyById(submitBudgetModal.companyId);
+  if (!company) return '';
+  const summary = summarize(linesOf(company.id), resolveAccountForLine);
+  const entity = company.name + ' ' + company.year;
+  const row = function (label, value) {
+    return '<tr><td>' + label + '</td><td class="num"><strong>' + money(value) + ' €</strong></td></tr>';
+  };
+  return '<div class="modal-backdrop" data-close-submit-budget="1">' +
+    '<div class="modal-box submit-modal" role="dialog" aria-modal="true" aria-labelledby="submit-budget-title">' +
+    '<h3 id="submit-budget-title">Soumettre le budget ' + escapeHtml(entity) + '</h3>' +
+    '<p style="margin:0 0 12px">Vous êtes sur le point de soumettre le budget. Une fois soumis, il sera figé : ' +
+    'plus aucune saisie, ligne ou multiplicateur ne pourra être modifié. Seule l’entité ' + escapeHtml(company.name) +
+    ' est concernée ; les autres entités restent modifiables. Seul un administrateur pourra rouvrir ce budget.</p>' +
+    '<table class="submit-recap"><tbody>' +
+    row('Produits', total(summary.produits)) +
+    row('Total charges', total(summary.charges)) +
+    row('EBITDA', total(summary.ebitda)) +
+    '</tbody></table>' +
+    '<p class="submit-warning">Cette action est définitive. Cliquez sur OK pour soumettre, ou sur Annuler pour continuer à travailler.</p>' +
+    '<div class="modal-actions">' +
+    '<button type="button" class="action ghost" id="submit-budget-cancel" data-close-submit-budget="1">Annuler</button>' +
+    '<button type="button" class="action" data-confirm-submit-budget="1">OK</button>' +
+    '</div></div></div>';
+}
+
+/** Écrit le statut dans l'état (mode local) : même forme que le serveur. */
+function setLocalSubmission(companyId, action) {
+  if (!state.budgetSubmissions || typeof state.budgetSubmissions !== 'object') state.budgetSubmissions = {};
+  const company = companyById(companyId);
+  const current = budgetSubmissionOf(companyId);
+  const by = submissionActor();
+  const at = new Date().toISOString();
+  const history = (current && Array.isArray(current.history) ? current.history : []).concat([{ action: action, at: at, by: by }]);
+  state.budgetSubmissions[companyId] = action === 'submit'
+    ? { submitted: true, year: company ? company.year : null, at: at, by: by, history: history }
+    : Object.assign({}, current, { submitted: false, reopenedAt: at, reopenedBy: by, history: history });
+}
+
+/**
+ * OK de la fenêtre : la soumission est enregistrée (sur le serveur en mode
+ * serveur), puis le budget passe en lecture seule. Les saisies encore en
+ * attente partent d'abord : elles font partie de ce qu'on soumet.
+ */
+async function submitBudget() {
+  const modal = submitBudgetModal;
+  if (!modal) return false;
+  submitBudgetModal = null;
+  const company = companyById(modal.companyId);
+  if (!company || modal.companyId !== state.activeCompany || !canSubmitBudgetNow()) { render(); return false; }
+  if (serverData) {
+    render();
+    try {
+      await flushSave();
+      await serverRequest('POST', '/api/donnees/soumission', { company: company.id, action: 'submit' });
+    } catch (e) {
+      showAppError('Soumission impossible : ' + (e.message || e));
+      return false;
+    }
+    await reloadServerData(null);
+  } else {
+    commitUndoSnapshot();
+    setLocalSubmission(company.id, 'submit');
+    save();
+    resetUndoHistory();
+    render();
+  }
+  // Ce qui précède la soumission ne s'annule plus : l'historique repart de zéro.
+  resetUndoHistory();
+  refreshUndoButtons();
+  showToast('Budget soumis. Il est maintenant figé en lecture seule.');
+  return true;
+}
+
+/** « Rouvrir le budget » (administrateur) : redevient modifiable ; la réouverture est tracée. */
+async function reopenBudget() {
+  const company = state && state.activeCompany ? activeCompany() : null;
+  if (!company || !budgetSubmitted(company.id)) return false;
+  if (!canReopenBudget()) { showAppError('Seul un administrateur peut rouvrir ce budget.'); return false; }
+  if (!confirmed({
+    key: 'reopen-budget:' + company.id,
+    title: 'Rouvrir le budget ' + company.name + ' ' + company.year + ' ?',
+    body: 'Il redevient modifiable par toutes les personnes qui ont le droit de saisie sur cette entité. ' +
+      'La réouverture est tracée (qui, quand), comme la soumission.',
+    confirmLabel: 'Rouvrir le budget',
+  }, function () { reopenBudget(); })) return false;
+  if (serverData) {
+    try {
+      await serverRequest('POST', '/api/donnees/soumission', { company: company.id, action: 'reopen' });
+    } catch (e) {
+      showAppError('Réouverture impossible : ' + (e.message || e));
+      return false;
+    }
+    await reloadServerData(null);
+  } else {
+    setLocalSubmission(company.id, 'reopen');
+    save();
+    render();
+  }
+  showToast('Budget rouvert : il est de nouveau modifiable.');
+  return true;
+}
+
+/* ---------------- Bandeau et notification ---------------- */
+
+/** Bandeau permanent en haut des pages de l'entité tant que son budget est soumis. */
+function budgetFrozenBannerHtml(tabId) {
+  if (!budgetFrozen() || tabId === 'parametres' || TAB_GROUPS[3].tabs.indexOf(tabId) !== -1) return '';
+  const company = activeCompany();
+  const entry = budgetSubmissionOf(company.id);
+  return '<div class="alert hand-banner frozen-banner" role="status">' + LOCK_ICON +
+    '<span class="frozen-banner-text"><strong>Budget ' + escapeHtml(company.name + ' ' + company.year) + ' ' +
+    escapeHtml(submissionSentence(entry)) + '.</strong> Il est figé : consultation uniquement.' +
+    (canReopenBudget() ? '' : ' Seul un administrateur peut le rouvrir.') + '</span>' +
+    (canReopenBudget() ? '<button type="button" class="action ghost" data-reopen-budget="1">Rouvrir le budget</button>' : '') +
+    '</div>';
+}
+
+/**
+ * Notifications masquées par « J'ai compris » : jusqu'à la prochaine
+ * connexion seulement — en mémoire, jamais enregistré. Une page rechargée
+ * (nouvelle connexion) ou une nouvelle soumission la fait réapparaître.
+ */
+let dismissedSubmissionNotices = new Set();
+
+function submissionNoticeKey(companyId) {
+  const entry = budgetSubmissionOf(companyId);
+  return companyId + '|' + (entry && entry.at ? entry.at : '');
+}
+
+function dismissSubmissionNotice() {
+  if (state && state.activeCompany) dismissedSubmissionNotices.add(submissionNoticeKey(state.activeCompany));
+  render();
+}
+
+/** Notification de l'Accueil, au-dessus des indicateurs clés. */
+function submissionNoticeHtml(company) {
+  if (!company || !budgetSubmitted(company.id) || dismissedSubmissionNotices.has(submissionNoticeKey(company.id))) return '';
+  const entry = budgetSubmissionOf(company.id);
+  const when = submissionWhen(entry.at);
+  return '<div class="submission-notice" role="status">' +
+    '<span class="submission-notice-eyebrow">' + LOCK_ICON + 'Notification</span>' +
+    '<strong class="submission-notice-title">Le budget ' + escapeHtml(company.name + ' ' + company.year) + ' a été soumis</strong>' +
+    '<p>Soumis le ' + escapeHtml(when.day) + ' à ' + escapeHtml(when.time) + ' par ' + escapeHtml(submissionByName(entry)) +
+    '. Il est figé : consultation uniquement.</p>' +
+    '<p>' + (canReopenBudget()
+      ? 'Vous pouvez le rouvrir avec le bouton « Rouvrir le budget » du bandeau ci-dessus.'
+      : 'Seul un administrateur peut le rouvrir.') + '</p>' +
+    '<div class="submission-notice-actions">' +
+    (tabAllowedNow('saisie') ? '<button type="button" class="action" data-dir-goto="saisie">Voir le budget</button>' : '') +
+    '<button type="button" class="action ghost" data-dismiss-submission-notice="1">J’ai compris</button>' +
+    '</div></div>';
+}
+
+/* ---------------- Lecture seule ---------------- */
+
+/**
+ * Après chaque rendu d'un onglet de saisie d'un budget soumis : cases en
+ * lecture seule, gestes de modification retirés. Fait sur le DOM rendu,
+ * comme `applyPagePermissions`, pour qu'aucun des cinq onglets — ni une
+ * rubrique ajoutée plus tard — n'y échappe.
+ */
+function applyBudgetFreeze() {
+  if (typeof document === 'undefined' || !budgetFrozen() || BUDGET_INPUT_TABS.indexOf(tab) === -1) return;
+  const view = document.getElementById('view');
+  if (!view || typeof view.querySelectorAll !== 'function') return;
+  view.querySelectorAll('input, select, textarea').forEach(function (field) {
+    if (field.matches && field.matches(BUDGET_FROZEN_KEEP)) return;
+    if (field.tagName === 'SELECT' || field.type === 'checkbox' || field.type === 'radio' || field.type === 'file') {
+      field.disabled = true;
+    } else {
+      field.readOnly = true;
+    }
+    field.title = 'Budget soumis — consultation uniquement';
+  });
+  view.querySelectorAll(BUDGET_FROZEN_HIDDEN).forEach(function (element) { element.remove(); });
+}
+
+/** Les données d'une société, hors ce que l'historique d'annulation ignore : sert au garde-fou de `save()`. */
+function companyEditableSlice(source, companyId) {
+  const slice = { company: (source.companies || []).find(function (c) { return c && c.id === companyId; }) || null };
+  for (const key of SERVER_COMPANY_ARRAYS) {
+    if (UNDO_IGNORED_KEYS.indexOf(key) !== -1) continue;
+    slice[key] = (source[key] || []).filter(function (x) { return x && x.companyId === companyId; });
+  }
+  for (const key of COMPANY_KEYED_STATE) {
+    if (UNDO_IGNORED_KEYS.indexOf(key) !== -1) continue;
+    slice[key] = (source[key] || {})[companyId];
+  }
+  slice.caEvents = (source.caEvents || []).filter(function (e) { return e && (e.companyIds || []).indexOf(companyId) !== -1; });
+  return JSON.stringify(slice);
+}
+
+/**
+ * Garde-fou de `save()` : sur un onglet de saisie d'un budget soumis, toute
+ * modification de la société est défaite (retour au dernier état connu) au
+ * lieu d'être enregistrée. Les cases en lecture seule et les boutons
+ * masqués sont la vraie barrière ; ceci rattrape un chemin oublié (un
+ * collage, un raccourci) — et le serveur, lui, refuserait de toute façon.
+ */
+function frozenEditRejected() {
+  if (undoApplying || !state || !undoSnapshot || !budgetFrozen() || BUDGET_INPUT_TABS.indexOf(tab) === -1) return false;
+  const companyId = state.activeCompany;
+  if (companyEditableSlice(JSON.parse(undoSnapshot), companyId) === companyEditableSlice(state, companyId)) return false;
+  if (undoSnapshotTimer !== null) { clearTimeout(undoSnapshotTimer); undoSnapshotTimer = null; }
+  applyUndoState(undoSnapshot);
+  showToast('Budget soumis : il est figé, la modification n’a pas été enregistrée.', true);
+  return true;
 }
 
 /**
@@ -12086,6 +12545,8 @@ function rateLinkFactorSectionHtml() {
 }
 
 function openRateLinkModal(account, editingLineId) {
+  // Budget soumis : la fenêtre ne s'ouvre pas (14/10/2026).
+  if (budgetFrozen()) return;
   // Garde-fou au point d'entrée, pas seulement à l'affichage du bouton.
   if (!editingLineId && !canCreateRateLinkOn(account)) return;
   const editingLine = editingLineId ? state.lines.find(function (l) { return l.id === editingLineId; }) : null;
@@ -12398,6 +12859,7 @@ function formatRateValue(rate) {
  */
 function saveRateLink() {
   if (!rateLinkModal) return;
+  if (budgetFrozen()) { closeRateLinkModal(); showAppError('Ce budget est soumis : il est figé en lecture seule.'); return; }
   syncRateLinkModalFromDom();
   const modal = rateLinkModal;
 
@@ -14073,6 +14535,8 @@ function render() {
   // Filtrer ici plutôt que dans chaque vue évite d'avoir à passer les
   // droits en paramètre à la trentaine de fonctions qui produisent un
   // panneau — et garantit qu'aucune n'est oubliée.
+  // Budget soumis : cases en lecture seule, gestes de modification retirés.
+  applyBudgetFreeze();
   applyPagePermissions();
   // Le tableau vient d'être reconstruit, en-tête à sa place naturelle :
   // on le recale aussitôt si la page était déjà descendue.
@@ -14102,7 +14566,7 @@ function render() {
   // dernière du DOM pour y piéger le clavier.
   if (overlay) {
     overlay.innerHTML = helpModalHtml() + aboutModalHtml() + welcomeModalHtml() +
-      commandPaletteHtml() + setupWizardHtml() + confirmModalHtml();
+      commandPaletteHtml() + setupWizardHtml() + submitBudgetModalHtml() + confirmModalHtml();
   }
 
   // En-tête visible seulement à l'impression : le bandeau de l'application
@@ -14285,6 +14749,9 @@ function renderHeader() {
   document.getElementById('account-panel-avatar').innerHTML = headerMenuAvatarHtml();
   const accountUser = authEnabled() ? currentUser() : null;
   document.getElementById('account-panel-name').textContent = accountUser ? accountUser.username : 'Mon compte';
+  // Soumission du budget (14/10/2026), à gauche des initiales.
+  const submitSlot = document.getElementById('submit-slot');
+  if (submitSlot) submitSlot.innerHTML = submitSlotHtml();
   refreshUndoButtons();
 }
 
@@ -14300,8 +14767,9 @@ function refreshUndoButtons() {
   // Une étape encore en cours de frappe compte : `undo()` la clôt avant
   // d'agir, le bouton doit donc s'activer dès la première modification et
   // pas seulement une fois la rafale terminée.
-  if (undoButton) undoButton.disabled = !undoStack.length && undoSnapshotTimer === null;
-  if (redoButton) redoButton.disabled = !redoStack.length;
+  const frozen = budgetFrozen();
+  if (undoButton) undoButton.disabled = frozen || (!undoStack.length && undoSnapshotTimer === null);
+  if (redoButton) redoButton.disabled = frozen || !redoStack.length;
 }
 
 /* ==================================================================
@@ -14436,7 +14904,7 @@ function viewPage(opts) {
   // Le bandeau « X a la main » s'affiche au-dessus du titre de TOUS les
   // onglets : la lecture seule ne vaut pas pour un écran mais pour le
   // budget entier, et il n'y a qu'un seul endroit à instrumenter.
-  return budgetHandBannerHtml() +
+  return budgetHandBannerHtml() + budgetFrozenBannerHtml(tab) +
     '<div class="page-head">' + breadcrumbHtml(tab) +
     '<h2>' + escapeHtml(o.title || '') + '</h2>' +
     (o.hint ? '<p class="page-hint">' + o.hint + '</p>' : '') +
@@ -14549,7 +15017,8 @@ function viewSaisie() {
   // votre périmètre, ou quelqu'un d'autre a la main sur ce budget. Le
   // rendu est le même (`readonly` sur les douze cases, actions masquées) —
   // seule la raison affichée change.
-  const centerReadOnly = budgetHandHeldByOther()
+  // Troisième raison depuis le 14/10/2026 : le budget est soumis.
+  const centerReadOnly = budgetHandHeldByOther() || budgetFrozen()
     || (currentCenter !== 'PRODUITS' && !isCenterAllowed(saisieUser, currentCenter));
   // Centre affiché devenu invisible (droits changés, ou resté d'une autre
   // session) : retour aux Produits plutôt qu'un écran vide qu'on ne peut pas quitter.
@@ -14697,9 +15166,11 @@ function viewSaisie() {
           'data-line="' + line.id + '" data-month="' + month + '" value="' +
           Math.round(line.amounts[month] || 0) + '"' +
           (centerReadOnly
-            ? (budgetHandHeldByOther()
-              ? ' readonly title="' + escapeHtml(budgetHandHolderName()) + ' a la main sur ce budget — lecture seule"'
-              : ' readonly title="Centre hors périmètre — lecture seule"')
+            ? (budgetFrozen()
+              ? ' readonly title="Budget soumis — consultation uniquement"'
+              : budgetHandHeldByOther()
+                ? ' readonly title="' + escapeHtml(budgetHandHolderName()) + ' a la main sur ce budget — lecture seule"'
+                : ' readonly title="Centre hors périmètre — lecture seule"')
             : linked
               ? ' readonly title="' + escapeHtml(rateLinkCellTitle(rateBase, linked.rate, month)) + '"'
               : computed
@@ -14912,7 +15383,7 @@ function viewSaisie() {
     // remplir.
     (centerReadOnly ? ''
       : '<button class="mini" data-bulk-center="1" title="Appliquer un pourcentage ou un montant à toutes les lignes de ce centre">ajuster tout le centre</button>') +
-    (allowedCostCenterIds(saisieUser) ? ''
+    (allowedCostCenterIds(saisieUser) || budgetFrozen() ? ''
       : '<button class="mini" data-bulk-company="1" title="Appliquer un pourcentage ou un montant à toutes les charges de la société, tous centres confondus">ajuster toutes les charges</button>') +
     '</div>' +
     '<span class="section-meta muted">' + centerMeta + '</span>' +
@@ -18805,6 +19276,8 @@ function viewDirecteur() {
     hint: escapeHtml(company.name) + ' ' + company.year +
       ' — l’essentiel de votre budget en un coup d’œil. Tous les onglets restent accessibles dans la barre du haut.',
     body:
+      // Budget soumis (14/10/2026) : la notification passe avant les indicateurs.
+      submissionNoticeHtml(company) +
       panel('directeur-kpi', 'Indicateurs clés', kpis + ratios, { open: true }) +
       // La matrice couverts × ticket moyen ne figure PAS ici : elle vit
       // dans l'onglet CA, où Alexis l'a fait basculer le 19/08/2026. Elle
@@ -24452,6 +24925,9 @@ function sortByPeriodThenName(items) {
 const COMPANY_KEYED_STATE = [
   'dailyRevenue', 'dailyBudgetRevenue', 'priorActuals', 'serviceMatrix',
   'payrollLockedRates', 'caVentilation', 'caCategoryVentilation', 'caWeighting',
+  // Soumission du budget (14/10/2026) : tenu par le serveur en mode serveur
+  // (`SERVER_OWNED_DICTS` dans data.mjs), jamais recopié par une duplication.
+  'budgetSubmissions',
 ];
 
 /**
@@ -30254,6 +30730,9 @@ document.getElementById('settings-link').addEventListener('click', function () {
   render();
 });
 
+document.getElementById('submit-slot').addEventListener('click', function (event) {
+  if (event.target.closest && event.target.closest('button[data-submit-budget]')) openSubmitBudgetModal();
+});
 document.getElementById('undo-button').addEventListener('click', function () { undo(); });
 document.getElementById('redo-button').addEventListener('click', function () { redo(); });
 
@@ -30307,6 +30786,13 @@ document.getElementById('overlay').addEventListener('click', function (event) {
      de confirmation, dont le texte est un enfant. */
   if (event.target.closest('button[data-accept-confirm]')) { acceptConfirm(); return; }
   if (event.target.closest('button[data-close-confirm]')) { closeConfirm(); return; }
+  // Soumission du budget : OK, Annuler — et un clic à côté vaut Annuler (plus bas).
+  if (event.target.closest('button[data-confirm-submit-budget]')) { submitBudget(); return; }
+  if (event.target.closest('button[data-close-submit-budget]')) { closeSubmitBudgetModal(); return; }
+  {
+    const target = event.target;
+    if (target.dataset && target.dataset.closeSubmitBudget !== undefined && isRealClickOn(target)) { closeSubmitBudgetModal(); return; }
+  }
 
   // Palette de commandes : même raison qu'au-dessus de traiter le clic sur
   // le résultat avant `isRealClickOn` — le libellé et l'indication sont des
@@ -30342,6 +30828,7 @@ document.getElementById('overlay').addEventListener('click', function (event) {
     closeSetupWizard();
     return;
   }
+
   if (!event.target || !event.target.closest) return;
 
   // Retour au premier écran (bouton « ‹ Environnements » du deuxième
@@ -30994,7 +31481,7 @@ function applySpread(lineId) {
   // calcul — ou, pour un multiplicateur saisonnier, remplacerait des valeurs
   // mensuelles par un total à plat. Le bouton n'est déjà pas proposé ; ceci
   // ferme aussi les autres chemins (Entrée dans un champ resté ouvert).
-  if (line && isComputedLine(line)) { spreadingLineId = null; render(); return; }
+  if ((line && isComputedLine(line)) || budgetFrozen()) { spreadingLineId = null; render(); return; }
   const input = document.querySelector('input[data-spread-input="' + lineId + '"]');
   if (!input || !line) return;
   const amount = Number(String(input.value).replace(',', '.').replace(/\s/g, ''));
@@ -31028,6 +31515,7 @@ function cancelSpread() {
 let bulkAdjustModal = null;
 
 function openBulkAdjust(scope, account) {
+  if (budgetFrozen()) return;
   bulkAdjustModal = { scope: scope, account: account || null };
   render();
 }
@@ -31089,6 +31577,7 @@ function applyBulkAdjust(lines, mode, value) {
 
 function saveBulkAdjust() {
   if (!bulkAdjustModal) return;
+  if (budgetFrozen()) { closeBulkAdjust(); return; }
   const valueInput = document.getElementById('bulk-value');
   const modeSelect = document.getElementById('bulk-mode');
   if (!valueInput) return;
@@ -31644,6 +32133,10 @@ document.getElementById('view').addEventListener('click', function (event) {
 
   // Raccourcis de la Vue Directeur : un simple changement d'onglet, vers
   // l'écran complet et inchangé — jamais une version allégée de celui-ci.
+  // Soumission du budget : réouverture (bandeau) et « J'ai compris » (Accueil).
+  if (target.closest('button[data-reopen-budget]')) { reopenBudget(); return; }
+  if (target.closest('button[data-dismiss-submission-notice]')) { dismissSubmissionNotice(); return; }
+
   const dirGoto = target.closest('button[data-dir-goto]');
   if (dirGoto) { tab = dirGoto.dataset.dirGoto; requestViewFade(); render(); return; }
 
@@ -32967,6 +33460,7 @@ function escapeGoBack() {
   // dernière ouverte, et elle bloque ce qu'il y a dessous. Échap l'annule —
   // ce que la boîte `confirm()` du navigateur ne garantissait pas.
   if (confirmModal) { closeConfirm(); return true; }
+  if (submitBudgetModal) { closeSubmitBudgetModal(); return true; }
   if (societeModal) { closeSocieteModal(); return true; }
   if (rateLinkModal) { closeRateLinkModal(); return true; }
   if (payrollModal) { closePayrollModal(); return true; }

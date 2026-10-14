@@ -479,6 +479,13 @@ const app = await importApp(
     'export { DEFAULT_NAVY_COLOR, darkenHex, applyEnvironmentTheme,\n' +
     '  setSuperGroupNavyColor, resetSuperGroupNavyColor };\n' +
     'export { duplicateLine };\n' +
+    // Soumission du budget (14/10/2026).
+    'export { BUDGET_INPUT_TABS, BUDGET_FROZEN_HIDDEN, budgetSubmissionOf, budgetSubmitted, budgetFrozen, canReopenBudget,\n' +
+    '  canSubmitBudgetNow, submitSlotHtml, openSubmitBudgetModal, closeSubmitBudgetModal, submitBudgetModalHtml,\n' +
+    '  submitBudget, reopenBudget, budgetFrozenBannerHtml, submissionNoticeHtml, dismissSubmissionNotice,\n' +
+    '  frozenEditRejected, applyBudgetFreeze, setLocalSubmission };\n' +
+    'export function __getSubmitBudgetModal() { return submitBudgetModal; }\n' +
+    'export function __resetSubmissionNotices() { dismissedSubmissionNotices = new Set(); }\n' +
     // Multiplicateur saisonnier (14/10/2026).
     'export { rateSpecOf, rateMonthValues, storedRateOf, cloneRate, parseRateInput, formatRateIn, rateInputText,\n' +
     '  rateLinkDefaultUnit, rateLinkBaseMonths, rateLinkBaseMonthsOf, rateLinkEffectiveRatios, rateLinkLineRatios,\n' +
@@ -11721,7 +11728,7 @@ check('Saisie simultanée : la personne arrivée ensuite est en lecture seule, e
 
     // Le chemin doit être autorisé par le SAS réseau, sinon l'appel est
     // refusé avant même de partir (« Sortie réseau interdite »).
-    assert.ok(appSource.includes('donnees(\\/(revision|main))?'),
+    assert.ok(appSource.includes('donnees(\\/(revision|main|soumission))?'),
       'le SAS réseau doit laisser passer /api/donnees/main');
   } finally {
     app.state.companies = saved.companies; app.state.activeCompany = saved.active;
@@ -22023,6 +22030,235 @@ check('Multiplicateur saisonnier : fenêtre — périodes, mois non couvert bloq
     modal.sourceLineId = '';
     assert.equal(app.rateLinkCanSave(), false);
   });
+});
+
+/* ==================================================================
+   SOUMISSION DU BUDGET (14/10/2026)
+   ================================================================== */
+await checkAsync('Soumission du budget : fenêtre, budget figé partout, garde-fous, notification, autre entité intacte', async () => {
+  const saved = snapshotAppState();
+  const savedTab = app.__getTab();
+  try {
+    const company = { id: 'sub_c', name: 'Palm Beach', currency: 'EUR', year: 2026, groupId: null };
+    const other = { id: 'sub_o', name: 'Anna Cannes', currency: 'EUR', year: 2026, groupId: null };
+    app.state.companies = [company, other];
+    app.state.activeCompany = company.id;
+    app.state.budgetSubmissions = {};
+    app.state.lines = [
+      { id: 'sub_p', companyId: company.id, account: '70105100', name: 'CA restaurant', note: '', amounts: months(10000) },
+      { id: 'sub_l', companyId: company.id, account: '60103100', name: 'Achat F&B', note: '', amounts: months(3000) },
+      { id: 'sub_k', companyId: other.id, account: '60103100', name: 'Achat F&B', note: '', amounts: months(100) },
+    ];
+    app.resetStateIndexes();
+    app.resetUndoHistory();
+    app.__setTab('saisie'); app.__setCenter('F&B'); app.render();
+
+    // Bouton « Soumettre » à gauche des initiales.
+    assert.ok(app.submitSlotHtml().includes('data-submit-budget="1"') && app.submitSlotHtml().includes('Soumettre'));
+    assert.ok(html.indexOf('id="submit-slot"') < html.indexOf('id="header-menu-button"'), 'à gauche des initiales');
+
+    // Fenêtre : titre, texte, récapitulatif, avertissement, Annuler / OK.
+    assert.ok(app.openSubmitBudgetModal());
+    const modal = app.submitBudgetModalHtml();
+    assert.ok(modal.includes('Soumettre le budget Palm Beach 2026'));
+    assert.ok(modal.includes('Vous êtes sur le point de soumettre le budget. Une fois soumis, il sera figé : plus aucune saisie, ligne ou multiplicateur ne pourra être modifié. Seule l’entité Palm Beach est concernée ; les autres entités restent modifiables. Seul un administrateur pourra rouvrir ce budget.'));
+    for (const label of ['Produits', 'Total charges', 'EBITDA']) assert.ok(modal.includes('<td>' + label + '</td>'), label);
+    assert.ok(modal.includes(app.money(120000) + ' €') && modal.includes(app.money(84000) + ' €'), 'montants du récapitulatif');
+    assert.ok(modal.includes('Cette action est définitive. Cliquez sur OK pour soumettre, ou sur Annuler pour continuer à travailler.'));
+    assert.ok(/id="submit-budget-cancel" data-close-submit-budget="1">Annuler<\/button>/.test(modal));
+    assert.ok(modal.includes('data-confirm-submit-budget="1">OK</button>'));
+    assert.ok(/class="modal-backdrop" data-close-submit-budget="1"/.test(modal), 'clic à côté = Annuler');
+    // Annuler (et Échap) : rien n'est soumis.
+    assert.ok(app.escapeGoBack(), 'Échap ferme la fenêtre');
+    assert.equal(app.__getSubmitBudgetModal(), null);
+    assert.equal(app.budgetSubmitted(company.id), false, 'annuler ne soumet rien');
+    app.openSubmitBudgetModal();
+    app.closeSubmitBudgetModal();
+    assert.equal(app.budgetSubmitted(company.id), false);
+
+    // OK : soumis, sans toucher aux données du budget.
+    const before = JSON.stringify(app.state.lines);
+    app.openSubmitBudgetModal();
+    assert.equal(await app.submitBudget(), true);
+    assert.equal(JSON.stringify(app.state.lines), before, 'la soumission ne modifie aucune donnée du budget');
+    assert.ok(app.budgetFrozen());
+    assert.equal(document.getElementById('toast-text').textContent, 'Budget soumis. Il est maintenant figé en lecture seule.');
+    const entry = app.budgetSubmissionOf(company.id);
+    assert.equal(entry.year, 2026);
+    assert.deepEqual(entry.history.map((h) => h.action), ['submit']);
+    // En-tête : cadenas « Soumis le … par … », non cliquable, date et heure au survol.
+    const slot = app.submitSlotHtml();
+    assert.ok(/<span class="submit-status" title="Soumis le \d{2}\/\d{2}\/\d{4} à [^"]+">/.test(slot) && !slot.includes('<button'));
+    assert.ok(/Soumis le \d{2}\/\d{2}\/\d{4} par /.test(slot));
+    // Bandeau sur toutes les pages de l'entité ; jamais sur l'administration.
+    for (const tabId of ['saisie', 'ca', 'payroll', 'ajustements', 'import', 'directeur', 'pnl']) {
+      app.__setTab(tabId); app.render();
+      const view = document.getElementById('view').innerHTML;
+      assert.ok(/Budget Palm Beach 2026 soumis le \d{2}\/\d{2}\/\d{4} à \d{2}:\d{2} par [^.]+\.<\/strong> Il est figé : consultation uniquement\./.test(view), 'bandeau sur ' + tabId);
+    }
+    app.__setTab('societes'); app.render();
+    assert.ok(!document.getElementById('view').innerHTML.includes('frozen-banner'), 'pas de bandeau hors des pages de l’entité');
+    // Charges : tout en lecture seule, gestes de modification absents.
+    app.__setTab('saisie'); app.__setCenter('F&B'); app.render();
+    const saisie = document.getElementById('view').innerHTML;
+    assert.ok(saisie.includes('Achat F&amp;B'), 'consultation : les lignes restent visibles');
+    const cells = saisie.match(/<input class="month-input[^>]*>/g) || [];
+    assert.ok(cells.length >= 12 && cells.every((c) => c.includes('readonly')), 'cases en lecture seule');
+    for (const gesture of ['data-add-line=', 'data-open-ratelink-modal=', 'data-bulk-center=', 'data-bulk-company=',
+      'data-spread=', 'data-toggle-note=', 'data-delete=', 'data-open-payroll-modal=', 'data-bulk-account=']) {
+      assert.ok(!saisie.includes(gesture), gesture + ' doit être masqué');
+    }
+    assert.equal(app.canEditLineStructure(), false);
+    // Les autres onglets : passés par le DOM rendu (`applyBudgetFreeze`), tous les gestes listés.
+    for (const selector of ['[data-apply-ca-ventilation]', '[data-add-employee]', '[data-delete-employee]', '[data-add-scenario]',
+      '#import-matrix-button', '[data-add-ca-account]', '[data-lock-rate]']) {
+      assert.ok(app.BUDGET_FROZEN_HIDDEN.includes(selector), selector);
+    }
+    assert.match(appSource, /applyBudgetFreeze\(\);\s*applyPagePermissions\(\);/, 'render() fige le DOM de chaque onglet');
+    // Fenêtre du multiplicateur inaccessible ; Annuler / Rétablir désactivés.
+    app.openRateLinkModal('60103100', null);
+    assert.equal(app.__getRateLinkModal(), null, 'modale du multiplicateur inaccessible');
+    assert.equal(app.undo(), false);
+    assert.equal(app.redo(), false);
+    assert.ok(app.UNDO_IGNORED_KEYS.includes('budgetSubmissions'), 'Ctrl+Z ne dé-soumet jamais');
+    // Garde-fou : une modification qui échapperait à la lecture seule est défaite.
+    app.state.lines.find((l) => l.id === 'sub_l').amounts[0] = 1;
+    app.save();
+    assert.equal(app.state.lines.find((l) => l.id === 'sub_l').amounts[0], 3000, 'modification défaite');
+    assert.equal(app.frozenEditRejected(), false, 'rien à défaire ensuite');
+
+    // Notification de l'Accueil (administrateur / poste sans comptes).
+    app.__setTab('directeur'); app.render();
+    let home = document.getElementById('view').innerHTML;
+    assert.ok(home.indexOf('submission-notice') < home.indexOf('data-panel="directeur-kpi"'), 'au-dessus des indicateurs clés');
+    assert.ok(home.includes('>Notification</span>') && home.includes('Le budget Palm Beach 2026 a été soumis'));
+    assert.ok(/Soumis le \d{2}\/\d{2}\/\d{4} à \d{2}:\d{2} par [^.]+\. Il est figé : consultation uniquement\./.test(home));
+    assert.ok(home.includes('Vous pouvez le rouvrir avec le bouton « Rouvrir le budget » du bandeau ci-dessus.'));
+    assert.ok(home.includes('data-dir-goto="saisie">Voir le budget</button>') && home.includes('J’ai compris'));
+    app.dismissSubmissionNotice();
+    assert.ok(!document.getElementById('view').innerHTML.includes('submission-notice'), 'masquée jusqu’à la prochaine connexion');
+    app.__resetSubmissionNotices(); // nouvelle connexion
+    app.render();
+    assert.ok(document.getElementById('view').innerHTML.includes('submission-notice'), 'réapparaît à la connexion suivante');
+    assert.match(appSource, /async function signIn\(username, password\) \{\s*\/\/[^\n]*\n\s*dismissedSubmissionNotices = new Set\(\);/);
+
+    // Autre entité : pas affectée.
+    app.state.activeCompany = other.id;
+    assert.equal(app.budgetFrozen(), false);
+    assert.ok(app.submitSlotHtml().includes('data-submit-budget'));
+    app.state.lines.find((l) => l.id === 'sub_k').amounts[0] = 555;
+    app.__setTab('saisie'); app.save();
+    assert.equal(app.state.lines.find((l) => l.id === 'sub_k').amounts[0], 555, 'l’autre entité reste modifiable');
+    app.state.activeCompany = company.id;
+
+    // Directeur (non administrateur) : pas de bouton, le texte le dit, la réouverture est refusée.
+    app.adoptServerSession({ method: 'ldap', account: 'm.dupont', displayName: 'Marie Dupont', rights: {
+      role: 'directeur', isAdmin: false, permissions: { directeur: [], saisie: ['saisie-ajouter'] },
+      allowedCompanies: null, allowedCostCenters: null, environmentIds: [],
+    } }, null);
+    assert.equal(app.canReopenBudget(), false);
+    const banner = app.budgetFrozenBannerHtml('saisie');
+    assert.ok(banner.includes('Seul un administrateur peut le rouvrir.') && !banner.includes('data-reopen-budget'));
+    app.__resetSubmissionNotices();
+    assert.ok(app.submissionNoticeHtml(company).includes('Seul un administrateur peut le rouvrir.'));
+    assert.equal(await app.reopenBudget(), false);
+    assert.ok(app.budgetFrozen(), 'toujours figé');
+    app.__clearServerSession();
+
+    // Administrateur : bouton « Rouvrir le budget », réouverture tracée.
+    assert.ok(app.budgetFrozenBannerHtml('saisie').includes('data-reopen-budget="1">Rouvrir le budget</button>'));
+    answerConfirmations(true);
+    assert.equal(await app.reopenBudget(), true);
+    assert.equal(app.budgetFrozen(), false);
+    assert.deepEqual(app.budgetSubmissionOf(company.id).history.map((h) => h.action), ['submit', 'reopen']);
+    app.state.lines.find((l) => l.id === 'sub_l').amounts[0] = 4000;
+    app.save();
+    assert.equal(app.state.lines.find((l) => l.id === 'sub_l').amounts[0], 4000, 'de nouveau modifiable');
+  } finally {
+    app.__clearServerSession();
+    app.__setServerData(null);
+    app.__clearSaveTimer();
+    restoreAppState(saved);
+    app.__setTab(savedTab);
+    app.render();
+  }
+});
+
+await checkAsync('Soumission du budget : mode serveur — envoi, budget soumis non déclaré, refus 409 d’un onglet resté ouvert', async () => {
+  const saved = snapshotAppState();
+  const savedTab = app.__getTab();
+  const calls = [];
+  let serverState = null;
+  const previous = app.__swapServerRequest(function (method, path, body) {
+    calls.push({ method, path, body });
+    if (method === 'GET' && path === '/api/donnees') {
+      return Promise.resolve({ revision: 9, empty: false, state: JSON.parse(JSON.stringify(serverState)), access: { unrestricted: true, shared: true } });
+    }
+    if (method === 'POST' && path === '/api/donnees/soumission') return Promise.resolve({ revision: 9 });
+    if (method === 'PUT' && path === '/api/donnees') {
+      const error = new Error('Ce budget a été soumis par Marie Dupont : vos modifications n’ont pas été enregistrées.');
+      error.status = 409;
+      error.data = { submitted: [{ company: 'srv_c', name: 'Palm Beach', by: 'Marie Dupont' }] };
+      return Promise.reject(error);
+    }
+    return Promise.resolve({});
+  });
+  try {
+    const company = { id: 'srv_c', name: 'Palm Beach', currency: 'EUR', year: 2026, groupId: null };
+    app.state.companies = [company];
+    app.state.activeCompany = company.id;
+    app.state.budgetSubmissions = {};
+    app.state.lines = [{ id: 'srv_l', companyId: company.id, account: '60103100', name: 'Achat F&B', note: '', amounts: months(3000) }];
+    app.resetStateIndexes();
+    app.adoptServerSession({ method: 'ldap', account: 'a.porrati', displayName: 'Alexis Porrati', rights: {
+      role: 'controleur', isAdmin: true, permissions: null, allowedCompanies: null, allowedCostCenters: null, environmentIds: [] } }, null);
+    app.__setServerData({ ready: true, revision: 8, empty: false, access: { unrestricted: true, shared: true },
+      updatedAt: null, updatedBy: null, error: null, sending: false, lastSentJson: null, localCopy: null, retryTimer: null, hand: null });
+    app.markServerDataInSync();
+
+    // Un autre poste soumet : l'état du serveur porte le statut.
+    serverState = JSON.parse(JSON.stringify(app.state));
+    serverState.budgetSubmissions = { srv_c: { submitted: true, year: 2026, at: '2026-10-14T13:42:00.000Z',
+      by: { account: 'm.dupont', name: 'Marie Dupont' }, history: [] } };
+    // Ce poste-ci, qui l'ignore encore, enregistre une saisie : refus clair, rechargement, lecture seule.
+    app.state.lines[0].amounts[0] = 9999;
+    await app.persist();
+    const put = calls.find((c) => c.method === 'PUT');
+    assert.ok(put && put.body.changedCompanies.includes('srv_c'), 'la saisie est bien partie au serveur');
+    assert.ok(app.budgetFrozen(), 'la page passe en lecture seule');
+    assert.equal(app.state.lines[0].amounts[0], 3000, 'l’état du serveur fait foi : la saisie refusée disparaît');
+    assert.equal(document.getElementById('toast-text').textContent,
+      'Ce budget a été soumis par Marie Dupont : vos modifications n’ont pas été enregistrées.', 'message clair');
+
+    // Budget connu comme soumis : jamais déclaré modifié (un recalcul ne fait pas refuser l'envoi).
+    calls.length = 0;
+    app.state.lines[0].amounts[1] = 1;
+    await app.persist();
+    const second = calls.find((c) => c.method === 'PUT');
+    assert.ok(!second || !second.body.changedCompanies.includes('srv_c'), 'un budget soumis n’est pas déclaré');
+    app.state.lines[0].amounts[1] = 3000;
+
+    // Soumettre en mode serveur passe par /api/donnees/soumission.
+    serverState.budgetSubmissions = {};
+    await app.reopenBudget().catch(() => {});
+    calls.length = 0;
+    app.state.budgetSubmissions = {};
+    app.markServerDataInSync();
+    app.openSubmitBudgetModal();
+    serverState.budgetSubmissions = { srv_c: { submitted: true, year: 2026, at: '2026-10-14T15:00:00.000Z',
+      by: { account: 'a.porrati', name: 'Alexis Porrati' }, history: [] } };
+    assert.equal(await app.submitBudget(), true);
+    assert.ok(calls.some((c) => c.method === 'POST' && c.path === '/api/donnees/soumission' && c.body.action === 'submit' && c.body.company === 'srv_c'));
+    assert.ok(app.budgetFrozen());
+  } finally {
+    app.__swapServerRequest(previous);
+    app.__clearServerSession();
+    app.__setServerData(null);
+    app.__clearSaveTimer();
+    restoreAppState(saved);
+    app.__setTab(savedTab);
+    app.render();
+  }
 });
 
 /* --- 5. Verdict ------------------------------------------------------- */

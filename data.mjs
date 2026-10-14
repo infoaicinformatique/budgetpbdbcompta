@@ -40,13 +40,27 @@ export const COMPANY_DICTS = [
   'payrollLockedRates', 'caVentilation', 'caCategoryVentilation', 'caWeighting',
 ];
 
+/* Soumission du budget (14/10/2026) : `budgetSubmissions[companyId]` =
+   { submitted, year, at, by: { account, name }, history: [{ action, at, by }] }.
+   Indexé par société comme COMPANY_DICTS, mais tenu par le SERVEUR seul :
+   on le lit avec la société, on ne l'écrit jamais depuis un envoi
+   (`mergeState` garde toujours la valeur enregistrée) — seulement par
+   `setSubmission`, qui vérifie qui soumet et qui rouvre. Sans quoi un envoi
+   ordinaire suffirait à « dé-soumettre » un budget. */
+export const SERVER_OWNED_DICTS = ['budgetSubmissions'];
+
+/* Onglets de saisie : qui en a au moins un peut soumettre le budget d'une
+   société de son périmètre (même liste que BUDGET_INPUT_TABS dans
+   budget-app.html). */
+export const BUDGET_INPUT_TABS = ['saisie', 'ca', 'payroll', 'ajustements', 'import'];
+
 /* Jamais enregistré ni renvoyé : comptes et journal de sécurité propres au
    mode local, et choix d'affichage propres à chaque poste. `userPreferences`
    (ordre des sociétés de l'accueil et réglages visuels, par compte local) :
    en mode serveur, elles vivent sur le profil de la personne (preferences.mjs). */
 export const PRIVATE_KEYS = ['users', 'authLog', 'activeCompany', 'activeEnvironmentId', 'activeScenario', 'lastSavedAt', 'userPreferences'];
 
-const SPECIAL_KEYS = new Set(['companies', 'caEvents', ...COMPANY_ARRAYS, ...COMPANY_DICTS, ...PRIVATE_KEYS]);
+const SPECIAL_KEYS = new Set(['companies', 'caEvents', ...COMPANY_ARRAYS, ...COMPANY_DICTS, ...SERVER_OWNED_DICTS, ...PRIVATE_KEYS]);
 
 const HISTORY_EVERY_MS = 10 * 60 * 1000;
 const HISTORY_KEEP = 200;
@@ -99,6 +113,7 @@ function companySlice(state, id) {
   const slice = { company: asArray(s.companies).find((c) => c && c.id === id) || null };
   for (const key of COMPANY_ARRAYS) slice[key] = asArray(s[key]).filter((x) => x && x.companyId === id);
   for (const key of COMPANY_DICTS) slice[key] = asObject(s[key])[id];
+  for (const key of SERVER_OWNED_DICTS) slice[key] = asObject(s[key])[id];
   slice.caEvents = asArray(s.caEvents).filter((e) => e && asArray(e.companyIds).includes(id));
   return slice;
 }
@@ -122,7 +137,7 @@ export function filterState(state, scope, rights) {
   const keep = (id) => scope === null || scope.has(id);
   out.companies = asArray(s.companies).filter((c) => c && keep(c.id));
   for (const key of COMPANY_ARRAYS) out[key] = asArray(s[key]).filter((x) => x && keep(x.companyId));
-  for (const key of COMPANY_DICTS) {
+  for (const key of [...COMPANY_DICTS, ...SERVER_OWNED_DICTS]) {
     const dict = {};
     for (const [id, value] of Object.entries(asObject(s[key]))) if (keep(id)) dict[id] = value;
     out[key] = dict;
@@ -199,6 +214,13 @@ export function mergeState(stored, incoming, scope, shared, declared = null) {
     for (const [id, value] of Object.entries(asObject(sent[key]))) if (writable(id)) dict[id] = value;
     out[key] = dict;
   }
+  // Tenus par le serveur : la valeur enregistrée, jamais celle de l'envoi
+  // (une société supprimée emporte la sienne).
+  for (const key of SERVER_OWNED_DICTS) {
+    const dict = {};
+    for (const [id, value] of Object.entries(asObject(base[key]))) if (finalIds.has(id)) dict[id] = value;
+    out[key] = dict;
+  }
   // Événements partagés entre sociétés : repris de l'envoi seulement si
   // toutes leurs sociétés sont modifiables ici ; un événement enregistré
   // qui en touche une autre reste tel quel (l'envoi n'en contient qu'une
@@ -223,6 +245,42 @@ export function declarationOf(body) {
     companies: new Set(body.changedCompanies.filter((id) => typeof id === 'string')),
     shared: body.sharedChanged === true,
   };
+}
+
+/** Statut de soumission d'une société dans un état, ou `null`. */
+export function submissionOf(state, companyId) {
+  const entry = asObject(asObject(state).budgetSubmissions)[companyId];
+  return entry && typeof entry === 'object' ? entry : null;
+}
+
+/** Le budget de cette société est-il soumis (figé) ? */
+export function isSubmitted(state, companyId) {
+  const entry = submissionOf(state, companyId);
+  return Boolean(entry && entry.submitted === true);
+}
+
+/** Peut-on soumettre ? Une fiche avec au moins un onglet de saisie (ou tous). */
+export function canSubmitBudget(rights) {
+  if (!rights) return false;
+  if (rights.isAdmin === true || rights.permissions === null || rights.permissions === undefined) return true;
+  const permissions = asObject(rights.permissions);
+  return BUDGET_INPUT_TABS.some((tab) => Array.isArray(permissions[tab]));
+}
+
+/** Message de refus d'une écriture sur un budget soumis. */
+function submittedRefusal(state, ids) {
+  const details = ids.map((id) => {
+    const entry = submissionOf(state, id) || {};
+    const company = asArray(state.companies).find((c) => c && c.id === id);
+    const by = asObject(entry.by);
+    return { company: id, name: company && company.name ? company.name : id, at: entry.at || null,
+      by: by.name || by.account || 'une autre personne', account: by.account || null };
+  });
+  const first = details[0];
+  return new DataError(
+    'Ce budget a été soumis par ' + first.by + (details.length > 1 ? ' (' + details.map((d) => d.name).join(', ') + ')' : '') +
+    ' : vos modifications n’ont pas été enregistrées.',
+    409, { submitted: details });
 }
 
 /**
@@ -301,6 +359,48 @@ export function createDataStore(file, options = {}) {
     },
 
     /**
+     * Soumet (`submit`) ou rouvre (`reopen`) le budget d'une société.
+     * Soumettre : qui a un onglet de saisie sur une société de son
+     * périmètre. Rouvrir : un administrateur seulement. Les deux sont
+     * tracés (`history`) et enregistrés avec une nouvelle révision — les
+     * autres postes le voient à leur relecture, et leur prochaine écriture
+     * sur cette société est refusée. Aucune donnée du budget n'est touchée.
+     */
+    setSubmission(rights, companyId, action, who) {
+      if (!rights) throw new DataError('Aucun droit enregistré pour ce compte.', 403);
+      if (action !== 'submit' && action !== 'reopen') throw new DataError('Action inconnue : « soumettre » ou « rouvrir ».');
+      const doc = load();
+      if (!doc.state) throw new DataError('La base n’est pas encore initialisée.', 409);
+      const company = asArray(doc.state.companies).find((c) => c && c.id === companyId);
+      const scope = scopeOf(rights, doc.state);
+      if (!company || (scope !== null && !scope.has(companyId))) throw new DataError('Société hors de votre périmètre.', 403);
+      const current = submissionOf(doc.state, companyId);
+      const by = { account: (who && who.account) || '?', name: (who && who.name) || (who && who.account) || '?' };
+      const at = new Date(now()).toISOString();
+      let entry;
+      if (action === 'submit') {
+        if (!canSubmitBudget(rights)) throw new DataError('Vous n’avez pas le droit de saisie sur cette société.', 403);
+        if (current && current.submitted === true) {
+          throw new DataError('Ce budget est déjà soumis.', 409, { submission: current });
+        }
+        entry = { submitted: true, year: company.year === undefined ? null : company.year, at, by,
+          history: asArray(current && current.history).concat([{ action: 'submit', at, by }]) };
+      } else {
+        if (rights.isAdmin !== true) throw new DataError('Seul un administrateur peut rouvrir ce budget.', 403);
+        if (!current || current.submitted !== true) throw new DataError('Ce budget n’est pas soumis.', 409);
+        entry = Object.assign({}, current, { submitted: false, reopenedAt: at, reopenedBy: by,
+          history: asArray(current.history).concat([{ action: 'reopen', at, by }]) });
+      }
+      const state = Object.assign({}, doc.state, {
+        budgetSubmissions: Object.assign({}, asObject(doc.state.budgetSubmissions), { [companyId]: entry }),
+      });
+      const revision = doc.revision + 1;
+      const companyRevisions = Object.assign({}, doc.companyRevisions, { [companyId]: revision });
+      write({ revision, updatedAt: at, updatedBy: by.account, state, companyRevisions, sharedRevision: doc.sharedRevision }, doc);
+      return { revision, company: companyId, submission: entry };
+    },
+
+    /**
      * Enregistre ce qu'envoie une personne, sur la base de la révision
      * `baseRevision` qu'elle avait reçue.
      */
@@ -329,6 +429,12 @@ export function createDataStore(file, options = {}) {
       const scope = scopeOf(rights, doc.state);
       const shared = canEditShared(rights, scope);
       const merged = mergeState(doc.state, incoming, scope, shared, declared);
+
+      // Budget soumis : figé pour tout le monde, administrateurs compris —
+      // il faut d'abord le rouvrir. Avant le contrôle de révision, pour que
+      // le message dise la vraie raison (« soumis par … »), pas un conflit.
+      const frozen = merged.changedCompanies.filter((id) => isSubmitted(doc.state, id));
+      if (frozen.length) throw submittedRefusal(doc.state, frozen);
 
       const conflicts = merged.changedCompanies.filter((id) => (Number(doc.companyRevisions[id]) || 0) > base);
       const sharedConflict = merged.sharedChanged && doc.sharedRevision > base;
