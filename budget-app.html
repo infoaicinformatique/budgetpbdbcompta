@@ -2001,6 +2001,42 @@
   .month-input.computed { background: var(--surface-computed); color: var(--muted); cursor: default; }
   tr.rate-linked .sticky-col { background: var(--surface-rate-linked); }
   .rate-link-tag { font-size: var(--text-xs); color: var(--muted); margin-top: var(--space-05); }
+  /* Règle du multiplicateur sous le nom de la ligne : un lien discret qui
+     rouvre la fenêtre (14/10/2026), même allure que le texte qu'il remplace. */
+  .rate-link-tag .rate-link-rule { font-size: inherit; color: inherit; text-align: left; padding: 0; cursor: pointer; }
+  .rate-link-tag .rate-link-rule:hover { color: var(--accent-text); text-decoration: underline; }
+  /* Fenêtre du multiplicateur saisonnier (14/10/2026). */
+  .modal-backdrop.no-anim, .modal-backdrop.no-anim .modal-box { animation: none; }
+  .ratelink-modal .rl-toolbar { display: flex; flex-wrap: wrap; gap: var(--space-3); margin-bottom: var(--space-25); }
+  .ratelink-modal label.rl-inline, .ratelink-modal .rl-inline { display: inline-flex; align-items: center; gap: var(--space-15); margin: 0; color: var(--text); }
+  .ratelink-modal .rl-inline select, .ratelink-modal .rl-inline input { width: auto; }
+  .ratelink-modal .rl-fixed { display: flex; align-items: center; gap: var(--space-2); }
+  .ratelink-modal .rl-fixed input { width: 140px; }
+  .ratelink-modal .rl-unit { color: var(--muted); font-weight: 600; }
+  .ratelink-modal .rl-hint { font-size: var(--text-sm); margin: var(--space-15) 0 0; }
+  .ratelink-modal .rl-period { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-2) 0; border-bottom: 1px solid var(--line); }
+  .ratelink-modal .rl-period-name { width: 150px; }
+  .ratelink-modal .rl-pills { display: flex; flex-wrap: wrap; gap: var(--space-1); flex: 1 1 420px; }
+  .ratelink-modal .rl-pill {
+    min-width: 46px; height: 26px; padding: 0 var(--space-2); border-radius: var(--radius-pill);
+    border: 1.5px solid var(--border); background: var(--surface); color: var(--muted);
+    font-size: var(--text-xs); font-weight: 700; cursor: pointer;
+  }
+  .ratelink-modal .rl-pill.is-on { background: var(--accent-text); border-color: var(--accent-text); color: #fff; }
+  .ratelink-modal .rl-pill.is-other { opacity: .45; }
+  .ratelink-modal .rl-period-value { display: inline-flex; align-items: center; gap: var(--space-1); }
+  .ratelink-modal .rl-period-value input { width: 90px; }
+  .ratelink-modal .rl-months { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: var(--space-2); }
+  .ratelink-modal label.rl-month { display: flex; flex-direction: column; gap: var(--space-05); margin: 0; }
+  .ratelink-modal .rl-shortcuts { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-top: var(--space-25); }
+  .ratelink-modal .rl-shortcuts select { width: auto; }
+  .ratelink-modal .rl-shortcuts input { width: 90px; }
+  .ratelink-modal .rl-status { margin: var(--space-2) 0; font-size: var(--text-sm); }
+  .rl-error, .ratelink-modal .rl-missing { color: var(--danger); font-weight: 600; }
+  .rl-ok { color: var(--success, var(--accent-text)); }
+  .ratelink-modal table.rl-preview td, .ratelink-modal table.rl-preview th { font-size: var(--text-xs); padding: var(--space-1) var(--space-15); white-space: nowrap; }
+  .ratelink-modal table.rl-preview td:first-child, .ratelink-modal table.rl-preview th:first-child { width: auto; min-width: 0; }
+  .ratelink-modal .rl-ratio { margin: var(--space-2) 0 0; font-size: var(--text-sm); }
   /* Note d'une ligne : sa propre ligne de tableau, sous la ligne de
      budget qu'elle documente — plus une donnée tassée dans l'étroite
      colonne du nom, qui poussait la hauteur de chaque ligne au hasard.
@@ -3189,10 +3225,10 @@
   <div class="nav-group" data-group="saisie">
     <button type="button" class="nav-menu-btn" data-group-btn="saisie">Saisie <span class="caret">▾</span></button>
     <div class="nav-dropdown" data-dropdown="saisie">
-      <button data-tab="saisie" class="active"><svg class="nav-icon" viewBox="0 0 14 14" aria-hidden="true"><path d="M2 12l.7-3L9.5 2.2a1 1 0 0 1 1.4 0l.9.9a1 1 0 0 1 0 1.4L5 11.3 2 12z"/></svg>Saisie</button>
       <button data-tab="ca"><svg class="nav-icon" viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="5"/><path d="M7 4.2v5.6M8.6 5.4c0-.7-.7-1.2-1.6-1.2s-1.6.5-1.6 1.1c0 1.7 3.2.9 3.2 2.6 0 .6-.7 1.1-1.6 1.1s-1.6-.5-1.6-1.2"/></svg>CA</button>
-      <button data-tab="ajustements"><svg class="nav-icon" viewBox="0 0 14 14" aria-hidden="true"><path d="M2 4h10M2 10h10"/><circle cx="5.5" cy="4" r="1.3"/><circle cx="9" cy="10" r="1.3"/></svg>Ajustements</button>
       <button data-tab="payroll"><svg class="nav-icon" viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="4.3" r="2"/><path d="M2.5 12c0-2.5 2-4 4.5-4s4.5 1.5 4.5 4"/></svg>Payroll</button>
+      <button data-tab="saisie" class="active"><svg class="nav-icon" viewBox="0 0 14 14" aria-hidden="true"><path d="M2 12l.7-3L9.5 2.2a1 1 0 0 1 1.4 0l.9.9a1 1 0 0 1 0 1.4L5 11.3 2 12z"/></svg>Charges</button>
+      <button data-tab="ajustements"><svg class="nav-icon" viewBox="0 0 14 14" aria-hidden="true"><path d="M2 4h10M2 10h10"/><circle cx="5.5" cy="4" r="1.3"/><circle cx="9" cy="10" r="1.3"/></svg>Ajustements</button>
       <button data-tab="import"><svg class="nav-icon" viewBox="0 0 14 14" aria-hidden="true"><path d="M7 1.8v6.4M4.3 5.9L7 8.6l2.7-2.7"/><path d="M2.3 10.2v1.8h9.4v-1.8"/></svg>Import</button>
     </div>
   </div>
@@ -3524,7 +3560,12 @@ const APP_BUILD = '2026-10-10.1';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
-  { id: 'saisie', label: 'Saisie', tabs: ['saisie', 'ca', 'ajustements', 'payroll', 'import'] },
+  // Ordre du menu Saisie (14/10/2026) : CA, Payroll, Charges, Ajustements,
+  // Import — on pose d'abord ce qui produit (CA) et ce qui pèse le plus
+  // (Payroll), puis les charges. L'identifiant `saisie` reste celui de
+  // l'écran « Charges » : favoris, droits, page d'arrivée et raccourcis ne
+  // changent pas, seul le libellé affiché (`TAB_LABELS`) a changé.
+  { id: 'saisie', label: 'Saisie', tabs: ['ca', 'payroll', 'saisie', 'ajustements', 'import'] },
   { id: 'resultats', label: 'Résultats', tabs: ['pnl', 'forecast', 'conso'] },
   { id: 'administration', label: 'Administration', tabs: ['societes', 'affichage', 'plan', 'export', 'securite', 'autorisations'] },
 ];
@@ -3544,7 +3585,7 @@ function tabGroupOf(tabId) {
  */
 const TAB_LABELS = {
   directeur: 'Accueil', objectifs: 'Objectifs',
-  saisie: 'Saisie', ca: 'CA', ajustements: 'Ajustements', payroll: 'Payroll', import: 'Import',
+  saisie: 'Charges', ca: 'CA', ajustements: 'Ajustements', payroll: 'Payroll', import: 'Import',
   pnl: 'P&L', forecast: 'Forecast Day by Day', conso: 'Consolidation',
   societes: 'Sociétés', affichage: 'Affichage', plan: 'Plan comptable',
   export: 'Export', securite: 'Sécurité', autorisations: 'Autorisations',
@@ -6003,7 +6044,7 @@ function scenarioNoticeHtml() {
   if (!scenario) return '';
   return '<div class="alert" style="margin-bottom:12px"><strong>Scénario « ' +
     escapeHtml(scenario.name) + ' »</strong> — ' + escapeHtml(scenarioSummaryLabel(scenario)) +
-    '. <span class="muted">La Saisie et les exports restent sur le budget saisi.</span></div>';
+    '. <span class="muted">Charges et les exports restent sur le budget saisi.</span></div>';
 }
 
 /** Carte de gestion des scénarios, dans l'onglet Ajustements. */
@@ -6285,7 +6326,7 @@ const HELP_SECTIONS = [
     ],
   },
   {
-    title: 'Saisie — au clavier',
+    title: 'Charges — au clavier',
     items: [
       ['Flèches', 'Circuler entre les cases de mois, comme dans un tableur.'],
       ['Entrée', 'Passer au mois suivant sur la même dépense. Maj+Entrée revient au mois précédent.'],
@@ -6294,7 +6335,7 @@ const HELP_SECTIONS = [
     ],
   },
   {
-    title: 'Saisie — au double-clic',
+    title: 'Charges — au double-clic',
     items: [
       ['Case de mois', 'Répartir un montant annuel sur les douze mois (au choix à plat, ou en suivant la saisonnalité d’une autre ligne).'],
       ['Colonne « Total »', 'Même chose, pour qui pense d’abord en montant annuel.'],
@@ -6317,14 +6358,14 @@ const HELP_SECTIONS = [
   {
     title: 'Onglet CA',
     items: [
-      ['+ Ajouter un compte', 'Choisir un compte de produits à suivre jour par jour — son budget ne se saisit plus dans la Saisie classique.'],
-      ['Tableau à douze colonnes', 'Un compte suivi = une ligne, un mois = une case, comme dans la Saisie. Taper un total le répartit à parts égales sur les jours du mois.'],
+      ['+ Ajouter un compte', 'Choisir un compte de produits à suivre jour par jour — son budget ne se saisit plus dans Charges.'],
+      ['Tableau à douze colonnes', 'Un compte suivi = une ligne, un mois = une case, comme dans Charges. Taper un total le répartit à parts égales sur les jours du mois.'],
       ['Double-clic sur une case de mois', 'Déplier sa grille jour par jour, pour affiner au jour près.'],
       ['Flèches haut / bas', 'Dans la grille jour par jour : passer au jour précédent ou suivant sans lâcher le clavier.'],
       ['Case vidée', 'Le jour (ou le mois) redevient « non saisi » plutôt que de valoir zéro.'],
       ['Case « Fermeture »', 'Dans la grille jour par jour : pose le budget du jour à 0 sans le taper à la main (jour sans activité). Décochée, le jour redevient « non saisi ».'],
       ['Bandeau de migration', 'Convertit d’un coup les lignes de produits déjà saisies à l’ancienne (total mensuel réparti à parts égales sur ses jours) — annulable par Ctrl + Z.'],
-      ['Report automatique vers la Saisie', 'Chaque compte suivi crée ou met à jour une ligne calculée, non saisissable à la main — « voir dans CA » depuis cette ligne y ramène directement.'],
+      ['Report automatique vers Charges', 'Chaque compte suivi crée ou met à jour une ligne calculée, non saisissable à la main — « voir dans CA » depuis cette ligne y ramène directement.'],
       ['Export PDF', 'Douze mois, jour par jour, compte par compte — au-delà de ce que montre l’écran (Ctrl + P n’imprime que le mois déplié).'],
       ['Pondération jour de semaine & saisons', 'Sept coefficients (un par jour de semaine) et une liste de saisons (plage de dates + coefficient) qui changent la façon dont le budget du mois se répartit entre les jours, dans l’objectif quotidien de Forecast Day by Day — le budget mensuel saisi ne bouge pas.'],
       ['Répartition du CA par catégorie', 'Découpe le CA total en catégories libres (ex. Food, Beverage), chacune avec un pourcentage. Chaque catégorie a son propre suivi jour par jour façon Forecast (objectif calculé, réalisé saisi ou importé, projection).'],
@@ -6335,8 +6376,8 @@ const HELP_SECTIONS = [
   {
     title: 'Onglet Import',
     items: [
-      ['Télécharger la matrice import montants (Excel)', 'Une feuille par centre de coûts de la société active (Produits inclus), une ligne par compte du plan — budgété ou non — et douze colonnes de mois, prêtes à remplir hors ligne. La colonne C « Nom de la dépense » devient le nom de la ligne dans la Saisie : sans elle, la charge n’entre pas dans le budget.'],
-      ['Coller le résultat dans la Saisie', 'Sélectionner la plage janvier à décembre d’une ligne dans Excel, la copier, puis coller (Ctrl + V) dans la case de janvier du compte correspondant en Saisie.'],
+      ['Télécharger la matrice import montants (Excel)', 'Une feuille par centre de coûts de la société active (Produits inclus), une ligne par compte du plan — budgété ou non — et douze colonnes de mois, prêtes à remplir hors ligne. La colonne C « Nom de la dépense » devient le nom de la ligne dans Charges : sans elle, la charge n’entre pas dans le budget.'],
+      ['Coller le résultat dans Charges', 'Sélectionner la plage janvier à décembre d’une ligne dans Excel, la copier, puis coller (Ctrl + V) dans la case de janvier du compte correspondant dans Charges.'],
       ['Importer un fichier rempli (.xlsx)', 'Réimporte directement le classeur rempli : chaque compte met à jour sa ligne (ou en crée une nouvelle) dans la société active, sans repasser par un copier-coller.'],
       ['Additionner / Écraser', 'Si des montants existent déjà pour certains comptes, une fenêtre demande s’il faut les additionner aux valeurs importées ou les remplacer.'],
     ],
@@ -6350,8 +6391,8 @@ const HELP_SECTIONS = [
       ['Dates d’entrée / sortie', 'Le mois concerné est proratisé au nombre de jours de présence.'],
       ['« Voir le calcul »', 'Déplie la décomposition mois par mois : présence, brut proratisé, primes, charges, coût employeur, net.'],
       ['Société ouverte', 'Coche les mois où la société est ouverte : préremplit les dates d’un nouveau contrat.'],
-      ['Impact automatique sur la Saisie', 'Chaque collaborateur enregistré crée ou met à jour, par centre : le 6411 (rémunérations), le 6451 (charges patronales) et le 6412 (provision congés payés, provisionnée puis extournée mois par mois). Lignes calculées, non saisissables à la main.'],
-      ['« Reporter dans la Saisie »', 'Force un re-calcul immédiat de ces lignes — utile après un changement de plan comptable, sinon inutile au quotidien.'],
+      ['Impact automatique sur Charges', 'Chaque collaborateur enregistré crée ou met à jour, par centre : le 6411 (rémunérations), le 6451 (charges patronales) et le 6412 (provision congés payés, provisionnée puis extournée mois par mois). Lignes calculées, non saisissables à la main.'],
+      ['« Forcer le re-calcul dans Charges »', 'Force un re-calcul immédiat de ces lignes — utile après un changement de plan comptable, sinon inutile au quotidien.'],
     ],
   },
   {
@@ -6366,7 +6407,7 @@ const HELP_SECTIONS = [
   {
     title: 'Sociétés et Export',
     items: [
-      ['Double-clic sur une société', 'L’ouvrir dans la Saisie.'],
+      ['Double-clic sur une société', 'L’ouvrir dans Charges.'],
       ['Double-clic dans l’Export', 'N’exporter que cette société.'],
       ['Bouton « Dupliquer »', 'Recopier un budget sur un nouvel exercice, avec un coefficient global.'],
       ['Ctrl + V dans « réalisé N-1 »', 'Coller une plage copiée depuis Excel (CA puis EBITDA) : remplit la société visée, puis les suivantes si la plage en compte plusieurs.'],
@@ -7178,7 +7219,7 @@ function displayPreferencesPanel() {
     'affichage sans rien changer pour les autres. Appliquées tout de suite. ' + escapeHtml(where) + '</p>' +
     '<div class="display-prefs">' +
     field('textSize', 'Taille du texte', 'Agrandit ou réduit les textes et les montants de toute l’application.') +
-    field('density', 'Densité des tableaux', 'Hauteur des lignes de la Saisie, du P&L, du Payroll et des autres tableaux.') +
+    field('density', 'Densité des tableaux', 'Hauteur des lignes de Charges, du P&L, du Payroll et des autres tableaux.') +
     field('motion', 'Animations', 'Fondus et glissements à l’ouverture des écrans et des fenêtres.') +
     '</div>' +
     '<div class="display-pref-label" style="margin:18px 0 4px">Couleurs</div>' +
@@ -8144,19 +8185,27 @@ const APP_PAGES = [
     { id: 'objectifs-liste', label: 'Objectifs fixés' },
     { id: 'objectifs-suivi', label: 'Suivi et progression' },
   ] },
-  { tab: 'saisie', label: 'Saisie', pages: [
-    // La rubrique « Indicateurs d'activité » (`saisie-inducteurs`) a été
-    // retirée le 17/09/2026 à la demande d'Alexis. Les droits déjà accordés
-    // sur cette page restent inoffensifs dans `user.permissions.saisie` :
-    // `pagesOfTab` ne la propose plus, personne ne peut donc plus la viser.
-    { id: 'saisie-ajouter', label: 'Ajouter une dépense' },
-  ] },
   { tab: 'ca', label: 'CA', pages: [
     { id: 'ca-couverts', label: 'Matrice couverts & ticket moyen' },
     { id: 'ca-comptes', label: 'Comptes de produits' },
     { id: 'ca-ponderation', label: 'Pondération jour de semaine & saisons' },
     { id: 'ca-ventilation', label: 'Ventilation du CA par compte' },
     { id: 'ca-migration', label: 'Migration des lignes produits' },
+  ] },
+  { tab: 'payroll', label: 'Payroll', pages: [
+    { id: 'payroll-equipe', label: 'Équipe' },
+    { id: 'payroll-extras', label: 'Extras (journées travaillées)' },
+    { id: 'payroll-matrice', label: 'Matrice de la masse salariale' },
+    { id: 'payroll-conges', label: 'Congés payés' },
+    { id: 'payroll-taux-figes', label: 'Taux figés par le contrôle de gestion' },
+    { id: 'payroll-methode', label: 'Méthode de calcul' },
+  ] },
+  { tab: 'saisie', label: 'Charges', pages: [
+    // La rubrique « Indicateurs d'activité » (`saisie-inducteurs`) a été
+    // retirée le 17/09/2026 à la demande d'Alexis. Les droits déjà accordés
+    // sur cette page restent inoffensifs dans `user.permissions.saisie` :
+    // `pagesOfTab` ne la propose plus, personne ne peut donc plus la viser.
+    { id: 'saisie-ajouter', label: 'Ajouter une dépense' },
   ] },
   { tab: 'ajustements', label: 'Ajustements', pages: [
     // La rubrique « Part variable par centre » (`ajustements-parts`) a été
@@ -8166,14 +8215,6 @@ const APP_PAGES = [
     // `user.permissions.ajustements`, même logique que `saisie-inducteurs`.
     { id: 'ajustements-scenarios', label: 'Scénarios' },
     { id: 'ajustements-ratios', label: 'Ratios personnalisés' },
-  ] },
-  { tab: 'payroll', label: 'Payroll', pages: [
-    { id: 'payroll-equipe', label: 'Équipe' },
-    { id: 'payroll-extras', label: 'Extras (journées travaillées)' },
-    { id: 'payroll-matrice', label: 'Matrice de la masse salariale' },
-    { id: 'payroll-conges', label: 'Congés payés' },
-    { id: 'payroll-taux-figes', label: 'Taux figés par le contrôle de gestion' },
-    { id: 'payroll-methode', label: 'Méthode de calcul' },
   ] },
   { tab: 'import', label: 'Import', pages: [
     { id: 'import-matrice', label: 'Matrice de saisie' },
@@ -8984,9 +9025,20 @@ function canAccessPage(user, tabId, pageId) {
 }
 
 /** Premier onglet autorisé, pour atterrir quelque part de valide après connexion. */
+/**
+ * Ordre historique des onglets pour choisir l'écran d'arrivée. `APP_PAGES`
+ * suit depuis le 14/10/2026 l'ordre du menu Saisie (CA, Payroll, Charges,
+ * Ajustements, Import) pour que l'écran des droits se lise comme la barre ;
+ * l'atterrissage, lui, ne devait pas bouger pour autant (même premier onglet
+ * permis qu'avant, quel que soit le périmètre).
+ */
+const LANDING_TAB_ORDER = [DIRECTOR_TAB, 'objectifs', 'saisie', 'ca', 'ajustements', 'payroll', 'import'];
+
 function firstAllowedTab(user) {
-  const entry = APP_PAGES.find(function (t) { return canAccessTab(user, t.tab); });
-  return entry ? entry.tab : null;
+  const ordered = LANDING_TAB_ORDER.concat(APP_PAGES.map(function (t) { return t.tab; })
+    .filter(function (id) { return LANDING_TAB_ORDER.indexOf(id) === -1; }));
+  const found = ordered.find(function (id) { return canAccessTab(user, id); });
+  return found || null;
 }
 
 /**
@@ -11306,6 +11358,733 @@ function canCreateRateLinkOn(accountNumber) {
   return Boolean(account) && canAddLineInCenter(account.center);
 }
 
+/* ------------------------------------------------------------------
+   MULTIPLICATEUR SAISONNIER (14/10/2026)
+
+   Demande : « nos ratios sont saisonniers (food cost et bev cost plus
+   élevés en basse saison, plus bas en haute saison) ». Le multiplicateur
+   d'un lien (`rateLink.rate`) accepte désormais, en plus de l'ancien nombre
+   unique appliqué aux douze mois :
+     { mode: 'fixed' | 'period' | 'monthly', unit: 'percent' | 'coef',
+       values: [12 coefficients], periods: [{ name, months, value }] | null }
+   `values` est la forme canonique du calcul, toujours en coefficient (20 %
+   y vaut 0,2) ; `mode`, `unit` et `periods` ne servent qu'à rouvrir la
+   fenêtre telle qu'elle a été remplie. Un ancien nombre n se lit
+   { mode: 'fixed', unit: 'coef', values: [n × 12] } (`rateSpecOf`), et un
+   multiplicateur fixe saisi en coefficient s'enregistre toujours comme un
+   simple nombre (`storedRateOf`) : les liens existants ne bougent pas d'un
+   octet, aucune migration n'est nécessaire, et le serveur (qui ne lit pas
+   ce champ) n'a rien à savoir.
+
+   Calcul : charge[m] = arrondi(référence[m] × values[m]) — même arrondi
+   qu'avant, et pour un multiplicateur fixe exactement le même résultat.
+   ------------------------------------------------------------------ */
+
+const RATE_LINK_MODES = [
+  { id: 'fixed', label: 'Fixe sur l’année' },
+  { id: 'period', label: 'Par période' },
+  { id: 'monthly', label: 'Mois par mois' },
+];
+
+/** Périodes proposées d'office : basse saison (janv. → avr., oct. → déc.) et haute saison (mai → sept.). */
+function defaultRatePeriods() {
+  return [
+    { name: 'Basse saison', months: [0, 1, 2, 3, 9, 10, 11] },
+    { name: 'Haute saison', months: [4, 5, 6, 7, 8] },
+  ];
+}
+
+function roundRate(value, decimals) {
+  const factor = Math.pow(10, decimals);
+  return Math.round(value * factor) / factor;
+}
+
+/**
+ * Forme complète d'un multiplicateur, quel que soit son format enregistré
+ * (ancien nombre ou objet). Ne lève jamais : une valeur illisible vaut 0,
+ * comme une ligne de référence introuvable — la ligne retombe à zéro au lieu
+ * de faire tomber l'écran.
+ */
+function rateSpecOf(rate) {
+  const finite = function (v) { const n = Number(v); return isFinite(n) ? n : 0; };
+  if (rate && typeof rate === 'object' && !Array.isArray(rate)) {
+    const mode = RATE_LINK_MODES.some(function (m) { return m.id === rate.mode; }) ? rate.mode : 'fixed';
+    const values = Array.isArray(rate.values) ? rate.values : [];
+    const periods = mode === 'period' && Array.isArray(rate.periods)
+      ? rate.periods.filter(function (p) { return p && typeof p === 'object'; }).map(function (p) {
+        return {
+          name: String(p.name || ''),
+          months: (Array.isArray(p.months) ? p.months : []).map(Number)
+            .filter(function (m) { return Number.isInteger(m) && m >= 0 && m < MONTHS; }),
+          value: finite(p.value),
+        };
+      })
+      : null;
+    return {
+      mode: mode,
+      unit: rate.unit === 'percent' ? 'percent' : 'coef',
+      values: MONTH_LABELS.map(function (label, m) { return finite(values[m]); }),
+      periods: periods,
+    };
+  }
+  const n = finite(rate);
+  return { mode: 'fixed', unit: 'coef', values: MONTH_LABELS.map(function () { return n; }), periods: null };
+}
+
+/** Les douze coefficients d'un multiplicateur (forme canonique du calcul). */
+function rateMonthValues(rate) {
+  return rateSpecOf(rate).values;
+}
+
+/**
+ * Ce qui s'enregistre dans `rateLink.rate` : l'ancien nombre pour un fixe en
+ * coefficient (rien ne change pour les liens d'avant), l'objet complet
+ * sinon.
+ */
+function storedRateOf(spec) {
+  if (spec.mode === 'fixed' && spec.unit === 'coef') return spec.values[0];
+  return {
+    mode: spec.mode,
+    unit: spec.unit,
+    values: spec.values.slice(),
+    periods: spec.mode === 'period' && spec.periods
+      ? spec.periods.map(function (p) { return { name: p.name, months: p.months.slice(), value: p.value }; })
+      : null,
+  };
+}
+
+/** Copie indépendante d'un multiplicateur (duplication, versions figées). */
+function cloneRate(rate) {
+  return rate && typeof rate === 'object' ? JSON.parse(JSON.stringify(rate)) : rate;
+}
+
+/** Affichage : « 20 % » (2 décimales au plus) ou « 0,008 » (4 décimales au plus). */
+function formatRateIn(coef, unit) {
+  if (coef === null || coef === undefined || !isFinite(coef)) return '—';
+  return unit === 'percent'
+    ? String(roundRate(coef * 100, 2)).replace('.', ',') + ' %'
+    : String(roundRate(coef, 4)).replace('.', ',');
+}
+
+/**
+ * Texte d'un champ de saisie : sans arrondi d'affichage — un 0,00175
+ * enregistré doit se relire 0,00175, pas 0,0018, sans quoi rouvrir puis
+ * enregistrer la fenêtre changerait la règle en silence.
+ */
+function rateInputText(coef, unit) {
+  if (coef === null || coef === undefined || !isFinite(coef)) return '';
+  return String(unit === 'percent' ? roundRate(coef * 100, 8) : roundRate(coef, 10)).replace('.', ',');
+}
+
+/**
+ * Lit une saisie : virgule ou point, espaces tolérés, « 20 % » accepté dans
+ * les deux unités. Rend un coefficient, `null` pour une case vide, `NaN`
+ * pour une saisie illisible.
+ */
+function parseRateInput(text, unit) {
+  let raw = String(text === undefined || text === null ? '' : text).replace(/[\s  ]/g, '');
+  if (!raw) return null;
+  let percentSign = false;
+  if (raw.charAt(raw.length - 1) === '%') { percentSign = true; raw = raw.slice(0, -1); }
+  raw = raw.replace(',', '.');
+  if (!/^[-+]?(\d+\.?\d*|\.\d+)$/.test(raw)) return NaN;
+  const value = Number(raw);
+  return roundRate(percentSign || unit === 'percent' ? value / 100 : value, 10);
+}
+
+/** Unité proposée : « % » sur une catégorie de produits (un food cost se pense en % du CA), coefficient sinon. */
+function rateLinkDefaultUnit(refKind) {
+  return refKind === 'revenueCategory' ? 'percent' : 'coef';
+}
+
+/**
+ * Base mensuelle (12 valeurs) d'un lien : une ligne précise, ou la somme
+ * des catégories cochées. `null` si la ligne de référence est introuvable
+ * ou elle-même calculée par un multiplicateur (pas de chaîne de calculs).
+ */
+function rateLinkBaseMonths(companyId, lines, link, byId, planIndex) {
+  if (!link) return null;
+  if (link.categoryKind === 'expense') {
+    return rateLinkExpenseCategoryMonths(lines, rateLinkCategoryIdsOf(link), planIndex);
+  }
+  if (link.categoryKind === 'revenue') {
+    return rateLinkRevenueCategoryMonths(companyId, lines, rateLinkCategoryIdsOf(link));
+  }
+  const source = byId ? byId.get(link.sourceLineId)
+    : lines.find(function (l) { return l.id === link.sourceLineId; });
+  return (source && !source.rateLink) ? source.amounts : null;
+}
+
+/** Base mensuelle d'une ligne liée, recalculée depuis ses données (Résultats, exports, info-bulles). */
+function rateLinkBaseMonthsOf(line) {
+  if (!line || !line.rateLink) return null;
+  const company = companyById(line.companyId);
+  if (!company) return null;
+  return rateLinkBaseMonths(company.id, rawLinesOf(company.id), line.rateLink, null, accountIndexForPlan(company.planId));
+}
+
+/**
+ * Ratio effectif d'une ligne liée : mois par mois (charge ÷ référence,
+ * `null` quand la référence est nulle) et sur l'année — total charge ÷
+ * total référence, donc PONDÉRÉ par la référence de chaque mois, pas la
+ * moyenne des douze ratios (un mois de juillet à 300 000 € pèse plus qu'un
+ * mois de janvier à 40 000 €).
+ */
+function rateLinkEffectiveRatios(base, charges) {
+  const reference = base || emptyMonths();
+  const months = MONTH_LABELS.map(function (label, m) {
+    const b = Number(reference[m]) || 0;
+    return b ? (Number(charges[m]) || 0) / b : null;
+  });
+  const totalBase = total(reference);
+  const totalCharge = total(charges);
+  return { months: months, year: totalBase ? totalCharge / totalBase : null, totalBase: totalBase, totalCharge: totalCharge };
+}
+
+/** Ratios effectifs d'une ligne liée, d'après ses montants calculés. */
+function rateLinkLineRatios(line) {
+  return rateLinkEffectiveRatios(rateLinkBaseMonthsOf(line), line.amounts);
+}
+
+/**
+ * Résultats et exports (14/10/2026) : une rangée « ratio effectif » par
+ * ligne liée à un multiplicateur — douze ratios et le ratio annuel
+ * effectif, dans l'unité choisie pour la ligne. Ce que montre le P&L
+ * (Résultats › P&L, donc son impression PDF) et la feuille « Ratios
+ * multiplicateurs » des exports Excel.
+ */
+function rateLinkRatioRows(lines) {
+  return lines.filter(function (l) { return l && l.rateLink; }).map(function (line) {
+    const company = companyById(line.companyId);
+    const planIndex = company ? accountIndexForPlan(company.planId) : null;
+    const spec = rateSpecOf(line.rateLink.rate);
+    // Sur la ligne d'origine, en devise de la société : un export convertit
+    // les montants en euros (`linesOfAllConverted`), la référence recalculée
+    // ne l'est pas — un ratio ne dépend de toute façon pas de la devise.
+    const original = company ? rawLinesOf(company.id).find(function (l) { return l.id === line.id; }) : null;
+    const ratios = rateLinkLineRatios(original || line);
+    return {
+      line: line,
+      company: company,
+      unit: spec.unit,
+      mode: (RATE_LINK_MODES.find(function (m) { return m.id === spec.mode; }) || RATE_LINK_MODES[0]).label,
+      reference: company ? rateLinkReferenceLabel(company.id, line.rateLink, planIndex) : '',
+      rule: company ? rateLinkRuleLabel(company.id, line.rateLink, planIndex) : '',
+      months: ratios.months,
+      year: ratios.year,
+    };
+  });
+}
+
+/** Tableau « Multiplicateurs — ratios effectifs » sous le P&L d'une société (rien s'il n'y a aucune ligne liée). */
+function rateLinkRatiosHtml(lines) {
+  const rows = rateLinkRatioRows(lines);
+  if (!rows.length) return '';
+  const cell = function (value, unit) {
+    return '<td class="num' + (value === null ? ' muted' : '') + '">' + formatRateIn(value, unit) + '</td>';
+  };
+  return '<div class="section-header rate-ratios-head" style="margin:22px 0 8px">' +
+    '<strong>Multiplicateurs — ratios effectifs</strong>' +
+    '<span class="section-meta muted">charge ÷ référence, mois par mois ; l’année est pondérée par la référence</span></div>' +
+    '<div class="table-wrap"><table class="rate-ratios"><thead><tr>' +
+    '<th class="sticky-col" style="min-width:230px">Ligne liée</th><th class="num">Année</th>' +
+    MONTH_LABELS.map(function (label) { return '<th class="num">' + label + '</th>'; }).join('') +
+    '</tr></thead><tbody>' +
+    rows.map(function (row) {
+      return '<tr><td class="sticky-col"><strong>' + escapeHtml(row.line.name || 'Sans nom') + '</strong> — ratio effectif' +
+        '<div class="rate-link-tag">' + escapeHtml(row.line.account + ' · ' + row.rule) + '</div></td>' +
+        '<td class="num"><strong>' + formatRateIn(row.year, row.unit) + '</strong></td>' +
+        row.months.map(function (v) { return cell(v, row.unit); }).join('') + '</tr>';
+    }).join('') +
+    '</tbody></table></div>';
+}
+
+/** « CA Food + CA Beverage », un centre de coûts, ou la ligne de référence : ce sur quoi porte le multiplicateur. */
+function rateLinkReferenceLabel(companyId, link, planIndex) {
+  if (link.categoryKind === 'revenue') {
+    return rateLinkCategoryIdsOf(link).map(function (id) {
+      const category = CA_CATEGORIES.find(function (c) { return c.id === id; });
+      return 'CA ' + (category ? category.label : 'catégorie supprimée');
+    }).join(' + ');
+  }
+  if (link.categoryKind === 'expense') return rateLinkCategoryLabel('expense', rateLinkCategoryIdsOf(link));
+  return rateLinkSourceLabel(companyId, link.sourceLineId, planIndex);
+}
+
+/** « 20 % », « 24 % basse saison / 20 % haute saison » ou « mensuel (26 % → 32 %) ». */
+function rateLinkFactorLabel(rate) {
+  const spec = rateSpecOf(rate);
+  if (spec.mode === 'period' && spec.periods && spec.periods.length) {
+    return spec.periods.map(function (p) {
+      return formatRateIn(p.value, spec.unit) + ' ' + (p.name.trim() || 'période').toLowerCase();
+    }).join(' / ');
+  }
+  if (spec.mode === 'monthly') {
+    const min = Math.min.apply(null, spec.values);
+    const max = Math.max.apply(null, spec.values);
+    return 'mensuel (' + formatRateIn(min, spec.unit) + (min === max ? '' : ' → ' + formatRateIn(max, spec.unit)) + ')';
+  }
+  return formatRateIn(spec.values[0], spec.unit);
+}
+
+/** Les douze valeurs, pour l'info-bulle du sous-libellé. */
+function rateLinkMonthsTitle(rate) {
+  const spec = rateSpecOf(rate);
+  return MONTH_LABELS.map(function (label, m) { return label + ' ' + formatRateIn(spec.values[m], spec.unit); }).join(' · ');
+}
+
+/** Sous-libellé d'une ligne liée : « = × 20 % de CA Food ». */
+function rateLinkRuleLabel(companyId, link, planIndex) {
+  return '= × ' + rateLinkFactorLabel(link.rate) + ' de ' + rateLinkReferenceLabel(companyId, link, planIndex);
+}
+
+/** Info-bulle d'une case calculée : « Mai : 120 000 × 20 % ». */
+function rateLinkCellTitle(base, rate, month) {
+  const spec = rateSpecOf(rate);
+  return MONTH_LABELS[month] + ' : ' + money(base ? Number(base[month]) || 0 : 0) + ' × ' + formatRateIn(spec.values[month], spec.unit);
+}
+
+/* ---------------- Fenêtre : section « 4. Multiplicateur » ---------------- */
+
+/**
+ * Brouillon de la section 4, porté par `rateLinkModal` : les TEXTES tels
+ * que tapés (jamais reformatés pendant la frappe), et les périodes. Rouvert
+ * sur un lien existant, il reprend le mode et l'unité enregistrés.
+ */
+function rateLinkDraftFrom(rate, refKind, existing) {
+  const spec = existing ? rateSpecOf(rate) : null;
+  const unit = spec ? spec.unit : rateLinkDefaultUnit(refKind);
+  const text = function (coef) { return rateInputText(coef, unit); };
+  return {
+    mode: spec ? spec.mode : 'fixed',
+    unit: unit,
+    unitTouched: Boolean(spec),
+    fixedText: spec && spec.mode === 'fixed' ? text(spec.values[0]) : '',
+    periods: spec && spec.mode === 'period' && spec.periods && spec.periods.length
+      ? spec.periods.map(function (p) { return { name: p.name, months: p.months.slice(), text: text(p.value) }; })
+      : defaultRatePeriods().map(function (p) { return { name: p.name, months: p.months, text: '' }; }),
+    monthlyTexts: spec && spec.mode === 'monthly'
+      ? spec.values.map(text)
+      : MONTH_LABELS.map(function () { return ''; }),
+    allText: '',
+  };
+}
+
+/** Douze coefficients du brouillon : nombre, `null` (rien de saisi / mois non couvert) ou `NaN` (illisible). */
+function rateLinkDraftValues(draft) {
+  const parse = function (t) { return parseRateInput(t, draft.unit); };
+  if (draft.mode === 'monthly') return draft.monthlyTexts.map(parse);
+  if (draft.mode === 'period') {
+    return MONTH_LABELS.map(function (label, m) {
+      const period = draft.periods.find(function (p) { return p.months.indexOf(m) !== -1; });
+      return period ? parse(period.text) : null;
+    });
+  }
+  const value = parse(draft.fixedText);
+  return MONTH_LABELS.map(function () { return value; });
+}
+
+/** Ce qui manque au brouillon pour être enregistré. */
+function rateLinkDraftIssues(draft) {
+  const out = { uncovered: [], missing: [], invalid: [] };
+  const parse = function (t) { return parseRateInput(t, draft.unit); };
+  if (draft.mode === 'period') {
+    for (let m = 0; m < MONTHS; m++) {
+      if (!draft.periods.some(function (p) { return p.months.indexOf(m) !== -1; })) out.uncovered.push(MONTH_LABELS[m]);
+    }
+    draft.periods.forEach(function (p, i) {
+      if (!p.months.length) return;
+      const value = parse(p.text);
+      const name = String(p.name || '').trim() || ('Période ' + (i + 1));
+      if (value === null) out.missing.push(name);
+      else if (!isFinite(value)) out.invalid.push(name);
+    });
+  } else if (draft.mode === 'monthly') {
+    draft.monthlyTexts.forEach(function (t, m) {
+      const value = parse(t);
+      if (value === null) out.missing.push(MONTH_LABELS[m]);
+      else if (!isFinite(value)) out.invalid.push(MONTH_LABELS[m]);
+    });
+  } else {
+    const value = parse(draft.fixedText);
+    if (value === null) out.missing.push('multiplicateur');
+    else if (!isFinite(value)) out.invalid.push('multiplicateur');
+  }
+  out.ok = !out.uncovered.length && !out.missing.length && !out.invalid.length;
+  return out;
+}
+
+/** Contrôle en direct, sous la saisie. */
+function rateLinkIssuesHtml(draft) {
+  const issues = rateLinkDraftIssues(draft);
+  if (draft.mode === 'fixed') {
+    return issues.invalid.length ? '<span class="rl-error">Valeur non numérique.</span>' : '';
+  }
+  const parts = [];
+  if (issues.uncovered.length) parts.push('<span class="rl-error">Mois non couverts : ' + escapeHtml(issues.uncovered.join(', ')) + '</span>');
+  if (issues.missing.length) parts.push('<span class="rl-error">Valeur manquante : ' + escapeHtml(issues.missing.join(', ')) + '</span>');
+  if (issues.invalid.length) parts.push('<span class="rl-error">Valeur non numérique : ' + escapeHtml(issues.invalid.join(', ')) + '</span>');
+  if (!parts.length) {
+    parts.push('<span class="rl-ok">✓ Les 12 mois sont ' + (draft.mode === 'monthly' ? 'renseignés' : 'couverts') + '.</span>');
+  }
+  return parts.join('<br>');
+}
+
+/** Base de l'aperçu : la référence choisie dans la fenêtre, telle qu'elle est en ce moment. */
+function rateLinkModalBase() {
+  const modal = rateLinkModal;
+  const company = activeCompany();
+  if (!modal || !company) return null;
+  const lines = rawLinesOf(company.id);
+  const planIndex = accountIndexForPlan(company.planId);
+  if (modal.refKind === 'expenseCategory' || modal.refKind === 'revenueCategory') {
+    if (!modal.categoryIds || !modal.categoryIds.length) return null;
+    return rateLinkBaseMonths(company.id, lines, {
+      categoryKind: modal.refKind === 'expenseCategory' ? 'expense' : 'revenue',
+      categoryIds: modal.categoryIds,
+    }, null, planIndex);
+  }
+  if (!modal.sourceLineId) return null;
+  return rateLinkBaseMonths(company.id, lines, { sourceLineId: modal.sourceLineId }, null, planIndex);
+}
+
+/** Aperçu chiffré du brouillon : référence, multiplicateur, charge, ratio annuel effectif. */
+function rateLinkPreviewData(draft) {
+  const values = rateLinkDraftValues(draft);
+  const base = rateLinkModalBase();
+  if (!base) return { base: null, values: values };
+  const charges = values.map(function (v, m) {
+    return v === null || !isFinite(v) ? null : Math.round((Number(base[m]) || 0) * v);
+  });
+  const totalBase = total(base);
+  const totalCharge = charges.reduce(function (sum, c) { return sum + (c || 0); }, 0);
+  const complete = charges.every(function (c) { return c !== null; });
+  return {
+    base: base, values: values, charges: charges, totalBase: totalBase, totalCharge: totalCharge,
+    ratio: complete && totalBase ? totalCharge / totalBase : null,
+  };
+}
+
+function rateLinkPreviewHtml(draft) {
+  const data = rateLinkPreviewData(draft);
+  if (!data.base) {
+    return '<p class="muted rl-hint">Choisissez la référence (étapes 1 à 3) pour voir l’aperçu mois par mois.</p>';
+  }
+  const missing = '<td class="num rl-missing" title="Valeur manquante">—</td>';
+  return '<div class="table-wrap"><table class="rl-preview"><thead><tr><th></th>' +
+    MONTH_LABELS.map(function (label) { return '<th class="num">' + label + '</th>'; }).join('') +
+    '<th class="num">Total</th></tr></thead><tbody>' +
+    '<tr><td>Référence</td>' + data.base.map(function (v) { return '<td class="num">' + money(Number(v) || 0) + '</td>'; }).join('') +
+    '<td class="num"><strong>' + money(data.totalBase) + '</strong></td></tr>' +
+    '<tr><td>Multiplicateur</td>' + data.values.map(function (v) {
+      return v === null || !isFinite(v) ? missing : '<td class="num">' + formatRateIn(v, draft.unit) + '</td>';
+    }).join('') + '<td></td></tr>' +
+    '<tr><td>Charge</td>' + data.charges.map(function (c) {
+      return c === null ? missing : '<td class="num">' + money(c) + '</td>';
+    }).join('') + '<td class="num"><strong>' + money(data.totalCharge) + '</strong></td></tr>' +
+    '</tbody></table></div>' +
+    '<p class="rl-ratio">Ratio annuel effectif : <strong>' + (data.ratio === null ? '—' : formatRateIn(data.ratio, draft.unit)) +
+    '</strong> <span class="muted">— total charge ÷ total référence, pondéré par la référence de chaque mois' +
+    (data.totalBase ? '' : ' (référence nulle : charge à 0)') + '.</span></p>';
+}
+
+/** Met à jour l'aperçu, le contrôle et le bouton sans reconstruire la fenêtre (la frappe garde son focus). */
+function patchRateLinkModal() {
+  if (!rateLinkModal || typeof document === 'undefined') return;
+  const status = document.getElementById('ratelink-status');
+  if (status) status.innerHTML = rateLinkIssuesHtml(rateLinkModal);
+  const preview = document.getElementById('ratelink-preview');
+  if (preview) preview.innerHTML = rateLinkPreviewHtml(rateLinkModal);
+  const button = typeof document.querySelector === 'function' ? document.querySelector('button[data-save-ratelink]') : null;
+  if (button) button.disabled = !rateLinkCanSave();
+}
+
+/**
+ * Reconstruit la fenêtre après un geste qui en change la forme (pastille,
+ * mode, unité, période ajoutée…) sans la faire « rouvrir » : ni animation
+ * d'entrée rejouée, ni retour en haut d'une fenêtre qu'on a fait défiler.
+ */
+function rerenderRateLinkModal() {
+  const box = typeof document !== 'undefined' && typeof document.querySelector === 'function'
+    ? document.querySelector('.ratelink-modal') : null;
+  const scrollTop = box ? box.scrollTop : 0;
+  render();
+  const after = typeof document !== 'undefined' && typeof document.querySelector === 'function'
+    ? document.querySelector('.ratelink-modal') : null;
+  if (after && scrollTop) after.scrollTop = scrollTop;
+}
+
+/** Référence choisie et valeurs complètes : le bouton d'enregistrement s'ouvre. */
+function rateLinkHasReference(modal) {
+  if (modal.refKind === 'expenseCategory' || modal.refKind === 'revenueCategory') {
+    return Boolean(modal.categoryIds && modal.categoryIds.length);
+  }
+  return Boolean(modal.refAccount);
+}
+
+function rateLinkCanSave() {
+  return Boolean(rateLinkModal) && rateLinkHasReference(rateLinkModal) && rateLinkDraftIssues(rateLinkModal).ok;
+}
+
+/**
+ * Changement de mode : la saisie déjà faite suit au lieu d'être perdue.
+ *  - vers Fixe : la valeur commune si les douze sont égales, sinon le ratio
+ *    annuel effectif (pondéré par la référence) ;
+ *  - Fixe → Période : les deux périodes par défaut, avec la valeur fixe ;
+ *  - Mensuel → Période : une période par valeur distincte (quatre au plus),
+ *    sinon les deux périodes par défaut avec la moyenne de leurs mois ;
+ *  - vers Mensuel : douze fois la valeur fixe, ou la valeur de la période
+ *    de chaque mois.
+ */
+function switchRateLinkMode(mode) {
+  const draft = rateLinkModal;
+  if (!draft || draft.mode === mode || !RATE_LINK_MODES.some(function (m) { return m.id === mode; })) return;
+  const values = rateLinkDraftValues(draft).map(function (v) { return v === null || !isFinite(v) ? null : v; });
+  const text = function (coef) { return coef === null ? '' : rateInputText(coef, draft.unit); };
+  const known = values.filter(function (v) { return v !== null; });
+  const mean = function (list) {
+    return list.length ? roundRate(list.reduce(function (a, b) { return a + b; }, 0) / list.length, 10) : null;
+  };
+  if (mode === 'fixed') {
+    let value = null;
+    if (known.length === MONTHS && known.every(function (v) { return v === known[0]; })) {
+      value = known[0];
+    } else if (known.length) {
+      const base = rateLinkModalBase();
+      let charge = 0;
+      let reference = 0;
+      if (base) {
+        values.forEach(function (v, m) {
+          if (v === null) return;
+          charge += Math.round((Number(base[m]) || 0) * v);
+          reference += Number(base[m]) || 0;
+        });
+      }
+      value = reference ? roundRate(charge / reference, 10) : mean(known);
+    }
+    draft.fixedText = text(value);
+  } else if (mode === 'period') {
+    const distinct = [];
+    for (const v of values) if (v !== null && distinct.indexOf(v) === -1) distinct.push(v);
+    if (draft.mode === 'monthly' && distinct.length && distinct.length <= 4) {
+      draft.periods = distinct.map(function (v, i) {
+        return {
+          name: 'Période ' + (i + 1),
+          months: values.map(function (x, m) { return x === v ? m : -1; }).filter(function (m) { return m >= 0; }),
+          text: text(v),
+        };
+      });
+    } else if (draft.mode === 'monthly') {
+      draft.periods = defaultRatePeriods().map(function (p) {
+        return { name: p.name, months: p.months, text: text(mean(p.months.map(function (m) { return values[m]; })
+          .filter(function (v) { return v !== null; }))) };
+      });
+    } else {
+      draft.periods = defaultRatePeriods().map(function (p) { return { name: p.name, months: p.months, text: text(values[0]) }; });
+    }
+  } else {
+    draft.monthlyTexts = values.map(text);
+  }
+  draft.mode = mode;
+}
+
+/** Changement d'unité : les valeurs déjà saisies sont converties (20 % ↔ 0,2), pas réinterprétées. */
+function setRateLinkUnit(unit) {
+  const draft = rateLinkModal;
+  if (!draft || (unit !== 'percent' && unit !== 'coef') || draft.unit === unit) return;
+  const convert = function (t) {
+    const value = parseRateInput(t, draft.unit);
+    return value === null || !isFinite(value) ? t : rateInputText(value, unit);
+  };
+  draft.fixedText = convert(draft.fixedText);
+  draft.periods = draft.periods.map(function (p) { return Object.assign({}, p, { text: convert(p.text) }); });
+  draft.monthlyTexts = draft.monthlyTexts.map(convert);
+  draft.allText = convert(draft.allText);
+  draft.unit = unit;
+}
+
+/** Clic sur une pastille : le mois passe à cette période (et quitte les autres) ; recliquer le retire. */
+function toggleRateLinkPeriodMonth(index, month) {
+  const draft = rateLinkModal;
+  if (!draft || !draft.periods[index] || month < 0 || month >= MONTHS) return;
+  const period = draft.periods[index];
+  const had = period.months.indexOf(month) !== -1;
+  draft.periods = draft.periods.map(function (p, i) {
+    const months = p.months.filter(function (m) { return m !== month; });
+    if (i === index && !had) months.push(month);
+    return Object.assign({}, p, { months: months.sort(function (a, b) { return a - b; }) });
+  });
+}
+
+function addRateLinkPeriod() {
+  if (!rateLinkModal) return;
+  rateLinkModal.periods = rateLinkModal.periods.concat([{ name: 'Période ' + (rateLinkModal.periods.length + 1), months: [], text: '' }]);
+}
+
+/** Supprimer une période — jamais la dernière. */
+function removeRateLinkPeriod(index) {
+  if (!rateLinkModal || rateLinkModal.periods.length <= 1) return;
+  rateLinkModal.periods = rateLinkModal.periods.filter(function (p, i) { return i !== index; });
+}
+
+/** « appliquer à tous les mois » : la valeur du champ dédié dans les douze cases. */
+function fillRateLinkMonths(text) {
+  if (!rateLinkModal) return false;
+  const value = parseRateInput(text, rateLinkModal.unit);
+  if (value === null || !isFinite(value)) return false;
+  rateLinkModal.monthlyTexts = MONTH_LABELS.map(function () { return rateInputText(value, rateLinkModal.unit); });
+  return true;
+}
+
+/** « remplir depuis les périodes » : chaque mois prend la valeur de sa période. */
+function fillRateLinkMonthsFromPeriods() {
+  const draft = rateLinkModal;
+  if (!draft) return;
+  draft.monthlyTexts = MONTH_LABELS.map(function (label, m) {
+    const period = draft.periods.find(function (p) { return p.months.indexOf(m) !== -1; });
+    return period ? period.text : '';
+  });
+}
+
+/** Autres lignes à multiplicateur de la société : sources de « copier depuis… ». */
+function rateLinkCopyCandidates() {
+  const company = activeCompany();
+  if (!company || !rateLinkModal) return [];
+  return rawLinesOf(company.id).filter(function (l) {
+    return l.rateLink && l.id !== rateLinkModal.editingLineId;
+  });
+}
+
+/** « copier depuis… » : les douze valeurs ET l'unité de l'autre ligne. */
+function copyRateLinkMonthsFrom(lineId) {
+  const draft = rateLinkModal;
+  const source = rateLinkCopyCandidates().find(function (l) { return l.id === lineId; });
+  if (!draft || !source) return false;
+  const spec = rateSpecOf(source.rateLink.rate);
+  draft.unit = spec.unit;
+  draft.monthlyTexts = spec.values.map(function (v) { return rateInputText(v, spec.unit); });
+  return true;
+}
+
+/**
+ * Collage d'une ligne Excel dans une case de mois : tabulation,
+ * point-virgule, espace ou retour à la ligne séparent les valeurs (« 20 % »
+ * reste une seule valeur). Remplit à partir du mois visé ; rend le nombre de
+ * cases remplies, 0 s'il n'y avait qu'une valeur (collage ordinaire).
+ */
+function pasteRateLinkMonths(startMonth, text) {
+  if (!rateLinkModal) return 0;
+  const parts = String(text || '').replace(/(\d)[\s  ]+%/g, '$1%')
+    .split(/[\t;\r\n ]+/).map(function (p) { return p.trim(); }).filter(Boolean);
+  if (parts.length < 2) return 0;
+  let filled = 0;
+  for (let i = 0; i < parts.length && startMonth + i < MONTHS; i++) {
+    rateLinkModal.monthlyTexts[startMonth + i] = parts[i];
+    filled++;
+  }
+  return filled;
+}
+
+/** Nom proposé quand le champ est laissé vide : « Food cost », « Bev cost »… */
+function rateLinkSuggestedName(modal) {
+  const ids = modal.categoryIds || [];
+  if (modal.refKind === 'revenueCategory' && ids.length) {
+    const names = { food: 'Food cost', beverage: 'Bev cost', event: 'Event cost', 'hors-exploitation': 'Coût hors exploitation' };
+    if (ids.length === 1) return names[ids[0]] || 'Coût sur CA';
+    return 'Coût sur ' + rateLinkReferenceLabel(null, { categoryKind: 'revenue', categoryIds: ids }, null);
+  }
+  if (modal.refKind === 'expenseCategory' && ids.length) {
+    return 'Quote-part ' + rateLinkCategoryLabel('expense', ids);
+  }
+  if (modal.refKind === 'line' && modal.sourceLineId) {
+    const company = activeCompany();
+    const source = company ? rawLinesOf(company.id).find(function (l) { return l.id === modal.sourceLineId; }) : null;
+    if (source && source.name) return 'Coût lié à ' + source.name;
+  }
+  return 'Multiplicateur';
+}
+
+/** Le formulaire tel qu'il est à l'écran (tests et navigateurs qui n'auraient pas émis d'événement). */
+function syncRateLinkModalFromDom() {
+  if (!rateLinkModal || typeof document === 'undefined') return;
+  const read = function (id) {
+    const el = document.getElementById(id);
+    return el && typeof el.value === 'string' ? el.value : '';
+  };
+  if (rateLinkModal.mode === 'fixed' && read('ratelink-rate') !== '') rateLinkModal.fixedText = read('ratelink-rate');
+  if (read('ratelink-name') !== '') rateLinkModal.name = read('ratelink-name');
+  if (rateLinkModal.refKind === 'line' && read('ratelink-source-line') !== '') {
+    rateLinkModal.sourceLineId = read('ratelink-source-line');
+  }
+}
+
+/** Section « 4. Multiplicateur » : mode, unité, saisie selon le mode, contrôle, aperçu. */
+function rateLinkFactorSectionHtml() {
+  const draft = rateLinkModal;
+  const unitSuffix = draft.unit === 'percent' ? ' %' : '';
+  const placeholder = draft.unit === 'percent' ? 'ex. 20' : 'ex. 0,008';
+  const toolbar = '<div class="rl-toolbar">' +
+    '<label class="rl-inline">Mode <select id="ratelink-mode">' +
+    RATE_LINK_MODES.map(function (m) {
+      return '<option value="' + m.id + '"' + (draft.mode === m.id ? ' selected' : '') + '>' + escapeHtml(m.label) + '</option>';
+    }).join('') + '</select></label>' +
+    '<label class="rl-inline">Unité <select id="ratelink-unit">' +
+    '<option value="percent"' + (draft.unit === 'percent' ? ' selected' : '') + '>%</option>' +
+    '<option value="coef"' + (draft.unit === 'coef' ? ' selected' : '') + '>coefficient</option>' +
+    '</select></label></div>';
+
+  let body = '';
+  if (draft.mode === 'fixed') {
+    body = '<div class="rl-fixed"><input id="ratelink-rate" inputmode="decimal" autocomplete="off" placeholder="' + placeholder +
+      '" value="' + escapeHtml(draft.fixedText) + '" />' + (unitSuffix ? '<span class="rl-unit">%</span>' : '') +
+      '<span class="muted rl-hint">appliqué aux 12 mois</span></div>';
+  } else if (draft.mode === 'period') {
+    body = draft.periods.map(function (p, i) {
+      const pills = MONTH_LABELS.map(function (label, m) {
+        const mine = p.months.indexOf(m) !== -1;
+        const other = !mine && draft.periods.some(function (q, j) { return j !== i && q.months.indexOf(m) !== -1; });
+        return '<button type="button" class="rl-pill' + (mine ? ' is-on' : other ? ' is-other' : '') +
+          '" data-rl-period-month="' + i + ':' + m + '" aria-pressed="' + (mine ? 'true' : 'false') + '"' +
+          (other ? ' title="Affecté à une autre période — cliquer pour le déplacer ici"' : '') + '>' + label + '</button>';
+      }).join('');
+      return '<div class="rl-period">' +
+        '<input class="rl-period-name" data-rl-period-name="' + i + '" value="' + escapeHtml(p.name) +
+        '" placeholder="Nom de la période" aria-label="Nom de la période" />' +
+        '<div class="rl-pills">' + pills + '</div>' +
+        '<span class="rl-period-value"><input data-rl-period-value="' + i + '" inputmode="decimal" autocomplete="off" placeholder="' +
+        placeholder + '" value="' + escapeHtml(p.text) + '" aria-label="Valeur de ' + escapeHtml(p.name || 'la période') + '" />' +
+        (unitSuffix ? '<span class="rl-unit">%</span>' : '') + '</span>' +
+        (draft.periods.length > 1
+          ? '<button type="button" class="mini mini-danger" data-rl-period-remove="' + i + '">supprimer</button>' : '') +
+        '</div>';
+    }).join('') +
+      '<button type="button" class="mini" data-rl-period-add="1">+ ajouter une période</button>';
+  } else {
+    const candidates = rateLinkCopyCandidates();
+    body = '<div class="rl-months">' + MONTH_LABELS.map(function (label, m) {
+      return '<label class="rl-month"><span>' + label + '</span><input id="ratelink-month-' + m + '" data-rl-month="' + m +
+        '" inputmode="decimal" autocomplete="off" value="' + escapeHtml(draft.monthlyTexts[m]) + '" /></label>';
+    }).join('') + '</div>' +
+      '<div class="rl-shortcuts">' +
+      '<span class="rl-inline"><input id="ratelink-month-all" data-rl-month-all="1" inputmode="decimal" autocomplete="off" placeholder="' +
+      placeholder + '" value="' + escapeHtml(draft.allText) + '" />' +
+      '<button type="button" class="mini" data-rl-month-fill-all="1">appliquer à tous les mois</button></span>' +
+      '<button type="button" class="mini" data-rl-fill-from-periods="1" title="Chaque mois prend la valeur de sa période (section « Par période »)">remplir depuis les périodes</button>' +
+      (candidates.length
+        ? '<select data-rl-copy-from="1" aria-label="Copier les douze valeurs d’une autre ligne"><option value="">copier depuis…</option>' +
+          candidates.map(function (l) {
+            return '<option value="' + escapeHtml(l.id) + '">' + escapeHtml(l.name || 'Sans nom') + ' — ' +
+              escapeHtml(rateLinkFactorLabel(l.rateLink.rate)) + '</option>';
+          }).join('') + '</select>'
+        : '') +
+      '</div>' +
+      '<p class="muted rl-hint">Astuce : collez dans Janv. une ligne Excel de douze valeurs, elle remplit les douze mois.</p>';
+  }
+  return '<div class="field rl-section"><label for="ratelink-mode">4. Multiplicateur</label>' + toolbar + body +
+    '<div class="rl-status" id="ratelink-status" aria-live="polite">' + rateLinkIssuesHtml(draft) + '</div>' +
+    '<div class="rl-preview-wrap" id="ratelink-preview">' + rateLinkPreviewHtml(draft) + '</div></div>';
+}
+
 function openRateLinkModal(account, editingLineId) {
   // Garde-fou au point d'entrée, pas seulement à l'affichage du bouton.
   if (!editingLineId && !canCreateRateLinkOn(account)) return;
@@ -11315,14 +12094,18 @@ function openRateLinkModal(account, editingLineId) {
   const source = link && !isCategoryLink
     ? state.lines.find(function (l) { return l.id === link.sourceLineId; })
     : null;
-  rateLinkModal = {
+  const refKind = isCategoryLink ? (link.categoryKind === 'expense' ? 'expenseCategory' : 'revenueCategory') : 'line';
+  rateLinkModal = Object.assign({
     account: account,
     editingLineId: editingLineId || null,
-    refKind: isCategoryLink ? (link.categoryKind === 'expense' ? 'expenseCategory' : 'revenueCategory') : 'line',
-    categoryIds: isCategoryLink ? rateLinkCategoryIdsOf(link) : [],
+    refKind: refKind,
+    categoryIds: isCategoryLink ? rateLinkCategoryIdsOf(link).slice() : [],
     refAccountQuery: '',
     refAccount: source ? source.account : null,
-  };
+    // Ligne de référence exacte, suivie dès son choix pour l'aperçu.
+    sourceLineId: source ? source.id : '',
+    name: '',
+  }, rateLinkDraftFrom(link ? link.rate : null, refKind, Boolean(link)));
   render();
 }
 
@@ -11494,23 +12277,18 @@ function recomputeRateLinkedLines(companyId) {
   //    catégorie de dépense ou de produits (`categoryKind`/`categoryId`).
   const company = companyById(companyId);
   const planIndex = company ? accountIndexForPlan(company.planId) : null;
+  //    Le multiplicateur peut varier d'un mois à l'autre (14/10/2026) :
+  //    `rateMonthValues` rend ses douze coefficients, l'ancien nombre unique
+  //    y valant douze fois lui-même — même résultat qu'avant au centime.
   for (const line of lines) {
     if (!line.rateLink) continue;
-    const rate = line.rateLink.rate;
-    let baseMonths = null;
-    if (line.rateLink.categoryKind === 'expense') {
-      baseMonths = rateLinkExpenseCategoryMonths(lines, rateLinkCategoryIdsOf(line.rateLink), planIndex);
-    } else if (line.rateLink.categoryKind === 'revenue') {
-      baseMonths = rateLinkRevenueCategoryMonths(companyId, lines, rateLinkCategoryIdsOf(line.rateLink));
-    } else {
-      const source = byId.get(line.rateLink.sourceLineId);
-      // Ligne de référence introuvable (supprimée entre-temps) ou elle-même
-      // liée à un multiplicateur (pas de chaîne de calculs) : base à zéro,
-      // sans lever d'erreur — l'utilisateur peut détacher ou rechoisir.
-      baseMonths = (source && !source.rateLink) ? source.amounts : null;
-    }
+    const values = rateMonthValues(line.rateLink.rate);
+    // Ligne de référence introuvable (supprimée entre-temps) ou elle-même
+    // liée à un multiplicateur (pas de chaîne de calculs) : base à zéro,
+    // sans lever d'erreur — l'utilisateur peut détacher ou rechoisir.
+    const baseMonths = rateLinkBaseMonths(companyId, lines, line.rateLink, byId, planIndex);
     apply(line, function (m) {
-      return baseMonths ? Math.round((baseMonths[m] || 0) * rate) : 0;
+      return baseMonths ? Math.round((baseMonths[m] || 0) * values[m]) : 0;
     });
   }
   return changed;
@@ -11620,52 +12398,83 @@ function formatRateValue(rate) {
  */
 function saveRateLink() {
   if (!rateLinkModal) return;
-  const rateInput = document.getElementById('ratelink-rate');
-  if (!rateInput) return;
-  const rate = Number(String(rateInput.value).replace(',', '.').replace(/\s/g, ''));
-  if (!isFinite(rate)) { showFormError('ratelink-rate', 'Multiplicateur non numérique.'); return; }
+  syncRateLinkModalFromDom();
+  const modal = rateLinkModal;
 
-  const isCategory = rateLinkModal.refKind === 'expenseCategory' || rateLinkModal.refKind === 'revenueCategory';
+  // 4. Multiplicateur : complet selon le mode, sinon rien n'est enregistré.
+  const issues = rateLinkDraftIssues(modal);
+  if (!issues.ok) {
+    if (modal.mode === 'fixed') {
+      showFormError('ratelink-rate', issues.invalid.length ? 'Multiplicateur non numérique.' : 'Saisissez le multiplicateur.');
+    } else {
+      const parts = [];
+      if (issues.uncovered.length) parts.push('Mois non couverts : ' + issues.uncovered.join(', ') + '.');
+      if (issues.missing.length) parts.push('Valeur manquante : ' + issues.missing.join(', ') + '.');
+      if (issues.invalid.length) parts.push('Valeur non numérique : ' + issues.invalid.join(', ') + '.');
+      showAppError(parts.join('\n'));
+    }
+    return;
+  }
+  const values = rateLinkDraftValues(modal);
+  const rate = storedRateOf({
+    mode: modal.mode,
+    unit: modal.unit,
+    values: values,
+    // Une période sans mois ne sert à rien : elle n'est pas gardée.
+    periods: modal.mode === 'period'
+      ? modal.periods.filter(function (p) { return p.months.length; }).map(function (p, i) {
+        return {
+          name: String(p.name || '').trim() || ('Période ' + (i + 1)),
+          months: p.months.slice().sort(function (a, b) { return a - b; }),
+          value: parseRateInput(p.text, modal.unit),
+        };
+      })
+      : null,
+  });
+
+  const isCategory = modal.refKind === 'expenseCategory' || modal.refKind === 'revenueCategory';
   let rateLink;
   if (isCategory) {
-    if (!rateLinkModal.categoryIds || !rateLinkModal.categoryIds.length) {
+    if (!modal.categoryIds || !modal.categoryIds.length) {
       showAppError('Choisissez au moins une catégorie.');
       return;
     }
     rateLink = {
       rate: rate,
-      categoryKind: rateLinkModal.refKind === 'expenseCategory' ? 'expense' : 'revenue',
+      categoryKind: modal.refKind === 'expenseCategory' ? 'expense' : 'revenue',
       // Plusieurs catégories cochées s'additionnent avant d'appliquer le
       // multiplicateur (23/09/2026, exemple SACEM : CA Food + CA Bev) —
       // voir `rateLinkExpenseCategoryMonths`/`rateLinkRevenueCategoryMonths`.
-      categoryIds: rateLinkModal.categoryIds.slice(),
+      categoryIds: modal.categoryIds.slice(),
     };
   } else {
-    const sourceSelect = document.getElementById('ratelink-source-line');
-    const sourceLineId = sourceSelect ? sourceSelect.value : '';
-    if (!sourceLineId) { showAppError('Choisissez la ligne de référence exacte.'); return; }
-    rateLink = { rate: rate, sourceLineId: sourceLineId };
+    if (!modal.sourceLineId) { showAppError('Choisissez la ligne de référence exacte.'); return; }
+    rateLink = { rate: rate, sourceLineId: modal.sourceLineId };
   }
 
   const company = activeCompany();
+  // Un changement de multiplicateur = UNE étape d'annulation : on clôt
+  // d'abord ce qui était en cours de frappe ailleurs, pour que Ctrl+Z
+  // n'emporte pas cette frappe avec le multiplicateur.
+  commitUndoSnapshot();
 
-  if (rateLinkModal.editingLineId) {
-    const line = state.lines.find(function (l) { return l.id === rateLinkModal.editingLineId; });
+  if (modal.editingLineId) {
+    const line = state.lines.find(function (l) { return l.id === modal.editingLineId; });
     if (line) line.rateLink = rateLink;
   } else {
     // Revérifié à l'enregistrement : la main ou les droits ont pu changer
     // pendant que la fenêtre était ouverte.
-    if (!canCreateRateLinkOn(rateLinkModal.account)) {
+    if (!canCreateRateLinkOn(modal.account)) {
       showAppError('Ce compte est hors de votre périmètre : impossible d’y créer un multiplicateur.');
       return;
     }
-    const nameInput = document.getElementById('ratelink-name');
-    const name = nameInput ? nameInput.value.trim() : '';
-    if (!name) { showAppError('Donnez un nom à la nouvelle dépense.'); return; }
+    // Nom laissé vide : la suggestion affichée dans le champ (« Food cost »,
+    // « Bev cost »…) devient le nom — une ligne n'est jamais anonyme.
+    const name = String(modal.name || '').trim() || rateLinkSuggestedName(modal);
     state.lines.push({
       id: uid('lig'),
       companyId: company.id,
-      account: rateLinkModal.account,
+      account: modal.account,
       name: name,
       amounts: emptyMonths(),
       rateLink: rateLink,
@@ -11693,8 +12502,7 @@ function rateLinkModalHtml() {
   const editingLine = rateLinkModal.editingLineId
     ? state.lines.find(function (l) { return l.id === rateLinkModal.editingLineId; })
     : null;
-  const currentRate = editingLine && editingLine.rateLink ? editingLine.rateLink.rate : '';
-  const currentSourceLineId = editingLine && editingLine.rateLink ? editingLine.rateLink.sourceLineId : '';
+  const currentSourceLineId = rateLinkModal.sourceLineId || '';
   const refKind = rateLinkModal.refKind || 'line';
 
   // Étape 1 : type de référence — une ligne précise (comportement
@@ -11782,7 +12590,7 @@ function rateLinkModalHtml() {
             escapeHtml(l.name) + '</option>';
         }).join('') + '</select>' +
         (candidates.length ? '' : '<p class="muted" style="font-size:12px;margin:4px 0 0">' +
-          'Aucune dépense saisie pour l’instant sur ce compte : saisissez-la d’abord dans la Saisie.</p>') +
+          'Aucune dépense saisie pour l’instant sur ce compte : saisissez-la d’abord dans Charges.</p>') +
         '</div>';
     }
     canSave = !!rateLinkModal.refAccount;
@@ -11791,21 +12599,26 @@ function rateLinkModalHtml() {
   // Nom de la nouvelle dépense calculée, sur le compte cible (celui d'où
   // vient le bouton « + lier à un multiplicateur ») : seulement à la
   // création — en modification, la ligne existe déjà et garde son nom.
+  // Laissé vide, le nom reprend la suggestion affichée (voir `saveRateLink`).
   const fieldName = editingLine ? '' :
     '<div class="field"><label for="ratelink-name">Nom de la nouvelle dépense (sur le compte cible)</label>' +
-    '<input id="ratelink-name" placeholder="ex. Frais bancaires" /></div>';
+    '<input id="ratelink-name" placeholder="' + escapeHtml(rateLinkSuggestedName(rateLinkModal)) +
+    ' (proposé si vide)" value="' + escapeHtml(rateLinkModal.name || '') + '" /></div>';
+  // Validation bloquée tant que la référence ou une valeur manque.
+  canSave = canSave && rateLinkDraftIssues(rateLinkModal).ok;
 
-  return '<div class="modal-backdrop" data-close-ratelink-modal="1">' +
-    '<div class="modal-box"><h3>' + (editingLine ? 'Modifier le lien au multiplicateur' : 'Lier une dépense à un multiplicateur') + '</h3>' +
-    '<p class="muted" style="margin:0 0 14px;font-size:13px">Ex. : frais bancaires = 0,008 × une ligne de CA, ou Beverage Cost = 0,2 × le CA Beverage.</p>' +
+  // Déjà à l'écran : pas d'animation d'entrée à chaque reconstruction.
+  const settled = Boolean(rateLinkModal.settled);
+  rateLinkModal.settled = true;
+  return '<div class="modal-backdrop' + (settled ? ' no-anim' : '') + '" data-close-ratelink-modal="1">' +
+    '<div class="modal-box modal-box-horizontal ratelink-modal"><h3>' + (editingLine ? 'Modifier le multiplicateur' : 'Lier une dépense à un multiplicateur') + '</h3>' +
+    '<p class="muted" style="margin:0 0 14px;font-size:13px">Ex. : frais bancaires = 0,008 × une ligne de CA, ou Bev cost = 24 % du CA Beverage en basse saison et 20 % en haute saison.</p>' +
     fieldRefKind +
     fieldCategory +
     fieldRefAccount +
     fieldSourceLine +
     fieldName +
-    '<div class="field"><label for="ratelink-rate">4. Multiplicateur</label>' +
-    '<input id="ratelink-rate" type="number" step="0.0001" placeholder="ex. 0,008" value="' +
-    (currentRate !== '' ? currentRate : '') + '" /></div>' +
+    rateLinkFactorSectionHtml() +
     '<div class="modal-actions">' +
     '<button class="action ghost" data-close-ratelink-modal="1">Annuler</button>' +
     '<button class="action" data-save-ratelink="1"' + (canSave ? '' : ' disabled') + '>' +
@@ -12097,7 +12910,7 @@ function lineHistoryModalHtml() {
       }).join('') +
       '</tbody></table></div>'
     : emptyState('Aucun changement consigné pour cette ligne. Le journal ne retient que les ' +
-      'montants modifiés mois par mois dans la Saisie, et seulement les ' + EDIT_LOG_MAX +
+      'montants modifiés mois par mois dans Charges, et seulement les ' + EDIT_LOG_MAX +
       ' derniers de toute l’application.');
 
   return '<div class="modal-backdrop" data-close-line-history-modal="1">' +
@@ -13875,6 +14688,9 @@ function viewSaisie() {
       // deux cas `readonly` — c'est lui, et non le seul masquage des
       // boutons, qui empêche aussi la frappe, le collage et les raccourcis.
       const locked = computed || centerReadOnly;
+      // Ligne liée : sa référence du moment, pour dire au survol de chaque
+      // case d'où vient le montant (« Mai : 120 000 × 20 % »).
+      const rateBase = linked ? rateLinkBaseMonthsOf(line) : null;
       let cells = '';
       for (let month = 0; month < MONTHS; month++) {
         cells += '<td class="num"><input class="month-input' + (locked ? ' computed' : '') + '" type="number" step="1" ' +
@@ -13884,9 +14700,11 @@ function viewSaisie() {
             ? (budgetHandHeldByOther()
               ? ' readonly title="' + escapeHtml(budgetHandHolderName()) + ' a la main sur ce budget — lecture seule"'
               : ' readonly title="Centre hors périmètre — lecture seule"')
-            : computed
-              ? ' readonly title="Montant calculé — voir les actions de la ligne"'
-              : ' title="Double-clic : répartir un montant annuel sur les douze mois"') + ' /></td>';
+            : linked
+              ? ' readonly title="' + escapeHtml(rateLinkCellTitle(rateBase, linked.rate, month)) + '"'
+              : computed
+                ? ' readonly title="Montant calculé — voir les actions de la ligne"'
+                : ' title="Double-clic : répartir un montant annuel sur les douze mois"') + ' /></td>';
       }
       // Le sélecteur de saisonnalité n'apparaît que pendant la répartition
       // (et seulement s'il existe une autre ligne dont copier la forme) :
@@ -13990,10 +14808,15 @@ function viewSaisie() {
       // la source.
       let computedTag = '';
       if (linked) {
-        computedTag = '= × ' + formatRateValue(linked.rate) + ' de ' +
-          (linked.categoryKind
-            ? escapeHtml(rateLinkCategoryLabel(linked.categoryKind, rateLinkCategoryIdsOf(linked)))
-            : escapeHtml(rateLinkSourceLabel(company.id, linked.sourceLineId, planIndex)));
+        // Règle en clair, cliquable pour la rouvrir (« modifier le
+        // multiplicateur » sans passer par le bouton) ; au survol, les
+        // douze valeurs — utile en mode période ou mensuel.
+        const rule = escapeHtml(rateLinkRuleLabel(company.id, linked, planIndex));
+        const monthsTitle = escapeHtml(rateLinkMonthsTitle(linked.rate));
+        computedTag = centerReadOnly
+          ? '<span title="' + monthsTitle + '">' + rule + '</span>'
+          : '<button type="button" class="link rate-link-rule" data-edit-ratelink="' + line.id + '" title="' +
+            monthsTitle + ' — cliquer pour modifier">' + rule + '</button>';
       } else if (line.payrollLink) {
         computedTag = escapeHtml(payrollSummaryLabel(line.payrollLink));
       } else if (line.payrollCenterLink) {
@@ -14294,7 +15117,7 @@ function drillDownModalHtml() {
   const rows = parts.map(function (p) {
     const share = sum ? Math.round((p.amount / sum) * 1000) / 10 : 0;
     return '<tr data-drill-open-company="' + p.company.id +
-      '" title="Ouvrir « ' + escapeHtml(p.company.name) + ' » dans la Saisie">' +
+      '" title="Ouvrir « ' + escapeHtml(p.company.name) + ' » dans Charges">' +
       '<td>' + escapeHtml(p.company.name) + ' <span class="muted">' + p.company.year + '</span></td>' +
       '<td class="num">' + money(p.amount) + '</td>' +
       '<td class="num muted">' + (sum ? formatRateValue(share) + ' %' : '—') + '</td>' +
@@ -14396,7 +15219,7 @@ function pnlTable(summary, title, isolateFilter, drillCompanies, compare, fullsc
     // montrerait rien à saisir de toute façon.
     const gotoAttr = !readOnly && metric && blockIndex < 0 && singleCompanyId
       ? ' class="num drill-cell" data-goto-saisie="' + escapeHtml(singleCompanyId) + '|' + metric +
-        '" title="Ouvrir cette rubrique dans la Saisie"'
+        '" title="Ouvrir cette rubrique dans Charges"'
       : '';
     const cells = months.map(function (v, i) {
       if (!readOnly && metric && blockIndex >= 0) {
@@ -15064,7 +15887,7 @@ function rejectedBlock(summary) {
     const company = companyById(r.line.companyId);
     const companyLabel = company ? company.name : 'société introuvable';
     return '<li data-dblclick-goto-line="' + r.line.id +
-      '" title="Double-clic : aller corriger cette ligne dans la Saisie">' +
+      '" title="Double-clic : aller corriger cette ligne dans Charges">' +
       '<strong>' + escapeHtml(companyLabel) + '</strong> — ' +
       escapeHtml(r.line.name || '(unnamed)') + ' — ' + escapeHtml(r.reason) + '</li>';
   }).join('');
@@ -15196,8 +16019,10 @@ function freezeVersion(companyId, label) {
       amounts: l.amounts.slice(),
       rateLink: l.rateLink
         ? (l.rateLink.categoryKind
-          ? { rate: l.rateLink.rate, categoryKind: l.rateLink.categoryKind, categoryId: l.rateLink.categoryId }
-          : (sourceIndex !== undefined ? { rate: l.rateLink.rate, sourceIndex: sourceIndex } : null))
+          // `categoryIds` (plusieurs catégories, 23/09/2026) : l'ancien
+          // `categoryId` seul perdait la base à la restauration.
+          ? { rate: cloneRate(l.rateLink.rate), categoryKind: l.rateLink.categoryKind, categoryIds: rateLinkCategoryIdsOf(l.rateLink).slice() }
+          : (sourceIndex !== undefined ? { rate: cloneRate(l.rateLink.rate), sourceIndex: sourceIndex } : null))
         : null,
       // Indicateur et poste salarial se recopient tels quels : le premier
       // pointe un indicateur qui vit hors de l'instantané (et survit donc à
@@ -15242,10 +16067,10 @@ function restoreVersion(versionId) {
     let rebuiltRateLink = null;
     if (l.rateLink) {
       if (l.rateLink.categoryKind) {
-        rebuiltRateLink = { rate: l.rateLink.rate, categoryKind: l.rateLink.categoryKind, categoryId: l.rateLink.categoryId };
+        rebuiltRateLink = { rate: cloneRate(l.rateLink.rate), categoryKind: l.rateLink.categoryKind, categoryIds: rateLinkCategoryIdsOf(l.rateLink).slice() };
       } else {
         const sourceId = newIds[l.rateLink.sourceIndex];
-        rebuiltRateLink = sourceId ? { rate: l.rateLink.rate, sourceLineId: sourceId } : null;
+        rebuiltRateLink = sourceId ? { rate: cloneRate(l.rateLink.rate), sourceLineId: sourceId } : null;
       }
     }
     return {
@@ -15858,7 +16683,7 @@ function setupWizardSummary() {
       ' » : lignes, comptes CA suivis et équipe, montants remis à zéro');
     todo.push('Vérifier les lignes reprises : certaines ne concernent peut-être pas ce nouvel établissement');
   } else {
-    todo.push('Créer les lignes de budget (onglet Saisie)');
+    todo.push('Créer les lignes de budget (onglet Charges)');
     todo.push('Choisir les comptes de produits à suivre (onglet CA)');
     todo.push('Monter l’équipe (onglet Payroll)');
   }
@@ -18024,7 +18849,10 @@ function viewPnl() {
     hint: escapeHtml(company.name) + ' ' + company.year +
       ' — le détail mois par mois et les graphiques de la société active.',
     bar: scenarioHtml + compareHtml,
-    body: scenarioNoticeHtml() + table,
+    // Ratios effectifs des lignes liées à un multiplicateur (14/10/2026) :
+    // sur les montants du budget, pas sur ceux du scénario (un scénario
+    // multiplie charge et référence par le même coefficient).
+    body: scenarioNoticeHtml() + table + rateLinkRatiosHtml(linesOf(company.id)),
   });
 }
 
@@ -18109,7 +18937,7 @@ function companyBreakdown(companies, groupName, defaultOpen) {
     // Un chiffre qui surprend dans la consolidation : double-clic sur la
     // ligne de la société pour aller le corriger directement dans sa Saisie.
     html += '<tr data-dblclick-open-company="' + row.company.id +
-      '" title="Double-clic : ouvrir cette société dans la Saisie">' +
+      '" title="Double-clic : ouvrir cette société dans Charges">' +
       '<td>' + escapeHtml(row.name) +
       (row.company.devise && row.company.devise !== 'EUR'
         ? ' <span class="badge grey" title="Montants ci-dessous en devise native de la société, non convertis">' +
@@ -18530,7 +19358,7 @@ function viewAjustements() {
   return viewPage({
     title: 'Ajustements',
     hint: 'Ce qui pondère la lecture du budget (Compte de résultat, Consolidation) ' +
-      '— jamais les montants saisis dans la Saisie.',
+      '— jamais les montants saisis dans Charges.',
     body: scenariosCard() + customRatiosCard(),
   });
 }
@@ -20148,7 +20976,7 @@ function caEditorHtml(company) {
     '<div class="modal-box"><h3>Suivre un compte de produits</h3>' +
     '<p class="muted" style="margin:0 0 14px;font-size:13px">' +
     'Le budget de ce compte se saisira ensuite jour par jour ; les totaux mensuels ' +
-    'se reportent automatiquement dans la Saisie.</p>' +
+    'se reportent automatiquement dans Charges.</p>' +
     (options
       ? '<div class="field"><label>Compte</label><select id="ca-account">' + options + '</select></div>' +
         '<div class="field"><label>Nom (facultatif — par défaut, le libellé du compte)</label>' +
@@ -20797,7 +21625,7 @@ function viewCa() {
   return viewPage({
     title: 'CA — ' + company.name + ' ' + company.year,
     hint: 'Le chiffre d’affaires prévisionnel, saisi jour par jour plutôt qu’en un seul total mensuel. ' +
-      'Les totaux se reportent automatiquement sur les comptes de produits de la Saisie.',
+      'Les totaux se reportent automatiquement sur les comptes de produits de Charges.',
     bar: '<button class="action ghost" data-add-ca-account="1">+ Ajouter un compte</button>' +
       (lines.length
         ? '<button class="action ghost" data-export-ca-pdf="1" title="Douze mois, jour par jour, un compte après l’autre — au-delà de ce que montre l’écran">Export PDF</button>'
@@ -22848,7 +23676,7 @@ function viewPayroll() {
       ((matrix.rows.length || extraYearGross) ? '<button class="action ghost" data-sync-payroll="1" ' +
         'title="Les lignes 6411, 6451 et 6412 se mettent déjà à jour automatiquement à chaque salaire enregistré : ' +
         'ce bouton force juste un re-calcul immédiat, par exemple après un changement de plan comptable.">' +
-        'Forcer le re-calcul dans la Saisie</button>' : ''),
+        'Forcer le re-calcul dans Charges</button>' : ''),
     body: strip +
       payrollTeamPanel(company, matrix) +
       // Les extras juste après l'Équipe : c'est du personnel aussi, et
@@ -23571,11 +24399,11 @@ function payrollFormulaPanel() {
     '</tbody></table>' +
     '<p class="muted" style="margin:12px 0 0;font-size:13px">' +
     'Chaque salaire — et chaque journée d’extra — enregistré ici impacte automatiquement, pour son centre, ' +
-    'les lignes calculées de la ' +
-    'Saisie : la rémunération sur le compte 6411, les charges patronales sur son 6451, les congés payés ' +
+    'les lignes calculées de ' +
+    'Charges : la rémunération sur le compte 6411, les charges patronales sur son 6451, les congés payés ' +
     'sur son 6412 — diminués de la relâche des mois de fermeture. Ces lignes ne se saisissent plus à la ' +
-    'main : elles suivent cet onglet. « Reporter dans la ' +
-    'Saisie » ne sert plus qu’à forcer un re-calcul immédiat, par exemple après un changement de plan ' +
+    'main : elles suivent cet onglet. « Forcer le re-calcul dans ' +
+    'Charges » ne sert plus qu’à forcer un re-calcul immédiat, par exemple après un changement de plan ' +
     'comptable.</p>',
     { open: false });
 }
@@ -23952,7 +24780,7 @@ function duplicateCompany(companyId, name, year, percent, resetAmounts) {
       rateLink: line.rateLink
         ? (line.rateLink.categoryKind
           ? JSON.parse(JSON.stringify(line.rateLink))
-          : { rate: line.rateLink.rate, sourceLineId: line.rateLink.sourceLineId })
+          : { rate: cloneRate(line.rateLink.rate), sourceLineId: line.rateLink.sourceLineId })
         : null,
       payrollLink: line.payrollLink
         ? Object.assign({}, line.payrollLink, { grossMonthly: scaleMoney(line.payrollLink.grossMonthly) })
@@ -23995,7 +24823,7 @@ function duplicateCompany(companyId, name, year, percent, resetAmounts) {
   for (const line of copies) {
     if (!line.rateLink || line.rateLink.categoryKind) continue;
     const mapped = idMap.get(line.rateLink.sourceLineId);
-    line.rateLink = mapped ? { rate: line.rateLink.rate, sourceLineId: mapped } : null;
+    line.rateLink = mapped ? { rate: cloneRate(line.rateLink.rate), sourceLineId: mapped } : null;
   }
 
   recomputeRateLinkedLines(copy.id);
@@ -24219,7 +25047,7 @@ function viewSocietes() {
         escapeHtml(lastEdit.by) + ', ' + authDateLabel(lastEdit.at) + '</div>'
       : '';
     return '<tr' + (active ? ' class="total"' : '') + ' data-dblclick-open-company="' + c.id +
-      '" title="Double-clic : ouvrir cette société dans la Saisie">' +
+      '" title="Double-clic : ouvrir cette société dans Charges">' +
       '<td style="width:28px"><input type="checkbox" data-company-checkbox="' + c.id +
       '"' + (checked ? ' checked' : '') + ' title="Sélectionner pour une action groupée" /></td>' +
       '<td><input data-company-rename="' + c.id + '" value="' + escapeHtml(c.name) + '" style="width:100%;min-width:180px" />' +
@@ -24682,7 +25510,7 @@ function exchangeRatesPanel() {
     '<p class="muted" style="margin:0 0 10px;font-size:13px">' +
     'Saisis à la main : hors ligne, l’application ne peut pas aller chercher un taux en direct. ' +
     'Utilisés uniquement pour convertir en euros les sociétés en devise étrangère dans la Consolidation ' +
-    'et le Tableau de bord — la Saisie et le P&L de chaque société restent dans sa devise native. ' +
+    'et le Tableau de bord — Charges et le P&L de chaque société restent dans sa devise native. ' +
     'Une devise sans taux renseigné compte pour 1 (pas de conversion) plutôt que de disparaître du total.</p>' +
     '<div class="table-wrap"><table><thead><tr><th>Devise</th><th></th><th class="num">Taux</th><th></th></tr></thead>' +
     '<tbody>' + rows + '</tbody></table></div>',
@@ -25269,7 +26097,7 @@ function authScopePanelHtml(user) {
     'lui aussi les sociétés qu’on y ajoute. « Autoriser certaines sociétés seulement » va plus ' +
     'loin : parmi les environnements et groupes cochés (ou parmi toutes les sociétés, sans rien de coché), seules ' +
     'les sociétés cochées ci-dessous restent accessibles — les autres disparaissent entièrement (listes, ' +
-    'sélecteurs, exports, recherche). Les centres de coûts, eux, restent TOUS visibles dans la Saisie : ceux ' +
+    'sélecteurs, exports, recherche). Les centres de coûts, eux, restent TOUS visibles dans Charges : ceux ' +
     'qui ne sont pas cochés s’ouvrent en lecture seule (montants verrouillés, aucune action de ligne) et leur ' +
     'équipe n’apparaît pas dans le Payroll. Un directeur démarre sur Food &amp; Beverage seul, et ne crée ni ' +
     'ne supprime de charge, même sur ses propres centres. Le chiffre d’affaires n’a pas de centre de coûts : ' +
@@ -25307,7 +26135,7 @@ function authScopePanelHtml(user) {
     '</label>' +
     '<div id="auth-scope-view-centers-list" style="margin-top:10px' + (restrictView ? '' : ';display:none') + '">' +
     '<p class="muted" style="margin:0 0 8px;font-size:12px">Un centre non coché disparaît pour cette personne : ' +
-    'onglet de la Saisie, rubrique du P&amp;L, équipe du Payroll, et ses charges ne comptent plus dans ce qu’elle ' +
+    'onglet Charges, rubrique du P&amp;L, équipe du Payroll, et ses charges ne comptent plus dans ce qu’elle ' +
     'voit (totaux, consolidation, exports). Aucun centre coché : aucune charge visible, seul le chiffre d’affaires ' +
     'reste. Un centre non visible n’est jamais modifiable.</p>' +
     viewRows + '</div></div>' +
@@ -25426,8 +26254,8 @@ function editLogPanel() {
   const entries = Array.isArray(state.editLog) ? state.editLog : [];
   if (!entries.length) {
     return panel('autorisations-edit-journal', 'Journal des modifications',
-      emptyState('Rien à afficher pour l’instant. Chaque changement de montant validé dans la ' +
-        'Saisie viendra s’inscrire ici : qui, quelle ligne, quel mois, avant/après.'),
+      emptyState('Rien à afficher pour l’instant. Chaque changement de montant validé dans ' +
+        'Charges viendra s’inscrire ici : qui, quelle ligne, quel mois, avant/après.'),
       { open: false, meta: 'vide' });
   }
   const shown = filteredEditLog();
@@ -25481,7 +26309,7 @@ function editLogPanel() {
 
   return panel('autorisations-edit-journal', 'Journal des modifications',
     '<p class="muted" style="margin:0 0 10px;font-size:13px">' +
-    'Les ' + EDIT_LOG_MAX + ' derniers changements de montant validés dans la Saisie. Même limite ' +
+    'Les ' + EDIT_LOG_MAX + ' derniers changements de montant validés dans Charges. Même limite ' +
     'que le journal des actions ci-dessus : une trace d’exploitation locale, pas une preuve inviolable.</p>' +
     filterBar +
     '<div class="table-wrap"><table><thead><tr>' +
@@ -27017,6 +27845,44 @@ function styledDetailSheet(lines, title, subtitle, columns) {
  * ligne nommée et un total du centre en bas — pas de colonne Société ni
  * Centre puisque la feuille entière n'en couvre qu'un seul.
  */
+/**
+ * Feuille « Ratios multiplicateurs » des exports Excel (14/10/2026) : une
+ * rangée par ligne liée — référence, mode, ratio annuel effectif et les
+ * douze ratios mensuels. En % (format 0.0 %) pour un multiplicateur saisi
+ * en %, en coefficient sinon. `null` si aucune ligne n'est liée : pas de
+ * feuille vide dans le classeur.
+ */
+function styledRateRatiosSheet(lines, title, subtitle) {
+  const rows = rateLinkRatioRows(lines);
+  if (!rows.length) return null;
+  const headers = ['Société', 'Compte 2026', 'Ligne nommée', 'Référence', 'Mode', 'Ratio annuel effectif'].concat(MONTH_LABELS);
+  const lastCol = columnName(headers.length - 1);
+  const headerRowIndex = 3;
+  const out = [];
+  out.push.apply(out, sheetTitleRows(title, subtitle));
+  out.push(headers.map(function (label) { return xc(label, XLSX_STYLE.header); }));
+  const ratioCell = function (value, unit) {
+    if (value === null || !isFinite(value)) return '—';
+    return unit === 'percent' ? xc(value, XLSX_STYLE.percent) : roundRate(value, 4);
+  };
+  for (const row of rows) {
+    out.push([
+      row.company ? row.company.name : '',
+      row.line.account,
+      row.line.name,
+      row.reference,
+      row.mode,
+      ratioCell(row.year, row.unit),
+    ].concat(row.months.map(function (v) { return ratioCell(v, row.unit); })));
+  }
+  return {
+    rows: out,
+    cols: [20, 12, 28, 30, 14, 14].concat(new Array(MONTH_LABELS.length).fill(9)),
+    freeze: { row: headerRowIndex + 1, col: 3 },
+    merges: ['A1:' + lastCol + '1', 'A2:' + lastCol + '2'],
+  };
+}
+
 function styledCenterSheet(lines, title, subtitle) {
   const headers = ['Compte 2026', 'Libellé du compte', 'Ligne nommée', 'Total'].concat(MONTH_LABELS);
   const lastCol = columnName(headers.length - 1);
@@ -27253,7 +28119,7 @@ function importMatrixSheets(companyId) {
   const generatedOn = 'Généré le ' + new Date().toLocaleDateString('fr-FR') +
     ' — les comptes déjà portés par une ligne calculée (Payroll, CA, taux, indicateur) sont indiqués ' +
     'entre parenthèses : inutile de les remplir, ils sont recalculés automatiquement. ' +
-    'La colonne « Nom de la dépense » devient le nom de la ligne dans la Saisie : ' +
+    'La colonne « Nom de la dépense » devient le nom de la ligne dans Charges : ' +
     'une charge sans nom n’est pas prise en compte dans le budget.';
   const sections = [{ id: 'PRODUITS', label: 'Produits' }]
     .concat(COST_CENTERS.map(function (c) { return { id: c.id, label: c.label }; }))
@@ -27651,11 +28517,11 @@ function viewImport() {
     'une ligne calculée (indicateurs, Payroll, CA jour par jour) restent visibles mais signalés entre ' +
     'parenthèses : inutile de les modifier, ils sont recalculés automatiquement.</p>' +
     '<p style="margin:0 0 12px">La colonne <strong>C « Nom de la dépense »</strong> est le nom de la ligne ' +
-    'dans la Saisie : ce qui y est écrit est repris à l’import, sur la ligne créée comme sur celle mise à ' +
+    'dans Charges : ce qui y est écrit est repris à l’import, sur la ligne créée comme sur celle mise à ' +
     'jour. Elle est indispensable — une charge sans nom n’entre pas dans le budget. Pour éclater un compte ' +
     'en plusieurs dépenses, ajouter une ligne par nom, avec le même numéro de compte.</p>' +
     '<p class="muted" style="margin:0 0 16px;font-size:13px">Deux façons de l’utiliser : coller une plage ' +
-    'janvier à décembre directement dans la Saisie (Ctrl+V, comme pour un collage de douze mois classique), ' +
+    'janvier à décembre directement dans Charges (Ctrl+V, comme pour un collage de douze mois classique), ' +
     'ou remplir le fichier entier puis le réimporter ici avec le bouton ci-dessous.</p>' +
     '<div class="row" style="gap:10px;flex-wrap:wrap">' +
     '<button class="action" data-download-import-matrix="1">Télécharger la matrice import montants (Excel)</button>' +
@@ -30122,8 +30988,14 @@ function spreadProfileOptions(companyId, excludeLineId) {
 
 /** Valide la répartition annuelle en cours (remplace l'ancien prompt() natif). */
 function applySpread(lineId) {
-  const input = document.querySelector('input[data-spread-input="' + lineId + '"]');
   const line = state.lines.find(function (l) { return l.id === lineId; });
+  // Jamais sur une ligne calculée (multiplicateur, Payroll, CA) : ses douze
+  // montants viennent de sa règle, « répartir » les écraserait au prochain
+  // calcul — ou, pour un multiplicateur saisonnier, remplacerait des valeurs
+  // mensuelles par un total à plat. Le bouton n'est déjà pas proposé ; ceci
+  // ferme aussi les autres chemins (Entrée dans un champ resté ouvert).
+  if (line && isComputedLine(line)) { spreadingLineId = null; render(); return; }
+  const input = document.querySelector('input[data-spread-input="' + lineId + '"]');
   if (!input || !line) return;
   const amount = Number(String(input.value).replace(',', '.').replace(/\s/g, ''));
   if (!isFinite(amount)) { showAppError('Montant non numérique.'); input.focus(); input.select(); return; }
@@ -30398,6 +31270,28 @@ document.getElementById('view').addEventListener('click', function (event) {
   const saveRateLinkButton = target.closest('button[data-save-ratelink]');
   if (saveRateLinkButton) { saveRateLink(); return; }
 
+  // Multiplicateur saisonnier (14/10/2026) : pastilles de mois des
+  // périodes, ajout/suppression de période, raccourcis du mode mensuel.
+  // Tous changent la forme de la fenêtre : on la reconstruit.
+  if (rateLinkModal) {
+    const periodMonth = target.closest('button[data-rl-period-month]');
+    if (periodMonth) {
+      const parts = periodMonth.dataset.rlPeriodMonth.split(':');
+      toggleRateLinkPeriodMonth(Number(parts[0]), Number(parts[1]));
+      rerenderRateLinkModal();
+      return;
+    }
+    if (target.closest('button[data-rl-period-add]')) { addRateLinkPeriod(); rerenderRateLinkModal(); return; }
+    const periodRemove = target.closest('button[data-rl-period-remove]');
+    if (periodRemove) { removeRateLinkPeriod(Number(periodRemove.dataset.rlPeriodRemove)); rerenderRateLinkModal(); return; }
+    if (target.closest('button[data-rl-month-fill-all]')) {
+      if (!fillRateLinkMonths(rateLinkModal.allText)) { showToast('Saisissez d’abord la valeur à appliquer aux douze mois.', true); return; }
+      rerenderRateLinkModal();
+      return;
+    }
+    if (target.closest('button[data-rl-fill-from-periods]')) { fillRateLinkMonthsFromPeriods(); rerenderRateLinkModal(); return; }
+  }
+
   // Recherche du compte de référence, dans la fenêtre « Lier une dépense à
   // un multiplicateur » : choisir un résultat le sélectionne ; « changer »
   // revient à la recherche pour en choisir un autre.
@@ -30406,6 +31300,7 @@ document.getElementById('view').addEventListener('click', function (event) {
     if (rateLinkModal) {
       rateLinkModal.refAccount = pickRefAccountButton.dataset.pickRefaccount;
       rateLinkModal.refAccountQuery = '';
+      rateLinkModal.sourceLineId = '';
       render();
     }
     return;
@@ -30413,7 +31308,7 @@ document.getElementById('view').addEventListener('click', function (event) {
 
   const clearRefAccountButton = target.closest('button[data-clear-refaccount]');
   if (clearRefAccountButton) {
-    if (rateLinkModal) { rateLinkModal.refAccount = null; render(); }
+    if (rateLinkModal) { rateLinkModal.refAccount = null; rateLinkModal.sourceLineId = ''; render(); }
     return;
   }
 
@@ -30911,7 +31806,7 @@ document.getElementById('view').addEventListener('click', function (event) {
   if (target.dataset.syncPayroll !== undefined) {
     const result = syncPayrollToSaisie(activeCompany().id);
     showToast(result.created + ' ligne(s) créée(s), ' + result.updated + ' mise(s) à jour' +
-      (result.removed ? ', ' + result.removed + ' retirée(s)' : '') + ' dans la Saisie.');
+      (result.removed ? ', ' + result.removed + ' retirée(s)' : '') + ' dans Charges.');
     return;
   }
 
@@ -31481,6 +32376,60 @@ document.getElementById('view').addEventListener('input', function (event) {
   if (!cellSelection) return;
   if (!cellSelection.cells.includes(event.target)) return;
   updateSelectionSummary();
+});
+
+/* Fenêtre du multiplicateur (14/10/2026) : la frappe met à jour le
+   brouillon puis l'aperçu, le contrôle et le bouton SANS reconstruire la
+   fenêtre (le curseur reste dans la case) ; les listes déroulantes, elles,
+   changent la forme de la fenêtre et la reconstruisent. */
+document.getElementById('view').addEventListener('input', function (event) {
+  const target = event.target;
+  if (!rateLinkModal || !target || !target.dataset) return;
+  if (target.id === 'ratelink-rate') rateLinkModal.fixedText = target.value;
+  else if (target.id === 'ratelink-name') { rateLinkModal.name = target.value; return; }
+  else if (target.dataset.rlPeriodName !== undefined) {
+    const period = rateLinkModal.periods[Number(target.dataset.rlPeriodName)];
+    if (period) period.name = target.value;
+  } else if (target.dataset.rlPeriodValue !== undefined) {
+    const period = rateLinkModal.periods[Number(target.dataset.rlPeriodValue)];
+    if (period) period.text = target.value;
+  } else if (target.dataset.rlMonth !== undefined) {
+    rateLinkModal.monthlyTexts[Number(target.dataset.rlMonth)] = target.value;
+  } else if (target.dataset.rlMonthAll !== undefined) {
+    rateLinkModal.allText = target.value;
+    return;
+  } else return;
+  patchRateLinkModal();
+});
+
+document.getElementById('view').addEventListener('change', function (event) {
+  const target = event.target;
+  if (!rateLinkModal || !target) return;
+  if (target.id === 'ratelink-mode') { switchRateLinkMode(target.value); rerenderRateLinkModal(); return; }
+  if (target.id === 'ratelink-unit') {
+    setRateLinkUnit(target.value);
+    rateLinkModal.unitTouched = true;
+    rerenderRateLinkModal();
+    return;
+  }
+  if (target.id === 'ratelink-source-line') { rateLinkModal.sourceLineId = target.value; patchRateLinkModal(); return; }
+  if (target.dataset && target.dataset.rlCopyFrom !== undefined) {
+    if (target.value && copyRateLinkMonthsFrom(target.value)) rerenderRateLinkModal();
+  }
+});
+
+/* Une ligne Excel de douze valeurs collée dans une case de mois remplit les
+   douze mois (à partir de la case visée). Une valeur seule : collage normal. */
+document.getElementById('view').addEventListener('paste', function (event) {
+  const target = event.target;
+  if (!rateLinkModal || !target || !target.dataset || target.dataset.rlMonth === undefined) return;
+  const clipboard = event.clipboardData || (typeof window !== 'undefined' ? window.clipboardData : null);
+  const text = clipboard ? (clipboard.getData('text/plain') || clipboard.getData('Text') || '') : '';
+  if (!pasteRateLinkMonths(Number(target.dataset.rlMonth), text)) return;
+  event.preventDefault();
+  rerenderRateLinkModal();
+  const last = document.getElementById('ratelink-month-' + (MONTHS - 1));
+  if (last) last.focus();
 });
 
 /**
@@ -32544,6 +33493,11 @@ document.getElementById('view').addEventListener('change', function (event) {
       rateLinkModal.categoryIds = [];
       rateLinkModal.refAccount = null;
       rateLinkModal.refAccountQuery = '';
+      rateLinkModal.sourceLineId = '';
+      // Unité par défaut de la nouvelle référence (% sur le CA), tant que la
+      // personne n'en a pas choisi une elle-même — les valeurs déjà tapées
+      // sont converties, pas réinterprétées.
+      if (!rateLinkModal.unitTouched) setRateLinkUnit(rateLinkDefaultUnit(rateLinkModal.refKind));
       render();
     }
     return;
@@ -33178,10 +34132,13 @@ function handleExport(kind, companiesOverride) {
   if (kind === 'detail-csv') {
     exportCsv('budget_detail_' + safeName + '_' + stamp + '.csv', filteredDetailRows(selectedLines));
   } else if (kind === 'detail-xlsx') {
-    exportXlsx('budget_detail_' + safeName + '_' + stamp + '.xlsx', [
+    const detailSheets = [
       Object.assign({ name: sheetName('Détail') }, styledDetailSheet(selectedLines,
         'Palm Beach Cannes · Détail budgétaire — ' + selectionLabel, generatedOn, exportColumns))
-    ]);
+    ];
+    const detailRatios = styledRateRatiosSheet(selectedLines, 'Ratios des multiplicateurs — ' + selectionLabel, generatedOn);
+    if (detailRatios) detailSheets.push(Object.assign({ name: sheetName('Ratios multiplicateurs') }, detailRatios));
+    exportXlsx('budget_detail_' + safeName + '_' + stamp + '.xlsx', detailSheets);
   } else if (kind === 'pnl-csv') {
     exportCsv('pnl_' + safeName + '_' + stamp + '.csv', pnlRows(exportPnlSummary(selectedLines), selectionLabel));
   } else if (kind === 'pnl-xlsx') {
@@ -33207,6 +34164,8 @@ function handleExport(kind, companiesOverride) {
       sheets.push(Object.assign({ name: sheetName(center.code + '. ' + center.label) },
         styledCenterSheet(centerLines, title, generatedOn)));
     }
+    const pnlRatios = styledRateRatiosSheet(selectedLines, 'Ratios des multiplicateurs — ' + selectionLabel, generatedOn);
+    if (pnlRatios) sheets.push(Object.assign({ name: sheetName('Ratios multiplicateurs') }, pnlRatios));
     exportXlsx('pnl_' + safeName + '_' + stamp + '.xlsx', sheets);
   } else if (kind === 'conso-xlsx') {
     // Un seul tableau, sur le modèle Excel exact fourni par Alexis :

@@ -479,6 +479,15 @@ const app = await importApp(
     'export { DEFAULT_NAVY_COLOR, darkenHex, applyEnvironmentTheme,\n' +
     '  setSuperGroupNavyColor, resetSuperGroupNavyColor };\n' +
     'export { duplicateLine };\n' +
+    // Multiplicateur saisonnier (14/10/2026).
+    'export { rateSpecOf, rateMonthValues, storedRateOf, cloneRate, parseRateInput, formatRateIn, rateInputText,\n' +
+    '  rateLinkDefaultUnit, rateLinkBaseMonths, rateLinkBaseMonthsOf, rateLinkEffectiveRatios, rateLinkLineRatios,\n' +
+    '  rateLinkReferenceLabel, rateLinkFactorLabel, rateLinkMonthsTitle, rateLinkRuleLabel, rateLinkCellTitle,\n' +
+    '  rateLinkDraftValues, rateLinkDraftIssues, rateLinkIssuesHtml, rateLinkPreviewData, rateLinkPreviewHtml,\n' +
+    '  rateLinkCanSave, switchRateLinkMode, setRateLinkUnit, toggleRateLinkPeriodMonth, addRateLinkPeriod,\n' +
+    '  removeRateLinkPeriod, fillRateLinkMonths, fillRateLinkMonthsFromPeriods, rateLinkCopyCandidates,\n' +
+    '  copyRateLinkMonthsFrom, pasteRateLinkMonths, rateLinkSuggestedName, rateLinkRatioRows, rateLinkRatiosHtml,\n' +
+    '  styledRateRatiosSheet, applySpread, RATE_LINK_MODES, defaultRatePeriods };\n' +
     'export { setConsoSort, setConsoCompareGroup };\n' +
     'export function __getConsoSort() { return consoSort; }\n' +
     'export function __getConsoCompareGroup() { return consoCompareGroup; }\n' +
@@ -3183,15 +3192,16 @@ check('accueil : salutation et rappel des chiffres à chaque ouverture, fermetur
 check('barre d’onglets : glissé vertical dans un même menu, horizontal en changeant de menu', () => {
   const savedTab = app.__getLastRenderedTab();
   try {
-    // Rester dans le même menu (Saisie : saisie, ca, ajustements, payroll, import) :
-    // glissé vertical, bas en avançant dans l'ordre du menu.
+    // Rester dans le même menu (Saisie : ca, payroll, saisie = Charges,
+    // ajustements, import — ordre du 14/10/2026) : glissé vertical, bas en
+    // avançant dans l'ordre du menu.
     app.__setLastRenderedTab('saisie');
-    assert.equal(app.viewTransitionFor('payroll'), 'view-enter-bottom',
-      'Saisie → Payroll avance dans le menu Saisie, le contenu doit entrer par le bas');
+    assert.equal(app.viewTransitionFor('import'), 'view-enter-bottom',
+      'Charges → Import avance dans le menu Saisie, le contenu doit entrer par le bas');
     // Reculer dans le même menu : glissé vertical, haut.
-    app.__setLastRenderedTab('payroll');
-    assert.equal(app.viewTransitionFor('saisie'), 'view-enter-top',
-      'Payroll → Saisie recule dans le menu Saisie, le contenu doit entrer par le haut');
+    app.__setLastRenderedTab('saisie');
+    assert.equal(app.viewTransitionFor('payroll'), 'view-enter-top',
+      'Charges → Payroll recule dans le menu Saisie, le contenu doit entrer par le haut');
     // Avancer d'un menu (Saisie → Résultats) : glissé horizontal, droite → gauche.
     app.__setLastRenderedTab('saisie');
     assert.equal(app.viewTransitionFor('pnl'), 'view-enter-right',
@@ -5619,8 +5629,13 @@ check('saveRateLink crée une nouvelle dépense calculée sur la ligne de réfé
     // en écrivant directement le compte choisi (le clic sur un résultat de
     // recherche fait la même chose : `rateLinkModal.refAccount = ...`).
     app.openRateLinkModal(target.account, null);
-    assert.deepEqual(app.__getRateLinkModal(),
+    const pick = (m) => ({ account: m.account, editingLineId: m.editingLineId, refKind: m.refKind,
+      categoryIds: m.categoryIds, refAccountQuery: m.refAccountQuery, refAccount: m.refAccount });
+    assert.deepEqual(pick(app.__getRateLinkModal()),
       { account: target.account, editingLineId: null, refKind: 'line', categoryIds: [], refAccountQuery: '', refAccount: null });
+    // Multiplicateur saisonnier (14/10/2026) : une création part en fixe, en coefficient sur une ligne précise.
+    assert.equal(app.__getRateLinkModal().mode, 'fixed');
+    assert.equal(app.__getRateLinkModal().unit, 'coef');
     app.__getRateLinkModal().refAccount = source.account;
 
     // Étape 2 : la ligne de référence EXACTE, parmi les lignes du compte de
@@ -5654,8 +5669,9 @@ check('saveRateLink crée une nouvelle dépense calculée sur la ligne de réfé
     // Modification depuis le formulaire : nouveau compte de référence,
     // nouvelle ligne de référence exacte, nouveau multiplicateur.
     app.openRateLinkModal(target.account, created.id);
-    assert.deepEqual(app.__getRateLinkModal(),
+    assert.deepEqual(pick(app.__getRateLinkModal()),
       { account: target.account, editingLineId: created.id, refKind: 'line', categoryIds: [], refAccountQuery: '', refAccount: source.account });
+    assert.equal(app.__getRateLinkModal().fixedText, '0,08', 'le multiplicateur enregistré se relit dans la fenêtre');
     app.__getRateLinkModal().refAccount = otherSource.account;
     document.getElementById('ratelink-source-line').value = 'save_rl_other';
     document.getElementById('ratelink-rate').value = '0.02';
@@ -5977,6 +5993,7 @@ check('rateLinkModalHtml : cases à cocher pour plusieurs catégories, dont l’
     const modal = app.__getRateLinkModal();
     modal.refKind = 'revenueCategory';
     modal.categoryIds = ['food'];
+    modal.fixedText = '20'; // valeur saisie : seule la référence est en jeu ici
     let rendered = app.rateLinkModalHtml();
     assert.ok(/data-ratelink-category="food"[^>]*checked/.test(rendered), 'Food doit être coché');
     assert.ok(!/data-ratelink-category="beverage"[^>]*checked/.test(rendered), 'Beverage ne doit pas être coché');
@@ -6098,13 +6115,15 @@ check('duplicateCompany, freezeVersion + restoreVersion : un lien par catégorie
     version = app.freezeVersion(source.id, 'Version test catégorie');
     const versionLine = version.lines.find((l) => l.name === 'Quote-part Marketing');
     assert.ok(versionLine, 'la ligne calculée devrait exister dans l’instantané');
-    assert.deepEqual(versionLine.rateLink, { rate: 0.1, categoryKind: 'expense', categoryId: 'MARK' });
+    // Depuis le 14/10/2026 la version garde `categoryIds` (l'ancien
+    // `categoryId` seul perdait les liens à plusieurs catégories).
+    assert.deepEqual(versionLine.rateLink, { rate: 0.1, categoryKind: 'expense', categoryIds: ['MARK'] });
 
     catLine.amounts = months(0); // le budget vivant change ; la restauration doit reposer sur l'instantané, pas sur l'état courant
     app.restoreVersion(version.id);
     const restoredLine = app.state.lines.find((l) => l.companyId === source.id && l.name === 'Quote-part Marketing');
     assert.ok(restoredLine, 'la ligne calculée devrait exister après restauration');
-    assert.deepEqual(restoredLine.rateLink, { rate: 0.1, categoryKind: 'expense', categoryId: 'MARK' });
+    assert.deepEqual(restoredLine.rateLink, { rate: 0.1, categoryKind: 'expense', categoryIds: ['MARK'] });
   } finally {
     app.state.lines = app.state.lines.filter((l) =>
       l.id !== 'catrl_dup' && !(copy && l.companyId === copy.id) &&
@@ -18029,7 +18048,7 @@ check('Assistant : le récapitulatif dit ce qui reste à faire', () => {
     assert.ok(blank.done.length, 'le récapitulatif doit lister ce qui va être créé');
     assert.ok(blank.todo.some((t) => /matrice/i.test(t)),
       'la matrice couverts / ticket doit être annoncée comme restant à remplir');
-    assert.ok(blank.todo.some((t) => /Saisie/.test(t)),
+    assert.ok(blank.todo.some((t) => /onglet Charges/.test(t)),
       'partir d’une page blanche laisse les lignes de budget à créer');
 
     // Avec un modèle, les lignes ne sont plus « à créer » mais « à vérifier ».
@@ -21646,6 +21665,364 @@ check('Saisie : la ligne des mois reste figée en haut de l’écran (10/10/2026
     'render() doit recaler l’en-tête après reconstruction du tableau');
   // Dans le faux DOM, le recalage ne doit jamais lever d'exception.
   app.syncFrozenHeads();
+});
+
+check('Menu Saisie : CA, Payroll, Charges, Ajustements, Import ; « Charges » garde l’identifiant saisie (14/10/2026)', () => {
+  const group = app.TAB_GROUPS.find((g) => g.id === 'saisie');
+  assert.equal(group.label, 'Saisie', 'le menu garde son nom');
+  assert.deepEqual(group.tabs, ['ca', 'payroll', 'saisie', 'ajustements', 'import'], 'nouvel ordre du menu');
+  assert.equal(app.TAB_LABELS.saisie, 'Charges', 'l’écran saisie s’appelle Charges');
+  // Barre : même ordre, libellé Charges, ancre data-tab="saisie" inchangée.
+  const nav = html.slice(html.indexOf('data-dropdown="saisie"'), html.indexOf('data-group="resultats"'));
+  const order = [...nav.matchAll(/data-tab="([a-z]+)"[^>]*>(?:<svg[\s\S]*?<\/svg>)?([^<]+)</g)].map((m) => m[1] + ':' + m[2]);
+  assert.deepEqual(order, ['ca:CA', 'payroll:Payroll', 'saisie:Charges', 'ajustements:Ajustements', 'import:Import']);
+  assert.match(html, /data-group-btn="saisie">Saisie <span class="caret">/, 'le bouton du menu reste « Saisie ▾ »');
+  // Écran des droits : même ordre et même libellé.
+  const rights = app.APP_PAGES.map((t) => t.tab);
+  const i = rights.indexOf('ca');
+  assert.deepEqual(rights.slice(i, i + 5), ['ca', 'payroll', 'saisie', 'ajustements', 'import']);
+  assert.equal(app.APP_PAGES.find((t) => t.tab === 'saisie').label, 'Charges');
+  // Fil d'Ariane : … › Saisie › Charges.
+  const savedTab = app.__getTab();
+  try {
+    const crumb = app.breadcrumbHtml('saisie');
+    assert.match(crumb, /Saisie<span class="breadcrumb-sep" aria-hidden="true">›<\/span><strong>Charges<\/strong>/);
+    // Titre de page inchangé.
+    app.__setTab('saisie'); app.render();
+    assert.ok(dom.elements.get('view').innerHTML.includes('Saisie budgétaire — '), 'le titre de page ne change pas');
+  } finally { app.__setTab(savedTab); app.render(); }
+  // Raccourcis clavier : sections renommées.
+  const titles = app.HELP_SECTIONS.map((sec) => sec.title);
+  assert.ok(titles.includes('Charges — au clavier') && titles.includes('Charges — au double-clic'));
+  assert.ok(!titles.some((t) => /^Saisie —/.test(t)));
+  // Palette (Ctrl+K) : l'onglet se trouve sous le nom Charges.
+  const found = app.commandPaletteResults('Charges').filter((r) => r.kind === 'tab').map((r) => r.id);
+  assert.ok(found.includes('saisie'), 'Ctrl+K « Charges » mène à l’écran saisie');
+  // Page d'arrivée : même premier onglet permis qu'avant le réordonnancement.
+  const onlyLater = { role: 'directeur', permissions: { payroll: [], ajustements: ['ajustements-scenarios'] } };
+  assert.equal(app.firstAllowedTab(onlyLater), 'ajustements', 'ordre d’atterrissage historique conservé');
+  const both = { role: 'directeur', permissions: { ca: ['ca-couverts'], saisie: ['saisie-ajouter'] } };
+  assert.equal(app.firstAllowedTab(both), 'saisie', 'Charges reste prioritaire sur CA à l’arrivée');
+});
+
+/* ==================================================================
+   MULTIPLICATEUR SAISONNIER (14/10/2026)
+
+   Jeu de données de la maquette : Bev cost 24 % / 20 % par période sur le
+   CA Beverage, Food cost mensuel 32 → 26 % sur le CA Food, Boulangerie 3 %
+   fixe sur le CA Food, Frais bancaires 0,008 sur CA Food + Beverage + Event.
+   ================================================================== */
+function withSeasonalFixture(fn) {
+  const company = app.state.companies.find((c) => c.name === 'Palm Beach Test') || app.state.companies[0];
+  const y = company.year;
+  const saved = {
+    lines: app.state.lines, matrix: app.state.serviceMatrix, cat: app.state.caCategoryVentilation,
+    active: app.state.activeCompany, tab: app.__getTab(),
+  };
+  app.state.serviceMatrix = {};
+  app.state.caCategoryVentilation = {};
+  app.state.activeCompany = company.id;
+  // CA hors Event : 10 couverts × un prix qui suit la saison, un jour par mois.
+  const tickets = [1000, 1000, 1200, 1500, 2500, 4000, 6000, 6000, 3000, 1500, 1000, 1000];
+  tickets.forEach((t, m) => {
+    const key = y + '-' + String(m + 1).padStart(2, '0') + '-05';
+    app.setServiceMatrixValue(company.id, 'covers', 'lunch', key, '10');
+    app.setServiceMatrixValue(company.id, 'ticket', 'lunch', key, String(t));
+  });
+  app.setServiceMatrixValue(company.id, 'amount', 'event', y + '-06-12', '5000');
+  app.setCaCategoryVentilationPercent(company.id, 'food', 60);
+  app.setCaCategoryVentilationPercent(company.id, 'beverage', 40);
+  const charge = ts.ACCOUNTS.filter((a) => a.kind === 'charge' && a.center === 'F&B');
+  try {
+    return fn({ company, y, tickets, charge });
+  } finally {
+    app.state.lines = saved.lines;
+    app.state.serviceMatrix = saved.matrix;
+    app.state.caCategoryVentilation = saved.cat;
+    app.state.activeCompany = saved.active;
+    app.closeRateLinkModal();
+    app.resetStateIndexes();
+    app.__setTab(saved.tab);
+    app.render();
+  }
+}
+
+check('Multiplicateur saisonnier : formats, saisie % / coefficient, ancien format inchangé', () => {
+  // Ancien nombre : lu comme un fixe en coefficient, et réécrit tel quel.
+  assert.deepEqual(app.rateSpecOf(0.008), { mode: 'fixed', unit: 'coef', values: months(0.008), periods: null });
+  assert.equal(app.storedRateOf(app.rateSpecOf(0.008)), 0.008, 'un fixe en coefficient reste un simple nombre');
+  assert.deepEqual(app.storedRateOf({ mode: 'fixed', unit: 'percent', values: months(0.2), periods: null }),
+    { mode: 'fixed', unit: 'percent', values: months(0.2), periods: null });
+  // Saisie : « 20 » en % vaut 0,20 ; « 20 % » accepté dans les deux unités ; virgule ou point.
+  assert.equal(app.parseRateInput('20', 'percent'), 0.2);
+  assert.equal(app.parseRateInput('20 %', 'coef'), 0.2);
+  assert.equal(app.parseRateInput('20%', 'percent'), 0.2);
+  assert.equal(app.parseRateInput('0,008', 'coef'), 0.008);
+  assert.equal(app.parseRateInput('0.008', 'coef'), 0.008);
+  assert.equal(app.parseRateInput('0,8', 'percent'), 0.008);
+  assert.equal(app.parseRateInput('', 'coef'), null);
+  assert.ok(Number.isNaN(app.parseRateInput('abc', 'coef')));
+  // Affichage : % à deux décimales au plus, coefficient à quatre.
+  assert.equal(app.formatRateIn(0.24, 'percent'), '24 %');
+  assert.equal(app.formatRateIn(0.123456, 'percent'), '12,35 %');
+  assert.equal(app.formatRateIn(0.00812345, 'coef'), '0,0081');
+  // Champ de saisie : jamais arrondi (rouvrir puis enregistrer ne change rien).
+  assert.equal(app.rateInputText(0.00175, 'coef'), '0,00175');
+  // Valeur illisible : 0, sans lever.
+  assert.deepEqual(app.rateMonthValues({ mode: 'monthly', values: ['x'] }), months(0));
+});
+
+check('Multiplicateur saisonnier : calcul mensuel, 2 et 3 périodes, mensuel, multi-catégories, ratio effectif', () => {
+  withSeasonalFixture(({ company, tickets, charge }) => {
+    const foodCa = tickets.map((t) => t * 10 * 0.6);
+    const bevCa = tickets.map((t) => t * 10 * 0.4);
+    const low = [0, 1, 2, 3, 9, 10, 11];
+    const bevRate = { mode: 'period', unit: 'percent', values: months(0).map((v, m) => (low.includes(m) ? 0.24 : 0.2)),
+      periods: [{ name: 'Basse saison', months: low, value: 0.24 }, { name: 'Haute saison', months: [4, 5, 6, 7, 8], value: 0.2 }] };
+    const foodValues = [0.32, 0.32, 0.31, 0.3, 0.28, 0.27, 0.26, 0.26, 0.28, 0.3, 0.31, 0.32];
+    const three = { mode: 'period', unit: 'percent', values: months(0).map((v, m) => (m < 4 ? 0.1 : m < 8 ? 0.2 : 0.3)),
+      periods: [{ name: 'A', months: [0, 1, 2, 3], value: 0.1 }, { name: 'B', months: [4, 5, 6, 7], value: 0.2 }, { name: 'C', months: [8, 9, 10, 11], value: 0.3 }] };
+    const lines = [
+      { id: 'ss_bev', companyId: company.id, account: charge[0].account, name: 'Bev cost', amounts: months(0),
+        rateLink: { rate: bevRate, categoryKind: 'revenue', categoryIds: ['beverage'] } },
+      { id: 'ss_food', companyId: company.id, account: charge[1].account, name: 'Food cost', amounts: months(0),
+        rateLink: { rate: { mode: 'monthly', unit: 'percent', values: foodValues, periods: null }, categoryKind: 'revenue', categoryIds: ['food'] } },
+      { id: 'ss_boul', companyId: company.id, account: charge[2].account, name: 'Boulangerie', amounts: months(0),
+        rateLink: { rate: { mode: 'fixed', unit: 'percent', values: months(0.03), periods: null }, categoryKind: 'revenue', categoryIds: ['food'] } },
+      { id: 'ss_bank', companyId: company.id, account: charge[3].account, name: 'Frais bancaires', amounts: months(0),
+        rateLink: { rate: 0.008, categoryKind: 'revenue', categoryIds: ['food', 'beverage', 'event'] } },
+      { id: 'ss_three', companyId: company.id, account: charge[4].account, name: 'Trois périodes', amounts: months(0),
+        rateLink: { rate: three, categoryKind: 'revenue', categoryIds: ['food'] } },
+    ];
+    app.state.lines = app.state.lines.filter((l) => l.companyId !== company.id).concat(lines);
+    app.resetStateIndexes();
+    app.recomputeRateLinkedLines(company.id);
+    const [bev, food, boul, bank, threeLine] = lines;
+    // charge[m] = référence[m] × multiplicateur[m], arrondi à l'euro.
+    assert.deepEqual(bev.amounts, bevCa.map((v, m) => Math.round(v * (low.includes(m) ? 0.24 : 0.2))), 'Bev cost par période');
+    assert.equal(bev.amounts[0], 960, 'janvier : 4 000 × 24 %');
+    assert.equal(bev.amounts[6], 4800, 'juillet : 24 000 × 20 %');
+    assert.deepEqual(food.amounts, foodCa.map((v, m) => Math.round(v * foodValues[m])), 'Food cost mensuel');
+    assert.deepEqual(boul.amounts, foodCa.map((v) => Math.round(v * 0.03)), 'Boulangerie fixe 3 %');
+    const event = months(0); event[5] = 5000;
+    assert.deepEqual(bank.amounts, foodCa.map((v, m) => Math.round((v + bevCa[m] + event[m]) * 0.008)), 'Frais bancaires sur Food + Bev + Event');
+    assert.deepEqual(threeLine.amounts, foodCa.map((v, m) => Math.round(v * (m < 4 ? 0.1 : m < 8 ? 0.2 : 0.3))), 'trois périodes');
+    // Totaux et KPI reflètent le calcul mensuel.
+    const summary = app.__summarize(app.state.lines.filter((l) => l.companyId === company.id));
+    const sum = (a) => a.reduce((x, y) => x + y, 0);
+    assert.ok(sum(summary.charges) >= sum(bev.amounts) + sum(food.amounts) + sum(boul.amounts), 'Total charges inclut les lignes liées');
+    // Ratio annuel effectif : pondéré par la référence, pas la moyenne des douze.
+    const ratios = app.rateLinkLineRatios(bev);
+    assert.equal(ratios.year, sum(bev.amounts) / sum(bevCa));
+    const naive = sum(ratios.months) / 12;
+    assert.ok(Math.abs(ratios.year - naive) > 1e-4, 'le ratio annuel n’est pas la moyenne des ratios mensuels');
+    assert.equal(ratios.months[0], 0.24);
+    // Sous-libellés.
+    const plan = app.accountIndexForPlan(company.planId);
+    assert.equal(app.rateLinkRuleLabel(company.id, boul.rateLink, plan), '= × 3 % de CA Food');
+    assert.equal(app.rateLinkRuleLabel(company.id, bev.rateLink, plan), '= × 24 % basse saison / 20 % haute saison de CA Beverage');
+    assert.equal(app.rateLinkRuleLabel(company.id, food.rateLink, plan), '= × mensuel (26 % → 32 %) de CA Food');
+    assert.equal(app.rateLinkRuleLabel(company.id, bank.rateLink, plan), '= × 0,008 de CA Food + CA Beverage + CA Event');
+    assert.match(app.rateLinkMonthsTitle(food.rateLink.rate), /^Janv\. 32 % · Févr\. 32 % · Mars 31 %/);
+    assert.equal(app.rateLinkCellTitle(app.rateLinkBaseMonthsOf(boul), boul.rateLink.rate, 4), 'Mai : ' + app.money(15000) + ' × 3 %');
+    // À l'écran (Charges, centre F&B) : sous-libellé cliquable et info-bulles des cases.
+    app.__setTab('saisie'); app.__setCenter('F&B'); app.render();
+    const view = document.getElementById('view').innerHTML;
+    assert.ok(view.includes('data-edit-ratelink="ss_bev" title="Janv. 24 %'), 'le sous-libellé rouvre la fenêtre et liste les 12 valeurs');
+    assert.ok(view.includes('title="Mai : ' + app.money(15000) + ' × 3 %"'), 'info-bulle « Mai : 15 000 × 3 % »');
+    assert.ok(!view.includes('data-spread="ss_bev"'), '« répartir » n’est pas proposé sur une ligne liée');
+    // Résultats : une ligne « ratio effectif » par ligne liée, et l'export Excel.
+    const ratiosHtml = app.rateLinkRatiosHtml(app.state.lines.filter((l) => l.companyId === company.id));
+    assert.ok(ratiosHtml.includes('Bev cost</strong> — ratio effectif'));
+    app.__setTab('pnl'); app.render();
+    assert.ok(document.getElementById('view').innerHTML.includes('Multiplicateurs — ratios effectifs'), 'P&L : tableau des ratios');
+    const sheet = app.styledRateRatiosSheet(app.state.lines.filter((l) => l.companyId === company.id), 't', 's');
+    const bevRow = sheet.rows.find((r) => r[2] === 'Bev cost');
+    assert.equal(bevRow[4], 'Par période');
+    assert.equal(bevRow[5].v !== undefined ? bevRow[5].v : bevRow[5], ratios.year, 'ratio annuel effectif exporté');
+    assert.equal(app.styledRateRatiosSheet([], 't', 's'), null, 'pas de feuille sans ligne liée');
+    assert.match(appSource, /styledRateRatiosSheet\(selectedLines[\s\S]{0,200}Ratios multiplicateurs/, 'feuille ajoutée aux exports Excel');
+  });
+});
+
+check('Multiplicateur saisonnier : référence nulle, référence Payroll, « ajuster » et « répartir » sans effet', () => {
+  withSeasonalFixture(({ company, charge }) => {
+    // Référence nulle → charge 0, ratio « — ».
+    const zero = { id: 'ss_zero', companyId: company.id, account: charge[0].account, name: 'Sur rien', amounts: months(9),
+      rateLink: { rate: { mode: 'monthly', unit: 'percent', values: months(0.5), periods: null }, categoryKind: 'expense', categoryIds: ['SECU'] } };
+    // Ligne Payroll prise pour référence (6411 du centre, calculée par l'onglet Payroll).
+    const payrollAccount = ts.ACCOUNTS.find((a) => /^6411/.test(a.account));
+    const payroll = { id: 'ss_pay', companyId: company.id, account: payrollAccount.account, name: 'Rémunérations F&B',
+      amounts: months(10000), payrollLink: { etp: 2, grossMonthly: 2500, chargeRate: 0, fromMonth: 0, toMonth: 11 } };
+    const mutuelle = { id: 'ss_mut', companyId: company.id, account: charge[1].account, name: 'Mutuelle', amounts: months(0),
+      rateLink: { rate: { mode: 'period', unit: 'percent', values: months(0).map((v, m) => (m < 6 ? 0.02 : 0.03)),
+        periods: [{ name: 'H1', months: [0, 1, 2, 3, 4, 5], value: 0.02 }, { name: 'H2', months: [6, 7, 8, 9, 10, 11], value: 0.03 }] },
+      sourceLineId: 'ss_pay' } };
+    app.state.lines = app.state.lines.filter((l) => l.companyId !== company.id).concat([zero, payroll, mutuelle]);
+    app.resetStateIndexes();
+    app.recomputeRateLinkedLines(company.id);
+    assert.deepEqual(zero.amounts, months(0), 'référence nulle : charge 0');
+    assert.equal(app.rateLinkLineRatios(zero).year, null);
+    const payMonth = app.payrollMonthlyCost(payroll.payrollLink, 0);
+    assert.equal(mutuelle.amounts[0], Math.round(payMonth * 0.02), 'Payroll comme référence, basse période');
+    assert.equal(mutuelle.amounts[11], Math.round(payMonth * 0.03), 'Payroll comme référence, haute période');
+    // « ajuster » (ligne, centre, toutes les charges) ne touche jamais une ligne liée.
+    app.__setCenter('F&B');
+    for (const scope of ['account', 'center', 'company']) {
+      assert.ok(!app.bulkAdjustTargets(scope, charge[1].account).some((l) => l.id === 'ss_mut'), 'ajuster : ' + scope);
+    }
+    // « répartir » : sans effet sur une ligne liée, même si le champ est resté ouvert.
+    const before = JSON.stringify(mutuelle.rateLink);
+    const logBefore = (app.state.editLog || []).length;
+    const originalQuery = document.querySelector;
+    document.querySelector = (sel) => (String(sel).includes('data-spread-input') ? { value: '120000' } : null);
+    try {
+      app.__setSpreadingLineId('ss_mut');
+      app.applySpread('ss_mut');
+    } finally { document.querySelector = originalQuery; }
+    assert.equal(JSON.stringify(mutuelle.rateLink), before, 'les 12 valeurs restent');
+    assert.equal((app.state.editLog || []).length, logBefore, 'aucune répartition journalisée');
+    assert.equal(mutuelle.amounts[11], Math.round(payMonth * 0.03));
+  });
+});
+
+check('Multiplicateur saisonnier : fenêtre — périodes, mois non couvert bloqué, mensuel, collage, unités, passages de mode, undo/redo', () => {
+  withSeasonalFixture(({ company, charge }) => {
+    app.state.lines = app.state.lines.filter((l) => l.companyId !== company.id);
+    app.resetStateIndexes();
+    app.__setTab('saisie');
+    app.openRateLinkModal(charge[0].account, null);
+    let modal = app.__getRateLinkModal();
+    // Unité par défaut : coefficient sur une ligne ; % sur une catégorie de produits.
+    assert.equal(modal.unit, 'coef');
+    assert.equal(app.rateLinkDefaultUnit('revenueCategory'), 'percent');
+    modal.refKind = 'revenueCategory';
+    app.setRateLinkUnit('percent');
+    modal.categoryIds = ['beverage'];
+    assert.equal(app.rateLinkSuggestedName(modal), 'Bev cost', 'nom proposé');
+    // Fixe → Période : deux périodes par défaut préremplies avec la valeur fixe.
+    modal.fixedText = '24';
+    app.switchRateLinkMode('period');
+    assert.deepEqual(modal.periods.map((p) => [p.name, p.months.join(','), p.text]),
+      [['Basse saison', '0,1,2,3,9,10,11', '24'], ['Haute saison', '4,5,6,7,8', '24']]);
+    modal.periods[1].text = '20';
+    assert.ok(app.rateLinkDraftIssues(modal).ok);
+    assert.match(app.rateLinkIssuesHtml(modal), /Les 12 mois sont couverts/);
+    // Un mois retiré : non couvert, validation bloquée.
+    app.toggleRateLinkPeriodMonth(1, 6);
+    assert.deepEqual(app.rateLinkDraftIssues(modal).uncovered, ['Juil.']);
+    assert.match(app.rateLinkIssuesHtml(modal), /Mois non couverts : Juil\./);
+    assert.equal(app.rateLinkCanSave(), false, 'mois non couvert : enregistrement bloqué');
+    assert.ok(app.rateLinkModalHtml().includes('data-save-ratelink="1" disabled'));
+    // Cliquer le mois dans une période l'enlève des autres.
+    app.toggleRateLinkPeriodMonth(0, 6);
+    assert.ok(modal.periods[0].months.includes(6) && !modal.periods[1].months.includes(6));
+    app.toggleRateLinkPeriodMonth(1, 6);
+    assert.ok(!modal.periods[0].months.includes(6) && modal.periods[1].months.includes(6), 'un mois n’appartient qu’à une période');
+    // Troisième période sans valeur : « Valeur manquante ».
+    app.addRateLinkPeriod();
+    app.toggleRateLinkPeriodMonth(2, 11);
+    assert.deepEqual(app.rateLinkDraftIssues(modal).missing, ['Période 3']);
+    assert.match(app.rateLinkIssuesHtml(modal), /Valeur manquante : Période 3/);
+    modal.periods[2].text = '30';
+    assert.ok(app.rateLinkDraftIssues(modal).ok, 'trois périodes complètes');
+    app.removeRateLinkPeriod(2);
+    app.toggleRateLinkPeriodMonth(0, 11);
+    assert.equal(modal.periods.length, 2);
+    // Aperçu : référence, multiplicateur, charge et ratio annuel effectif.
+    const preview = app.rateLinkPreviewData(modal);
+    assert.equal(preview.charges[0], 960);
+    assert.equal(preview.ratio, preview.totalCharge / preview.totalBase);
+    assert.match(app.rateLinkPreviewHtml(modal), /Ratio annuel effectif/);
+    // Période → Mensuel : les valeurs de chaque période ; puis collage Excel.
+    app.switchRateLinkMode('monthly');
+    assert.deepEqual(modal.monthlyTexts, ['24', '24', '24', '24', '20', '20', '20', '20', '20', '24', '24', '24']);
+    assert.equal(app.pasteRateLinkMonths(0, '32 %\t32 %\t31 %\t30 %\t28 %\t27 %\t26 %\t26 %\t28 %\t30 %\t31 %\t32 %'), 12);
+    assert.equal(modal.monthlyTexts[6], '26%');
+    assert.equal(app.pasteRateLinkMonths(0, '32;32;31;30;28;27;26;26;28;30;31;32'), 12, 'point-virgule');
+    assert.equal(app.pasteRateLinkMonths(0, '32\n32\n31\n30\n28\n27\n26\n26\n28\n30\n31\n32'), 12, 'retour à la ligne');
+    assert.equal(app.pasteRateLinkMonths(0, '32'), 0, 'une valeur seule : collage normal');
+    modal.monthlyTexts[3] = '';
+    assert.deepEqual(app.rateLinkDraftIssues(modal).missing, ['Avril']);
+    assert.ok(app.rateLinkPreviewHtml(modal).includes('rl-missing'), 'mois manquant en rouge « — » dans l’aperçu');
+    modal.monthlyTexts[3] = '30';
+    // % ↔ coefficient : les valeurs sont converties, pas réinterprétées.
+    app.setRateLinkUnit('coef');
+    assert.equal(modal.monthlyTexts[0], '0,32');
+    app.setRateLinkUnit('percent');
+    assert.equal(modal.monthlyTexts[0], '32');
+    // Raccourcis : appliquer à tous, remplir depuis les périodes.
+    assert.ok(app.fillRateLinkMonths('25'));
+    assert.deepEqual(modal.monthlyTexts, months('25'));
+    app.fillRateLinkMonthsFromPeriods();
+    assert.equal(modal.monthlyTexts[0], '24');
+    // Mensuel → Période : une période par valeur distincte (≤ 4).
+    app.switchRateLinkMode('period');
+    assert.equal(modal.periods.length, 2);
+    // Mensuel → Période avec plus de 4 valeurs : périodes par défaut, moyenne de leurs mois.
+    app.switchRateLinkMode('monthly');
+    app.pasteRateLinkMonths(0, '10 11 12 13 14 15 16 17 18 19 20 21');
+    app.switchRateLinkMode('period');
+    assert.deepEqual(modal.periods.map((p) => p.name), ['Basse saison', 'Haute saison']);
+    assert.equal(modal.periods[1].text, '16', 'moyenne de mai → sept.');
+    // Vers Fixe : valeurs différentes → ratio annuel effectif ; toutes égales → la valeur.
+    app.switchRateLinkMode('fixed');
+    const effective = app.parseRateInput(modal.fixedText, 'percent');
+    assert.ok(effective > 0.14 && effective < 0.17, 'ratio annuel effectif pondéré : ' + modal.fixedText);
+    app.switchRateLinkMode('monthly');
+    assert.deepEqual(modal.monthlyTexts, months(modal.fixedText), 'Fixe → Mensuel : 12 × la valeur fixe');
+    app.switchRateLinkMode('fixed');
+    // Enregistrement : une seule étape d'annulation.
+    app.switchRateLinkMode('period');
+    modal.periods[0].text = '24'; modal.periods[1].text = '20';
+    app.__forceUndoStep();
+    const depth = app.__getUndoDepth().undo;
+    document.getElementById('ratelink-name').value = '';
+    document.getElementById('ratelink-rate').value = '';
+    app.saveRateLink();
+    app.__forceUndoStep();
+    const created = app.state.lines.find((l) => l.companyId === company.id && l.name === 'Bev cost');
+    assert.ok(created, 'nom vide → « Bev cost » proposé');
+    assert.deepEqual(created.rateLink.rate.periods.map((p) => p.value), [0.24, 0.2]);
+    assert.equal(created.rateLink.rate.unit, 'percent');
+    assert.equal(created.amounts[0], 960);
+    assert.equal(app.__getUndoDepth().undo, depth + 1, 'un multiplicateur = une action');
+    // Rouvrir : même mode, même unité, titre et bouton d'édition.
+    app.openRateLinkModal(created.account, created.id);
+    modal = app.__getRateLinkModal();
+    assert.equal(modal.mode, 'period');
+    assert.equal(modal.unit, 'percent');
+    assert.deepEqual(modal.periods.map((p) => p.text), ['24', '20']);
+    const html = app.rateLinkModalHtml();
+    assert.ok(html.includes('<h3>Modifier le multiplicateur</h3>') && html.includes('>Enregistrer</button>'));
+    // Passage en mensuel puis enregistrement, annulé et rétabli d'un coup.
+    app.switchRateLinkMode('monthly');
+    modal.monthlyTexts[6] = '18';
+    app.saveRateLink();
+    app.__forceUndoStep();
+    let line = app.state.lines.find((l) => l.id === created.id);
+    assert.equal(line.rateLink.rate.mode, 'monthly');
+    assert.equal(line.rateLink.rate.values[6], 0.18);
+    app.undo();
+    line = app.state.lines.find((l) => l.id === created.id);
+    assert.equal(line.rateLink.rate.mode, 'period', 'Ctrl+Z ramène le multiplicateur précédent');
+    app.redo();
+    line = app.state.lines.find((l) => l.id === created.id);
+    assert.equal(line.rateLink.rate.values[6], 0.18, 'Ctrl+Y le rétablit');
+    // « copier depuis… » : 12 valeurs et unité d'une autre ligne de l'entité.
+    app.openRateLinkModal(charge[1].account, null);
+    modal = app.__getRateLinkModal();
+    modal.mode = 'monthly';
+    assert.ok(app.rateLinkCopyCandidates().some((l) => l.id === created.id));
+    assert.ok(app.copyRateLinkMonthsFrom(created.id));
+    assert.equal(modal.unit, 'percent');
+    assert.equal(modal.monthlyTexts[6], '18');
+    // Champ vide en mode fixe : enregistrement refusé.
+    app.switchRateLinkMode('fixed');
+    modal.fixedText = '';
+    modal.sourceLineId = '';
+    assert.equal(app.rateLinkCanSave(), false);
+  });
 });
 
 /* --- 5. Verdict ------------------------------------------------------- */
