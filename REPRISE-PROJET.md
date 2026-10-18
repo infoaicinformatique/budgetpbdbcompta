@@ -77,6 +77,45 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### CA : ventilation appliquée automatiquement aux comptes suivis (18/10/2026)
+
+Retour après la livraison du 14/10 (`APP_BUILD` 2026-10-18.1) : « si le
+chiffre d'affaires est à 0 mais que j'ai quand même renseigné des comptes
+dans « Comptes suivis » je ne peux pas appliquer la ventilation du CA entre
+ces comptes. Et si j'ai enregistré du CA mais que je l'ai retiré, les
+comptes suivis gardent en mémoire le précédent CA. […] Il faudrait que
+chaque modification du CA soit automatiquement appliquée sans que l'on ait
+à appuyer sur le bouton « Appliquer aux comptes ». Car les directeurs n'ont
+pas accès à ce dernier. »
+
+- Les comptes Food, Beverage et Event ne se saisissent nulle part à la main
+  (cases et détail jour par jour déjà en lecture seule) : leur budget n'est
+  que la ventilation. `syncCaVentilation` le tient à jour **à chaque rendu**,
+  pour toutes les sociétés, juste avant `syncCaLines` (même place que les
+  autres lignes calculées) : matrice × part de catégorie × part du compte,
+  Event × 100 % ou sa part. Un compte sans part ou un mois sans CA retombe à
+  zéro (jours effacés). Seul ce qui change est réécrit : un rendu sans
+  modification ne touche rien. Un directeur qui modifie sa matrice voit donc
+  ses comptes suivre, sans bouton.
+- Bouton « Appliquer aux comptes » retiré (et son gestionnaire), remplacé
+  par la mention « Appliqué automatiquement aux comptes suivis… ».
+  `applyCaVentilation` reste, réduit à `syncCaVentilation` + enregistrement.
+- La part de chaque compte se règle aussi sans CA (montants « — »).
+- Garde-fous : Food / Beverage ne sont pas touchés tant qu'aucune part de
+  catégorie n'est posée (comptes migrés de l'ancien CA sans matrice ni
+  ventilation : jamais effacés) ; un budget soumis n'est jamais réécrit ;
+  « Hors exploitation » n'est jamais concerné ; aucune matrice vide n'est
+  créée pour une société qui n'en a pas.
+- Changement de règle assumé : un compte Food / Beverage à 0 % n'est plus
+  « préservé » — il ne gardait qu'un montant périmé.
+
+Contrôles : nouveau « Ventilation du CA appliquée automatiquement » (scénario
+de la capture : 40 000 / 120 000 périmés effacés, parts de compte sans CA,
+CA de 4 000 € ventilé 25 / 75 puis 40 / 60, CA retiré → 0, rendu sans
+changement sans écriture, budget soumis figé, société migrée intacte, pas de
+matrice créée) ; quatre contrôles adaptés (bouton disparu, compte sans part
+remis à zéro). Vérifié dans Chromium sur le même scénario.
+
 ### Menu « Charges », multiplicateur saisonnier, soumission du budget, % Food / Beverage sans CA (14/10/2026)
 
 Quatre évolutions livrées ensemble (`APP_BUILD` 2026-10-14.1), dans l'ordre
@@ -12788,7 +12827,7 @@ const app = await importApp(
     'export function __setStorageQuotaWarned(v) { storageQuotaWarned = v; }\n' +
     'export { DEFAULT_NAVY_COLOR, darkenHex, applyEnvironmentTheme,\n' +
     '  setSuperGroupNavyColor, resetSuperGroupNavyColor };\n' +
-    'export { duplicateLine };\n' +
+    'export { duplicateLine };\n' +    'export { syncCaVentilation };\n' +
     // Soumission du budget (14/10/2026).
     'export { BUDGET_INPUT_TABS, BUDGET_FROZEN_HIDDEN, budgetSubmissionOf, budgetSubmitted, budgetFrozen, canReopenBudget,\n' +
     '  canSubmitBudgetNow, submitSlotHtml, openSubmitBudgetModal, closeSubmitBudgetModal, submitBudgetModalHtml,\n' +
@@ -18941,11 +18980,12 @@ check('CA : le contrôleur ventile le CA à deux niveaux — pourcentage par cat
     assert.equal(app.caAccountVentilationTotal(company.id, 'food'), 100, 'le total des comptes Food doit faire 100 %');
     assert.equal(app.caAccountVentilationTotal(company.id, 'beverage'), 100, 'le total des comptes Beverage doit faire 100 %');
 
-    // Tant qu'on n'a pas appliqué, rien n'est écrit dans les comptes : un
-    // passage du directeur sur sa matrice ne doit jamais écraser en
-    // silence un budget affiné à la main.
+    // Pas encore de rendu : rien n'est encore écrit dans les comptes. Depuis
+    // le 18/10/2026, le prochain rendu (ou `applyCaVentilation`) les met à
+    // jour de lui-même — voir le contrôle « Ventilation appliquée
+    // automatiquement ».
     assert.equal(Math.round(app.caMonthlyTotals(company.id, food1.account, 2026)[0]), 0,
-      'la ventilation ne s’applique pas toute seule au rendu');
+      'rien d’écrit avant le rendu');
 
     // Application explicite : janvier 200 € -> Food reçoit 140 € (70 %),
     // Beverage 60 € (30 %) ; dans Food, 60 % vont au restaurant (84 €) et
@@ -18964,13 +19004,13 @@ check('CA : le contrôleur ventile le CA à deux niveaux — pourcentage par cat
     assert.equal(Math.round(food1Months[0] + food2Months[0] + bevMonths[0]), Math.round(revenue[0]),
       'la ventilation à 100 %/100 % doit rendre exactement le CA décidé par le directeur');
 
-    // Un compte à 0 % (de sa catégorie) n'est pas touché (on ne remet pas
-    // à zéro un budget construit autrement).
+    // Un compte Food sans part ne garde pas un ancien montant (18/10/2026) :
+    // il ne se saisit pas à la main, son budget n'est que la ventilation.
     const other = app.addCaLine(company.id, '70105300', 'Autres Food');
     app.setCaMonthTotal(company.id, other.account, 2026, 0, 500);
     app.applyCaVentilation(company.id);
-    assert.equal(Math.round(app.caMonthlyTotals(company.id, other.account, 2026)[0]), 500,
-      'un compte sans part reste intact');
+    assert.equal(Math.round(app.caMonthlyTotals(company.id, other.account, 2026)[0]), 0,
+      'un compte Food sans part retombe à zéro');
 
     // Le panneau : catégories, comptes, aperçu, bouton.
     app.__setTab('ca');
@@ -18980,7 +19020,8 @@ check('CA : le contrôleur ventile le CA à deux niveaux — pourcentage par cat
     assert.ok(rendered.includes('data-ca-category-ventilation="food"'), 'un champ de part pour la catégorie Food');
     assert.ok(rendered.includes('data-ca-category-ventilation="beverage"'), 'un champ de part pour la catégorie Beverage');
     assert.ok(rendered.includes('data-ca-ventilation="70105100"'), 'un champ de part par compte de produits');
-    assert.ok(rendered.includes('data-apply-ca-ventilation="' + company.id + '"'), 'le bouton d’application doit être présent');
+    assert.ok(!rendered.includes('data-apply-ca-ventilation='), 'plus de bouton « Appliquer aux comptes » (18/10/2026)');
+    assert.ok(rendered.includes('Appliqué automatiquement aux comptes suivis'), 'la ventilation se dit automatique');
     assert.ok(rendered.includes('Total catégories'), 'la ligne de contrôle du total des catégories doit être affichée');
     assert.ok(rendered.includes('Total ventilé Food'), 'la ligne de contrôle du total Food doit être affichée');
     // Alexis, 20/08/2026 : « je ne peux pas ajouter d'autre compte » — une
@@ -24277,8 +24318,8 @@ await checkAsync('CA : un directeur LIT la ventilation de son chiffre d’affair
       'le contrôleur doit avoir une case pour la part de catégorie');
     assert.ok(cdgPanel.includes('data-ca-ventilation="' + food.account + '"'),
       'et une case pour la part du compte dans sa catégorie');
-    assert.ok(cdgPanel.includes('data-apply-ca-ventilation='),
-      'et le bouton « Appliquer aux comptes »');
+    assert.ok(cdgPanel.includes('Appliqué automatiquement aux comptes suivis'),
+      'et l’application automatique aux comptes (plus de bouton depuis le 18/10/2026)');
     assert.ok(cdgPanel.includes('data-delete-ca-account="' + food.id + '"'),
       'et le bouton « retirer » de chaque compte');
 
@@ -24331,7 +24372,7 @@ await checkAsync('CA : un directeur LIT la ventilation de son chiffre d’affair
 
     // Garde côté action, en plus de l'interface : le geste est refusé même
     // atteint autrement (même principe que `canEditLineStructure`).
-    for (const branch of ['caCategoryVentilation', 'caVentilation', 'applyCaVentilation']) {
+    for (const branch of ['caCategoryVentilation', 'caVentilation']) {
       const at = appSource.indexOf('dataset.' + branch + ' !== undefined');
       assert.ok(at > 0, 'branche « ' + branch + ' » introuvable dans les gestionnaires');
       assert.ok(appSource.slice(at, at + 700).includes('canEditCaVentilation()'),
@@ -34420,7 +34461,7 @@ await checkAsync('Soumission du budget : fenêtre, budget figé partout, garde-f
     }
     assert.equal(app.canEditLineStructure(), false);
     // Les autres onglets : passés par le DOM rendu (`applyBudgetFreeze`), tous les gestes listés.
-    for (const selector of ['[data-apply-ca-ventilation]', '[data-add-employee]', '[data-delete-employee]', '[data-add-scenario]',
+    for (const selector of ['[data-add-employee]', '[data-delete-employee]', '[data-add-scenario]',
       '#import-matrix-button', '[data-add-ca-account]', '[data-lock-rate]']) {
       assert.ok(app.BUDGET_FROZEN_HIDDEN.includes(selector), selector);
     }
@@ -34620,7 +34661,7 @@ check('Ventilation du CA : % Food / Beverage saisissables avant tout CA, conserv
     // Avec des comptes suivis : comportement inchangé (ventilation par compte, « Appliquer aux comptes »).
     app.addCaLine(company.id, '70105100', 'Restaurant');
     panel = app.caVentilationPanel(company);
-    assert.ok(panel.includes('data-ca-ventilation="70105100"') && panel.includes('data-apply-ca-ventilation="vent_c"'));
+    assert.ok(panel.includes('data-ca-ventilation="70105100"') && panel.includes('Appliqué automatiquement aux comptes suivis'));
     assert.ok(panel.includes('Part de la catégorie'));
 
     // Budget soumis : champs non modifiables (DOM figé) et geste refusé à la source.
@@ -34630,6 +34671,96 @@ check('Ventilation du CA : % Food / Beverage saisissables avant tout CA, conserv
     assert.ok(app.BUDGET_INPUT_TABS.includes('ca'), 'l’onglet CA est figé avec le budget');
   } finally {
     restoreAppState(saved);
+  }
+});
+
+check('Ventilation du CA appliquée automatiquement : CA saisi, retiré, parts de compte sans CA, sans bouton (18/10/2026)', () => {
+  const saved = snapshotAppState();
+  const savedTab = app.__getTab();
+  try {
+    const company = { id: 'auto_c', name: 'Anna Cannes', currency: 'EUR', year: 2027, groupId: null };
+    const legacy = { id: 'auto_l', name: 'Ancienne', currency: 'EUR', year: 2027, groupId: null };
+    app.state.companies = [company, legacy];
+    app.state.activeCompany = company.id;
+    app.state.serviceMatrix = {};
+    app.state.caCategoryVentilation = {};
+    app.state.caVentilation = {};
+    app.state.caLines = [];
+    app.state.dailyBudgetRevenue = {};
+    app.state.lines = [];
+    app.state.budgetSubmissions = {};
+    app.resetStateIndexes();
+    const food = app.addCaLine(company.id, '70106100', '70106100');
+    const bev = app.addCaLine(company.id, '70103100', '70103100');
+    app.setCaCategory(bev.id, 'beverage');
+    // Reste d'un ancien CA, comme sur la capture : 40 000 / 120 000 en janvier.
+    app.setCaMonthTotal(company.id, food.account, 2027, 0, 40000);
+    app.setCaMonthTotal(company.id, bev.account, 2027, 0, 120000);
+    app.setCaCategoryVentilationPercent(company.id, 'food', 25);
+    app.setCaCategoryVentilationPercent(company.id, 'beverage', 75);
+
+    // Sans CA : la part de chaque compte se règle aussi, montants « — », pas de bouton.
+    let panel = app.caVentilationPanel(company);
+    assert.ok(panel.includes('data-ca-ventilation="70106100"') && panel.includes('data-ca-ventilation="70103100"'),
+      'parts de compte réglables sans CA');
+    assert.ok(panel.includes('Aucun CA n’est encore saisi'));
+    assert.ok(!panel.includes('data-apply-ca-ventilation'), 'plus de bouton « Appliquer aux comptes »');
+    app.setCaVentilationPercent(company.id, food.account, 100);
+    app.setCaVentilationPercent(company.id, bev.account, 100);
+
+    // Le rendu aligne les comptes : CA nul → l'ancien montant disparaît, sans aucun clic.
+    app.__setTab('ca'); app.render();
+    assert.equal(app.caMonthlyTotals(company.id, food.account, 2027)[0], 0, 'Food : l’ancien CA ne reste pas');
+    assert.equal(app.caMonthlyTotals(company.id, bev.account, 2027)[0], 0, 'Beverage : idem');
+    const caLine = (id) => app.state.lines.find((l) => l.caLink === id);
+    assert.equal(caLine(food.id).amounts[0], 0, 'Charges suit aussi');
+
+    // Le CA arrive (matrice du directeur) : ventilé aussitôt, 25 % / 75 %.
+    app.setServiceMatrixValue(company.id, 'covers', 'lunch', '2027-01-08', '100');
+    app.setServiceMatrixValue(company.id, 'ticket', 'lunch', '2027-01-08', '40');
+    app.render();
+    assert.equal(Math.round(app.caMonthlyTotals(company.id, food.account, 2027)[0]), 1000, '4 000 × 25 %');
+    assert.equal(Math.round(app.caMonthlyTotals(company.id, bev.account, 2027)[0]), 3000, '4 000 × 75 %');
+    assert.equal(Math.round(caLine(bev.id).amounts[0]), 3000, 'reporté dans Charges');
+    assert.match(appSource, /syncCaVentilation\(company\.id\);\s*syncCaLines\(company\.id\);/,
+      'appliqué à chaque rendu, quel que soit le rôle (le directeur n’a pas de bouton)');
+
+    // Un rendu de plus sans modification ne change rien.
+    const before = JSON.stringify(app.state.dailyBudgetRevenue);
+    app.render();
+    assert.equal(JSON.stringify(app.state.dailyBudgetRevenue), before, 'rien n’est réécrit sans changement');
+
+    // Une part modifiée : suivie au rendu suivant.
+    app.setCaCategoryVentilationPercent(company.id, 'food', 40);
+    app.setCaCategoryVentilationPercent(company.id, 'beverage', 60);
+    app.render();
+    assert.equal(Math.round(app.caMonthlyTotals(company.id, food.account, 2027)[0]), 1600, '4 000 × 40 %');
+
+    // Le CA est retiré : les comptes reviennent à zéro, sans bouton.
+    app.setServiceMatrixValue(company.id, 'covers', 'lunch', '2027-01-08', '');
+    app.render();
+    assert.equal(app.caMonthlyTotals(company.id, food.account, 2027)[0], 0, 'CA retiré : Food à 0');
+    assert.equal(app.caMonthlyTotals(company.id, bev.account, 2027)[0], 0, 'CA retiré : Beverage à 0');
+    assert.deepEqual(app.dailyCaOf(company.id, food.account), {}, 'jours effacés, pas remplis de zéros');
+
+    // Budget soumis : rien n'est réécrit.
+    app.setServiceMatrixValue(company.id, 'covers', 'lunch', '2027-01-08', '100');
+    app.state.budgetSubmissions = { auto_c: { submitted: true, at: '2027-01-01T10:00:00.000Z', by: { name: 'X' } } };
+    app.render();
+    assert.equal(app.caMonthlyTotals(company.id, food.account, 2027)[0], 0, 'budget soumis : figé');
+    app.state.budgetSubmissions = {};
+
+    // Société sans ventilation posée (comptes migrés de l'ancien CA) : jamais effacée,
+    // et aucune matrice vide créée au passage.
+    const old = app.addCaLine(legacy.id, '70105100', 'Restaurant');
+    app.setCaMonthTotal(legacy.id, old.account, 2027, 3, 7000);
+    app.render();
+    assert.equal(Math.round(app.caMonthlyTotals(legacy.id, old.account, 2027)[3]), 7000, 'budget migré intact');
+    assert.ok(!app.state.serviceMatrix.auto_l, 'pas de matrice créée pour rien');
+  } finally {
+    restoreAppState(saved);
+    app.__setTab(savedTab);
+    app.render();
   }
 });
 

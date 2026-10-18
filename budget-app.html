@@ -1911,6 +1911,7 @@
   .submit-modal .submit-recap { width: 100%; margin-bottom: var(--space-3); }
   .submit-modal .submit-warning { font-weight: 600; margin: 0; }
   /* Ventilation du CA sans CA encore saisi (14/10/2026). */
+  .ca-auto-applied { margin: var(--space-3) 0 0; font-size: var(--text-sm); }
   .ca-no-revenue-notice {
     margin: 0 0 var(--space-3); padding: var(--space-25) var(--space-3); font-size: var(--text-md);
     border-left: 3px solid var(--accent-text); background: var(--gold-soft); border-radius: 0 var(--radius) var(--radius) 0;
@@ -3602,7 +3603,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-14.1';
+const APP_BUILD = '2026-10-18.1';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -10733,7 +10734,7 @@ const BUDGET_FROZEN_HIDDEN = [
   '[data-delete]', '[data-delete-note]', '[data-move-line]', '[data-duplicate-line]', '[data-detach-ratelink]',
   '[data-detach-payroll]', '[data-edit-ratelink]', '[data-edit-payroll]', '[data-calc-insert]',
   // CA
-  '[data-add-ca-account]', '#ca-matrix-import-button', '[data-apply-ca-ventilation]', '[data-delete-ca-account]',
+  '[data-add-ca-account]', '#ca-matrix-import-button', '[data-delete-ca-account]',
   '[data-migrate-ca]', '[data-add-ca-season]', '[data-remove-ca-season]', '[data-save-ca-account]',
   '[data-paste-daily]', '[data-clear-daily]',
   // Payroll
@@ -12623,12 +12624,9 @@ function rateLinkExpenseCategoryMonths(lines, categoryIds, planIndex) {
  * (`caCategoryVentilationPercent`) ou, pour Event, 100 % du service Event
  * de la matrice (`caEventServiceRevenue`). La base d'un multiplicateur lit
  * donc CETTE formule directement, comme Excel recalculerait une cellule à
- * chaque frappe — jamais le résultat déjà écrit dans les comptes par
- * « Appliquer aux comptes », qui reste un geste explicite réservé à LEUR
- * ventilation (protéger un jour-par-jour affiné à la main, voir
- * `applyCaVentilation`). Un multiplicateur ne se saisissant lui-même
- * jamais à la main, il n'a pas besoin de cette protection : il doit
- * toujours refléter l'instant présent.
+ * chaque frappe. Depuis le 18/10/2026 les comptes eux-mêmes suivent aussi
+ * la ventilation d'eux-mêmes (`syncCaVentilation`) : les deux chemins
+ * donnent le même montant, celui-ci n'attend simplement pas le rendu.
  *
  * Hors exploitation reste la seule catégorie sans formule de matrice — elle
  * se saisit compte par compte, déjà en direct (pas de bouton « Appliquer »
@@ -12778,6 +12776,10 @@ function recomputeAllRateLinkedLines() {
     // verrait sa ligne calculée apparaître dans la Saisie qu'après un
     // premier passage par l'onglet CA lui-même.
     if ((state.caLines || []).some(function (c) { return c.companyId === company.id; })) {
+      // Ventilation du CA appliquée automatiquement (18/10/2026) : les
+      // comptes Food / Beverage / Event suivent la matrice et les
+      // pourcentages avant d'être reportés dans Charges.
+      syncCaVentilation(company.id);
       syncCaLines(company.id);
     }
     recomputeRateLinkedLines(company.id);
@@ -20192,10 +20194,13 @@ function setDailyCa(companyId, account, key, amount) {
         (rubrique `ca-ventilation`, hors périmètre directeur) et
         applique : chaque compte reçoit sa quote-part du CA mensuel.
 
-   La ventilation ne recalcule rien toute seule au rendu : elle s'applique
-   sur clic explicite (`applyCaVentilation`). Sans quoi le budget d'un
-   compte, éventuellement affiné à la main jour par jour ensuite, serait
-   écrasé en silence à chaque passage du directeur sur sa matrice.
+   La ventilation s'applique
+   automatiquement depuis le 18/10/2026 (`syncCaVentilation`) : à chaque
+   rendu, les comptes Food / Beverage / Event reprennent la quote-part du
+   CA du moment — ils ne se saisissent nulle part à la main, il n'y a donc
+   rien à protéger. (Avant, un clic explicite sur « Appliquer aux comptes »
+   était nécessaire ; les directeurs, qui n'ont pas ce bouton, laissaient
+   des comptes sur un CA périmé.)
    ================================================================== */
 
 /** CA mensuel (12 valeurs) issu de la matrice couverts × ticket d'une société. */
@@ -20385,39 +20390,80 @@ function caAccountVentilationTotal(companyId, categoryId) {
  * budget saisi autrement.
  */
 function applyCaVentilation(companyId) {
+  const result = syncCaVentilation(companyId);
+  if (result.changed) save();
+  return result.served;
+}
+
+/**
+ * Ventilation APPLIQUÉE AUTOMATIQUEMENT (18/10/2026). Demande : « il
+ * faudrait que chaque modification du CA soit automatiquement appliquée
+ * sans que l'on ait à appuyer sur le bouton « Appliquer aux comptes ». Car
+ * les directeurs n'ont pas accès à ce dernier » — et un CA saisi puis
+ * retiré laissait les comptes suivis sur l'ancien montant, le bouton ayant
+ * disparu avec le CA.
+ *
+ * Les comptes Food, Beverage et Event ne se saisissent nulle part à la
+ * main (cases et détail jour par jour en lecture seule, voir
+ * `caTeamPanel`/`caDetailHtml`) : leur budget n'est QUE la ventilation.
+ * Il est donc tenu à jour comme les autres lignes calculées — à chaque
+ * rendu (`recomputeAllRateLinkedLines`), pour toutes les sociétés — à
+ * partir de la matrice et des pourcentages du moment :
+ *   - Food / Beverage : CA hors Event × part de la catégorie × part du
+ *     compte dans sa catégorie ;
+ *   - Event : CA du service Event × 100 % (compte seul) ou × sa part.
+ * Un compte sans part, ou un mois sans CA, retombe à zéro (ses jours sont
+ * effacés). On n'écrit que ce qui change : sans modification, un rendu ne
+ * touche rien.
+ *
+ * Deux exceptions, pour ne jamais effacer un budget construit autrement :
+ *   - Food / Beverage ne sont pas touchés tant qu'aucune part de catégorie
+ *     n'est posée (société dont les comptes ont été migrés depuis les
+ *     anciennes lignes de produits, sans matrice ni ventilation) ;
+ *   - un budget soumis (figé) n'est jamais réécrit.
+ * « Hors exploitation » n'est jamais concerné : il se saisit en direct.
+ *
+ * Rend `{ changed, served }` : un compte au moins réécrit, et le nombre de
+ * comptes qui reçoivent une part non nulle.
+ */
+function syncCaVentilation(companyId) {
+  const result = { changed: false, served: 0 };
   const company = companyById(companyId);
-  if (!company) return 0;
-  // Food/Beverage se partagent le CA hors Event : l'Event a sa propre
-  // catégorie, il ne doit pas être ventilé une deuxième fois en F&B.
-  const revenue = caFoodBeverageRevenue(company);
-  const eventRevenue = caEventServiceRevenue(company);
-  const eventLines = caLinesOf(companyId).filter(function (c) { return caCategoryOf(c) === 'event'; });
-  let applied = 0;
-  for (const caLine of caLinesOf(companyId)) {
+  if (!company || budgetSubmitted(companyId)) return result;
+  const tracked = caLinesOf(companyId).filter(function (c) { return caCategoryOf(c) !== 'hors-exploitation'; });
+  if (!tracked.length) return result;
+  const year = Number(company.year);
+  // Sans matrice enregistrée : CA nul, sans en créer une vide au passage
+  // (`serviceMatrixOf` l'ajouterait à l'état à chaque rendu).
+  const hasMatrix = Boolean(state.serviceMatrix && state.serviceMatrix[companyId]);
+  const revenue = hasMatrix ? caFoodBeverageRevenue(company) : emptyMonths();
+  const eventRevenue = hasMatrix ? caEventServiceRevenue(company) : emptyMonths();
+  const eventLines = tracked.filter(function (c) { return caCategoryOf(c) === 'event'; });
+  const foodBeverageConfigured = caCategoryVentilationTotal(companyId) > 0;
+  for (const caLine of tracked) {
     const category = caCategoryOf(caLine);
-    if (category === 'hors-exploitation') continue;
+    let monthly;
     if (category === 'event') {
       const accountPercent = eventLines.length === 1 ? 100 : caVentilationPercent(companyId, caLine.account);
-      if (!accountPercent) continue;
-      for (let month = 0; month < MONTHS; month++) {
-        const amount = (eventRevenue[month] * accountPercent) / 100;
-        setCaMonthTotal(companyId, caLine.account, Number(company.year), month, Math.round(amount * 100) / 100);
-      }
-      applied++;
-      continue;
+      monthly = eventRevenue.map(function (v) { return (v * accountPercent) / 100; });
+    } else {
+      if (!foodBeverageConfigured) continue;
+      const share = caCategoryVentilationPercent(companyId, category) * caVentilationPercent(companyId, caLine.account);
+      monthly = revenue.map(function (v) { return (v * share) / 10000; });
     }
-    const categoryPercent = caCategoryVentilationPercent(companyId, category);
-    const accountPercent = caVentilationPercent(companyId, caLine.account);
-    if (!categoryPercent || !accountPercent) continue;
+    const current = caMonthlyTotals(companyId, caLine.account, year);
+    let served = false;
     for (let month = 0; month < MONTHS; month++) {
-      const categoryAmount = (revenue[month] * categoryPercent) / 100;
-      const amount = (categoryAmount * accountPercent) / 100;
-      setCaMonthTotal(companyId, caLine.account, Number(company.year), month, Math.round(amount * 100) / 100);
+      const amount = Math.round(monthly[month] * 100) / 100;
+      if (amount) served = true;
+      if (Math.abs((current[month] || 0) - amount) < 0.005) continue;
+      // Zéro : les jours sont effacés (« rien de budgété »), pas remplis de zéros.
+      setCaMonthTotal(companyId, caLine.account, year, month, amount ? amount : null);
+      result.changed = true;
     }
-    applied++;
+    if (served) result.served++;
   }
-  if (applied) save();
-  return applied;
+  return result;
 }
 
 /* ==================================================================
@@ -21570,8 +21616,7 @@ function canEditCaVentilation() {
 
 function caVentilationPanel(company) {
   // Lecture seule pour un directeur : les pourcentages s'affichent en
-  // clair plutôt que dans des cases, la colonne d'actions et le bouton
-  // « Appliquer aux comptes » disparaissent. Tout le reste — montants mois
+  // clair plutôt que dans des cases, la colonne d'actions disparaît. Tout le reste — montants mois
   // par mois, totaux de contrôle, alertes de ventilation incomplète — est
   // montré à l'identique : c'est précisément « comment est ventilé le CA ».
   const canEdit = canEditCaVentilation();
@@ -21614,9 +21659,10 @@ function caVentilationPanel(company) {
   // Beverage se saisissent quand même (14/10/2026 — « on doit pouvoir la
   // saisir avant »). Ils sont enregistrés tout de suite, comme toujours
   // (`setCaCategoryVentilationPercent`), et serviront tels quels dès que le
-  // CA sera saisi ; les montants, eux, affichent « — ». Le niveau des
-  // comptes et « Appliquer aux comptes » attendent le CA : appliquer une
-  // ventilation de zéro effacerait le budget des comptes suivis.
+  // CA sera saisi ; les montants, eux, affichent « — ». Depuis le
+  // 18/10/2026, la part de chaque compte se règle aussi sans CA, et la
+  // ventilation s'applique d'elle-même aux comptes suivis
+  // (`syncCaVentilation`) : plus de bouton « Appliquer aux comptes ».
   const noRevenue = !totalYearRevenue;
   const noRevenueNotice = noRevenue
     ? '<p class="ca-no-revenue-notice">Aucun CA n’est encore saisi : les pourcentages Food et Beverage sont ' +
@@ -21703,7 +21749,7 @@ function caVentilationPanel(company) {
 
     const header = '<tr><td colspan="' + accountSpan + '" style="padding-top:14px;' +
       'font-weight:600;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.03em">' +
-      escapeHtml(categoryLabel) + (categoryPct ? ' — ' + money(categoryYearAmount) + ' € à ventiler entre les comptes' : '') +
+      escapeHtml(categoryLabel) + (categoryPct && !noRevenue ? ' — ' + money(categoryYearAmount) + ' € à ventiler entre les comptes' : '') +
       '</td></tr>';
 
     if (!categoryLines.length) {
@@ -21728,7 +21774,7 @@ function caVentilationPanel(company) {
       return '<tr><td class="sticky-col"><strong>' + escapeHtml(caLine.name || caLine.account) + '</strong>' +
         '<div class="muted" style="font-size:12px">' + caLine.account + '</div></td>' +
         percentCell('data-ca-ventilation', caLine.account, percent) + cells +
-        '<td class="num"><strong>' + money((categoryYearAmount * percent) / 100) + '</strong></td>' +
+        '<td class="num"><strong>' + amountCell((categoryYearAmount * percent) / 100) + '</strong></td>' +
         actionsCell(caLine.id) + '</tr>';
     }).join('');
 
@@ -21739,20 +21785,20 @@ function caVentilationPanel(company) {
     const accountRemaining = 100 - accountTotal;
     const accountTone = Math.abs(accountRemaining) < 0.005 ? '' : ' vp-row-alert';
     const accountTotalCells = categoryAmountMonthly.map(function (amount) {
-      return '<td class="num">' + money((amount * accountTotal) / 100) + '</td>';
+      return '<td class="num">' + amountCell((amount * accountTotal) / 100) + '</td>';
     }).join('');
     const subtotalRow = '<tr class="matrix-total' + accountTone + '"><td class="sticky-col">' +
       '<strong>Total ventilé ' + escapeHtml(categoryLabel) + '</strong></td>' +
       '<td><strong>' + formatRateValue(Math.round(accountTotal * 100) / 100) + ' %</strong></td>' +
-      accountTotalCells + '<td class="num"><strong>' + money((categoryYearAmount * accountTotal) / 100) +
+      accountTotalCells + '<td class="num"><strong>' + amountCell((categoryYearAmount * accountTotal) / 100) +
       '</strong></td>' + (canEdit ? '<td></td>' : '') + '</tr>';
 
     if (categoryPct && Math.abs(accountRemaining) >= 0.005) {
       accountNotices.push(accountRemaining > 0
         ? '<p style="margin:10px 0 0;font-size:13px" class="vp-alert">⚠ ' +
           formatRateValue(Math.round(accountRemaining * 100) / 100) + ' % du montant ' + escapeHtml(categoryLabel) +
-          ' ne sont rattachés à aucun compte, soit ' + money((categoryYearAmount * accountRemaining) / 100) +
-          ' € sur l’année.</p>'
+          ' ne sont rattachés à aucun compte' + (noRevenue ? '.' : ', soit ' + money((categoryYearAmount * accountRemaining) / 100) +
+          ' € sur l’année.') + '</p>'
         : '<p style="margin:10px 0 0;font-size:13px" class="vp-alert">⚠ Les comptes ' + escapeHtml(categoryLabel) +
           ' dépassent 100 % de ' + formatRateValue(Math.round(-accountRemaining * 100) / 100) +
           ' % : leur budget serait supérieur au montant que la catégorie a reçu.</p>');
@@ -21795,7 +21841,7 @@ function caVentilationPanel(company) {
         '<div class="muted" style="font-size:12px">' + caLine.account + '</div></td>' +
         '<td style="width:110px" class="muted" title="Seul compte Event : il reçoit tout le CA du service, sans réglage">' +
         '100 % 🔒</td>' + cells +
-        '<td class="num"><strong>' + money(eventYearRevenue) + '</strong></td>' +
+        '<td class="num"><strong>' + amountCell(eventYearRevenue) + '</strong></td>' +
         actionsCell(caLine.id) + '</tr>';
     } else {
       const eventGroupRows = eventLines.map(function (caLine) {
@@ -21807,19 +21853,19 @@ function caVentilationPanel(company) {
         return '<tr><td class="sticky-col"><strong>' + escapeHtml(caLine.name || caLine.account) + '</strong>' +
           '<div class="muted" style="font-size:12px">' + caLine.account + '</div></td>' +
           percentCell('data-ca-ventilation', caLine.account, percent) + cells +
-          '<td class="num"><strong>' + money((eventYearRevenue * percent) / 100) + '</strong></td>' +
+          '<td class="num"><strong>' + amountCell((eventYearRevenue * percent) / 100) + '</strong></td>' +
           actionsCell(caLine.id) + '</tr>';
       }).join('');
       const eventAccountTotal = caAccountVentilationTotal(company.id, 'event');
       const eventRemaining = 100 - eventAccountTotal;
       const eventTone = Math.abs(eventRemaining) < 0.005 ? '' : ' vp-row-alert';
       const eventTotalCells = eventRevenue.map(function (amount) {
-        return '<td class="num">' + money((amount * eventAccountTotal) / 100) + '</td>';
+        return '<td class="num">' + amountCell((amount * eventAccountTotal) / 100) + '</td>';
       }).join('');
       const eventSubtotalRow = '<tr class="matrix-total' + eventTone + '"><td class="sticky-col">' +
         '<strong>Total ventilé Event</strong></td>' +
         '<td><strong>' + formatRateValue(Math.round(eventAccountTotal * 100) / 100) + ' %</strong></td>' +
-        eventTotalCells + '<td class="num"><strong>' + money((eventYearRevenue * eventAccountTotal) / 100) +
+        eventTotalCells + '<td class="num"><strong>' + amountCell((eventYearRevenue * eventAccountTotal) / 100) +
         '</strong></td>' + (canEdit ? '<td></td>' : '') + '</tr>';
       let eventNotice = '';
       if (Math.abs(eventRemaining) >= 0.005) {
@@ -21846,8 +21892,8 @@ function caVentilationPanel(company) {
       'catégorie, la part qui revient à chacun de ses comptes de produits (classés dans « Comptes suivis »). ' +
       'Event est différent : le CA de son service dans la matrice revient en totalité à la catégorie, ' +
       'automatiquement — pas de pourcentage à poser, sauf si plusieurs comptes se partagent cette catégorie, ' +
-      'auquel cas vous répartissez ce montant entre eux comme pour Food/Beverage. « Appliquer » écrit ces ' +
-      'montants dans les comptes suivis, répartis sur les jours de chaque mois. Les comptes ' +
+      'auquel cas vous répartissez ce montant entre eux comme pour Food/Beverage. Ces montants sont reportés ' +
+      'automatiquement dans les comptes suivis, répartis sur les jours de chaque mois. Les comptes ' +
       '« Hors exploitation » n’apparaissent pas ici : ils se saisissent en montant direct, mois par mois, dans ' +
       '« Comptes suivis ».'
     : 'Voici comment votre chiffre d’affaires est réparti. Le CA que vous renseignez dans la matrice couverts × ' +
@@ -21860,39 +21906,34 @@ function caVentilationPanel(company) {
     '<th class="sticky-col" style="width:' + colWidths.caCompte + 'px">Catégorie</th><th>Part du CA hors Event</th>' +
     headerMonths + '<th class="num">Année</th></tr></thead>' +
     '<tbody>' + categoryRows + categoryControlRow + '</tbody></table></div>' + categoryNotice;
-  // Pas encore de CA : les pourcentages Food / Beverage seulement.
-  if (noRevenue) {
-    return panel('ca-ventilation', 'Ventilation du CA par compte',
-      noRevenueNotice + categoryTable,
-      { open: true, meta: canEdit ? 'en attente du CA' : 'en attente de la matrice' });
-  }
-  // CA saisi mais aucun compte à ventiler : les pourcentages, puis ce qui manque.
+  const meta = noRevenue
+    ? (canEdit ? 'en attente du CA' : 'en attente de la matrice')
+    : money(totalYearRevenue) + ' € à ventiler';
+  // Aucun compte à ventiler : les pourcentages, puis ce qui manque.
   if (!lines.length) {
     return panel('ca-ventilation', 'Ventilation du CA par compte',
-      categoryTable + emptyState(accountsMessage),
-      { open: true, meta: money(totalYearRevenue) + ' € à ventiler' });
+      noRevenueNotice + categoryTable + emptyState(accountsMessage),
+      { open: true, meta: meta });
   }
 
   return panel('ca-ventilation', 'Ventilation du CA par compte',
+    noRevenueNotice +
     '<p class="muted" style="margin:0 0 12px;font-size:13px">' + intro + '</p>' +
     categoryTable +
     '<div class="table-wrap" style="margin-top:18px"><table><thead><tr>' +
     '<th class="sticky-col" style="width:' + colWidths.caCompte + 'px">Compte</th><th>Part de la catégorie</th>' +
     headerMonths + '<th class="num">Année</th>' + actionsHeader + '</tr></thead>' +
     '<tbody>' + rows + eventSection + '</tbody></table></div>' + accountNotices.join('') +
-    (canEdit
-      ? '<div class="row" style="gap:8px;margin-top:12px">' +
-        '<button class="action" data-apply-ca-ventilation="' + escapeHtml(company.id) + '"' +
-        ((categoryTotalPercent || eventYearRevenue) ? '' : ' disabled') +
-        ' title="Écrit ces montants dans les comptes de produits suivis">Appliquer aux comptes</button>' +
-        '</div>'
-      : ''),
+    // Plus de bouton « Appliquer aux comptes » (18/10/2026) : chaque
+    // modification du CA ou d'un pourcentage est reportée d'elle-même.
+    '<p class="muted ca-auto-applied">✓ Appliqué automatiquement aux comptes suivis à chaque modification ' +
+    'du CA (matrice) ou des pourcentages.</p>',
     // Alexis, 02/09/2026 : « fait en sorte que je puisse ajouter des
     // comptes dans Comptes suivis et non la ventilation » — le bouton
     // d'ajout, qui vivait ici (voir l'historique), vit désormais
     // uniquement dans le panneau « Comptes suivis » ci-dessous et la barre
     // de l'onglet.
-    { open: true, meta: money(totalYearRevenue) + ' € à ventiler' });
+    { open: true, meta: meta });
 }
 
 function caTeamPanel(company) {
@@ -32384,33 +32425,8 @@ document.getElementById('view').addEventListener('click', function (event) {
 
   if (target.dataset.addCaAccount !== undefined) { openCaEditor('new'); return; }
 
-  // Ventilation du CA : écrit dans les comptes de produits la quote-part
-  // du CA mensuel décidé par le directeur dans sa matrice. Geste explicite
-  // et annulable (Ctrl+Z) — voir `applyCaVentilation`.
-  if (target.dataset.applyCaVentilation !== undefined) {
-    const companyId = target.dataset.applyCaVentilation;
-    // « Appliquer » écrit dans les comptes de produits : c'est la main du
-    // contrôle de gestion. Le bouton n'est pas rendu en lecture seule.
-    if (!canEditCaVentilation()) return;
-    captureUndoStep();
-    // La ventilation réécrit le budget de plusieurs comptes CA d'un coup :
-    // chacun est consigné avec son avant/après annuel.
-    const ventilationBefore = caLinesOf(companyId).map(function (caLine) {
-      return { caLine: caLine, before: caLineYearTotal(caLine) };
-    });
-    const applied = applyCaVentilation(companyId);
-    for (const snapshot of ventilationBefore) {
-      const after = caLineYearTotal(snapshot.caLine);
-      if (after !== snapshot.before) logCaEdit(snapshot.caLine, 'ventilation du CA', snapshot.before, after);
-    }
-    syncCaLines(companyId);
-    save();
-    render();
-    showToast(applied
-      ? 'Chiffre d’affaires ventilé sur ' + applied + ' compte' + (applied > 1 ? 's' : '') + '.'
-      : 'Aucun compte n’a de part renseignée : rien à ventiler.');
-    return;
-  }
+  // « Appliquer aux comptes » a disparu le 18/10/2026 : la ventilation
+  // s'applique d'elle-même (voir `syncCaVentilation`).
   if (target.dataset.closeCaEditor !== undefined && isRealClickOn(target)) { closeCaEditor(); return; }
   if (target.dataset.saveCaAccount !== undefined) { saveCaAccountFromForm(); return; }
 
@@ -34217,8 +34233,8 @@ document.getElementById('view').addEventListener('change', function (event) {
 
   // Part d'un compte DANS SA CATÉGORIE (niveau 2) : on re-rend pour que
   // l'aperçu mois par mois et le total de contrôle de la catégorie suivent
-  // la frappe. Rien n'est encore écrit dans les comptes — c'est le bouton
-  // « Appliquer » qui le fait.
+  // la frappe. Les comptes suivis suivent d'eux-mêmes au même rendu
+  // (`syncCaVentilation`, 18/10/2026).
   if (event.target.dataset.caVentilation !== undefined) {
     const company = activeCompany();
     if (!company) return;
