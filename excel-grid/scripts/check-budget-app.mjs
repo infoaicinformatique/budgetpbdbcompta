@@ -478,7 +478,8 @@ const app = await importApp(
     'export function __setStorageQuotaWarned(v) { storageQuotaWarned = v; }\n' +
     'export { DEFAULT_NAVY_COLOR, darkenHex, applyEnvironmentTheme,\n' +
     '  setSuperGroupNavyColor, resetSuperGroupNavyColor };\n' +
-    'export { duplicateLine };\n' +    'export { syncCaVentilation };\n' +
+    'export { duplicateLine };\n' +    'export { serverRightsRowMatches };\n' +
+    'export function __setServerRightsQuery(v) { serverRightsQuery = v; }\n' +    'export { syncCaVentilation };\n' +
     // Soumission du budget (14/10/2026).
     'export { BUDGET_INPUT_TABS, BUDGET_FROZEN_HIDDEN, budgetSubmissionOf, budgetSubmitted, budgetFrozen, canReopenBudget,\n' +
     '  canSubmitBudgetNow, submitSlotHtml, openSubmitBudgetModal, closeSubmitBudgetModal, submitBudgetModalHtml,\n' +
@@ -22412,6 +22413,49 @@ check('Ventilation du CA appliquée automatiquement : CA saisi, retiré, parts d
     restoreAppState(saved);
     app.__setTab(savedTab);
     app.render();
+  }
+});
+
+check('Paramètres › Droits d’accès : recherche dans la liste, « modifier » amène aux réglages (18/10/2026)', () => {
+  try {
+    app.adoptServerSession({ method: 'ldap', account: 'chef', displayName: 'Le Chef',
+      rights: { role: 'controleur', isAdmin: true, permissions: null } }, null);
+    const directory = app.buildServerDirectory({
+      groupDn: 'CN=budgetpbdbcompta,DC=pb,DC=org',
+      members: [
+        { dn: 'CN=Chef', account: 'chef', displayName: 'Le Chef' },
+        { dn: 'CN=Borel', account: 'm.borel', displayName: 'Matéo Borel', mail: 'm.borel@pb.org' },
+        { dn: 'CN=Porrati', account: 'a.porrati', displayName: 'Alexis Porrati' },
+      ],
+      users: { chef: { role: 'controleur', isAdmin: true, permissions: null } },
+      admins: [],
+    });
+    app.__setServerDirectory(directory);
+    let html = app.viewParametres();
+    assert.ok(html.includes('id="server-rights-search"'), 'barre de recherche au-dessus de la liste');
+    assert.ok(html.includes('data-auth-permissions="annuaire:a.porrati"'));
+
+    // Nom sans accent ni majuscule, identifiant, adresse : tous trouvent la personne.
+    for (const query of ['mateo', 'BOREL', 'm.borel', 'borel@pb', 'mat bor']) {
+      app.__setServerRightsQuery(query);
+      html = app.viewParametres();
+      assert.ok(html.includes('data-auth-permissions="annuaire:m.borel"'), '« ' + query + ' » trouve Matéo Borel');
+      assert.ok(!html.includes('data-auth-permissions="annuaire:a.porrati"'), '« ' + query + ' » écarte les autres');
+      assert.ok(html.includes('1 sur 3'), 'le nombre de résultats est affiché');
+    }
+    app.__setServerRightsQuery('zzz');
+    assert.ok(app.viewParametres().includes('Personne ne correspond à « zzz ».'));
+    app.__setServerRightsQuery('');
+    assert.ok(app.viewParametres().includes('data-auth-permissions="annuaire:a.porrati"'), 'recherche vide : tout le monde');
+
+    // « modifier » ouvre la rubrique de la personne et y fait défiler la page.
+    assert.match(appSource, /authPermissionsId = authPermissionsId === id \? null : id;[\s\S]{0,400}render\(\);\s*if \(authPermissionsId && tab === 'parametres'\) scrollPanelIntoView\('parametres-droits-role'\);/);
+    assert.match(appSource, /if \(target\.id === 'server-rights-search'\) \{\s*serverRightsQuery = target\.value;/,
+      'la frappe filtre aussitôt');
+  } finally {
+    app.__setServerRightsQuery('');
+    app.__setAuthPermissionsIdForTest(null);
+    app.__clearServerSession();
   }
 });
 
