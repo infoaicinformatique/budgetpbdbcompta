@@ -77,6 +77,31 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### « Retirer l'accès » refusé : « origine non vérifiée » (18/10/2026)
+
+Signalement : quand Mateo Borel clique sur « retirer l'accès », la page
+affiche « Accès non retiré : Requête refusée : origine non vérifiée. ». Ce
+n'était pas lié à lui : le geste échouait pour tout le monde, comme
+« supprimer » un rôle personnalisé dans Paramètres › Rôles.
+
+- Cause : `sameOriginWrite` (`server.mjs`, garde contre les écritures venues
+  d'un autre site) exigeait un type de contenu JSON sur toute écriture. Un
+  `DELETE` n'a pas de corps et `serverRequest` n'envoie donc pas de
+  `Content-Type` : refus 403 systématique.
+- Correction côté serveur seulement (les pages déjà ouvertes en profitent sans
+  rechargement) : un `DELETE` est dispensé du type de contenu. La méthode
+  suffit à l'écarter d'un autre site (requête préalable CORS obligatoire, à
+  laquelle le serveur ne répond pas ; ni formulaire ni image n'en émettent).
+  Les contrôles `Sec-Fetch-Site` et `Origin` restent, et un `PUT`/`POST` doit
+  toujours être déclaré en JSON. `budget-app.html` inchangé.
+- Contrôle ajouté : `test/server.test.mjs` (dans `npm test`, 64 tests), qui
+  lance `server.mjs` pour de vrai (compte local, fichiers temporaires) :
+  retirer l'accès et supprimer un rôle sans corps → 200 ; un `DELETE` d'une
+  autre origine ou `cross-site`, un `PUT` en `text/plain` → 403. Les deux
+  tests échouent sur l'ancien `sameOriginWrite`.
+- Remarque : la page de Mateo Borel affichait la version 2026-10-14.1 ; un
+  rechargement (Ctrl+F5) lui donne la recherche de la liste (2026-10-18.2).
+
 ### Paramètres › Droits d'accès : recherche dans la liste, « modifier » amène aux réglages (18/10/2026)
 
 Demande : « rajouter une barre de recherche afin de ne pas avoir à défiler

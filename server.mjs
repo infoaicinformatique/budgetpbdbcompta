@@ -329,7 +329,14 @@ function sendJson(res, status, body) {
  * navigateur les fournit, une origine identique.
  */
 function sameOriginWrite(req) {
-  if (!/^application\/json\b/i.test(String(req.headers['content-type'] || ''))) return false;
+  // DELETE n'a pas de corps, donc pas de type de contenu : l'exiger refusait
+  // « retirer l'accès » et « supprimer un rôle » à tout le monde (« origine
+  // non vérifiée », 18/10/2026). La méthode elle-même suffit : un DELETE
+  // venu d'un autre site impose la même requête préalable CORS, à laquelle
+  // ce serveur ne répond pas — et ni un formulaire ni une image ne savent en
+  // émettre. Les contrôles d'origine ci-dessous restent.
+  const bodyless = req.method === 'DELETE';
+  if (!bodyless && !/^application\/json\b/i.test(String(req.headers['content-type'] || ''))) return false;
   const site = req.headers['sec-fetch-site'];
   if (site && site !== 'same-origin') return false;
   const origin = req.headers.origin;
