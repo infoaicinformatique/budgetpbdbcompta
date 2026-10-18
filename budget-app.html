@@ -3603,7 +3603,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-18.1';
+const APP_BUILD = '2026-10-18.2';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -27194,6 +27194,26 @@ function viewParametresServeur() {
   });
 }
 
+/**
+ * Recherche dans la liste des personnes de Paramètres › Droits d'accès
+ * (18/10/2026 — « rajouter une barre de recherche afin de ne pas avoir à
+ * défiler dans la liste de tous les utilisateurs »). Mémoire de la page
+ * seulement : ce n'est pas une donnée.
+ */
+let serverRightsQuery = '';
+
+/** Une ligne de l'annuaire correspond-elle à la recherche (nom, identifiant, courrier, sans accents ni casse) ? */
+function serverRightsRowMatches(row, query) {
+  const fold = function (text) {
+    return String(text || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  };
+  const words = fold(query).split(/\s+/).filter(Boolean);
+  if (!words.length) return true;
+  const u = row.user;
+  const haystack = fold([row.displayName, u && u.displayName, row.account, row.mail, u && u.email].join(' '));
+  return words.every(function (word) { return haystack.indexOf(word) !== -1; });
+}
+
 /** Libellé court des droits d'une personne, pour le tableau des membres. */
 function serverRightsSummary(user) {
   if (!user.configured) return 'Aucun droit';
@@ -27222,7 +27242,9 @@ function parametresDroitsPanels() {
     body = '<div class="alert error">Droits illisibles sur le serveur : ' + escapeHtml(directory.error) + '</div>' +
       '<button class="action ghost" data-server-rights-reload="1">Réessayer</button>';
   } else {
-    const rows = (directory.rows || []).map(function (row) {
+    const allRows = directory.rows || [];
+    const shownRows = allRows.filter(function (row) { return serverRightsRowMatches(row, serverRightsQuery); });
+    const rows = shownRows.map(function (row) {
       const u = row.user;
       // Adresse de courrier : celle de l'annuaire, affichée seulement si
       // elle existe — beaucoup de fiches n'en portent pas.
@@ -27259,10 +27281,19 @@ function parametresDroitsPanels() {
       (!directory.groupDn
         ? '<div class="alert">Aucun groupe n’est configuré sur le serveur (LDAP_GROUP_DN) : tout compte de l’annuaire ' +
           'trouvé peut entrer, et seules les personnes déjà configurées apparaissent ci-dessous.</div>' : '') +
+      // Recherche (18/10/2026) : filtre la liste sans la recharger.
+      '<div class="row" style="gap:8px;margin-bottom:10px">' +
+      '<input id="server-rights-search" type="search" style="flex:1;min-width:240px" autocomplete="off" ' +
+      'placeholder="Rechercher une personne : nom, identifiant ou adresse…" value="' + escapeHtml(serverRightsQuery) + '" />' +
+      (serverRightsQuery.trim()
+        ? '<span class="muted" style="font-size:13px">' + shownRows.length + ' sur ' + allRows.length + '</span>' : '') +
+      '</div>' +
       '<div class="table-wrap"><table><thead><tr>' +
       '<th style="min-width:200px">Personne</th><th style="min-width:180px">Droits</th><th></th><th></th>' +
       '</tr></thead><tbody>' +
-      (rows || '<tr><td colspan="4" class="muted">Personne pour l’instant.</td></tr>') +
+      (rows || '<tr><td colspan="4" class="muted">' + (allRows.length && serverRightsQuery.trim()
+        ? 'Personne ne correspond à « ' + escapeHtml(serverRightsQuery.trim()) + ' ».'
+        : 'Personne pour l’instant.') + '</td></tr>') +
       '</tbody></table></div>' +
       '<div class="row" style="margin-top:12px"><button class="action ghost" data-server-rights-reload="1">' +
       (directory.loading ? 'Actualisation…' : 'Actualiser') + '</button></div>';
@@ -33831,6 +33862,14 @@ document.getElementById('view').addEventListener('input', function (event) {
     return;
   }
 
+  if (target.id === 'server-rights-search') {
+    serverRightsQuery = target.value;
+    render();
+    const input = document.getElementById('server-rights-search');
+    if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
+    return;
+  }
+
   if (target.id === 'payroll-team-search') {
     payrollTeamQuery = target.value;
     setViewHtml(viewPayroll());
@@ -35461,7 +35500,12 @@ document.getElementById('view').addEventListener('click', async function (event)
   if (permissionsButton) {
     const id = permissionsButton.dataset.authPermissions;
     authPermissionsId = authPermissionsId === id ? null : id;
+    // Paramètres › Droits d'accès (18/10/2026) : « modifier » amène
+    // directement aux réglages de la personne, sous la liste, au lieu de
+    // laisser descendre à la main tout le tableau des membres.
+    if (authPermissionsId && tab === 'parametres') setPanelOpen('parametres-droits-role', true);
     render();
+    if (authPermissionsId && tab === 'parametres') scrollPanelIntoView('parametres-droits-role');
     return;
   }
 
