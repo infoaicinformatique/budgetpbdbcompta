@@ -91,6 +91,9 @@ Invariants techniques :
 - **Budget soumis** (14/10/2026) : `budgetFrozen()` est le seul point de
   décision à l'écran ; tout nouveau geste de modification d'un onglet de
   saisie doit être ajouté à `BUDGET_FROZEN_HIDDEN` (ou refusé à la source).
+- **CA ventilé** (18/10/2026) : les comptes suivis Food / Beverage / Event
+  ne sont que la ventilation (`syncCaVentilation`, à chaque rendu) ; ne pas
+  leur rouvrir de saisie à la main, elle serait écrasée.
 - **Multiplicateur** : `rateLink.rate` = nombre (ancien format, fixe en
   coefficient) ou `{ mode, unit, values[12], periods }` ; toujours lire par
   `rateSpecOf` / `rateMonthValues`, jamais `rate` directement.
