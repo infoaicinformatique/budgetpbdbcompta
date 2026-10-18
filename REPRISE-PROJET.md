@@ -77,6 +77,30 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Mateo Borel administrateur désigné (18/10/2026)
+
+Demande d'Alexis : « mettre mateo borel comme administrateur délégué ».
+L'application n'a pas de statut intermédiaire — on est administrateur ou on ne
+l'est pas — et `m.borel` l'était déjà **par sa fiche** (`isAdmin: true` dans
+`/data/droits.json`, tout l'onglet Autorisations, écrit le 17/10/2026). Le seul
+cran au-dessus est la liste `RIGHTS_ADMINS` du `.env` : les personnes qui y
+figurent gardent la main même si le fichier des droits est perdu ou mal
+manipulé, et personne ne peut les déclasser depuis l'écran.
+
+C'est ce qui a été fait : `RIGHTS_ADMINS=a.porrati, n.hovnanian, m.borel`
+(`.env` hors git, sauvegardé dans `/root/sauvegardes-budgetpbdbcompta/` avant
+modification), puis `docker compose up -d`. Le journal du conteneur confirme
+« administrateurs désignés : a.porrati, n.hovnanian, m.borel » ; `/healthz`
+répond `ok` et `/` toujours 401 sans identifiants.
+
+Aucun changement dans `budget-app.html` ni dans le code serveur : seules la
+configuration de production et la documentation (CLAUDE.md, README) bougent.
+Au passage, le README et CLAUDE.md affirmaient encore que les deux désignés
+étaient « les deux seuls » administrateurs ; c'était faux depuis les réglages
+d'octobre (`m.borel`, `f.leguillanton`, `a.vogelweid`, `t.righetti` ont la case
+cochée). La liste vivante est dans `/data/droits.json`, la documentation ne la
+recopie plus.
+
 ### CA : ventilation appliquée automatiquement aux comptes suivis (18/10/2026)
 
 Retour après la livraison du 14/10 (`APP_BUILD` 2026-10-18.1) : « si le

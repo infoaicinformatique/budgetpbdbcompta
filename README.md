@@ -141,12 +141,26 @@ centres de coûts — sont tenus par le serveur, les mêmes sur tous les postes.
   faut au moins un pour le premier réglage. Le compte local de secours
   (`BASIC_AUTH_*`), s'il est configuré, est lui aussi administrateur.
 
-### Désigner les administrateurs (état au 04/10/2026)
+### Désigner les administrateurs (état au 18/10/2026)
 
-Seuls **`a.porrati`** (Alexis Porrati) et **`n.hovnanian`** (Nicolas Hovnanian)
-sont administrateurs, par les deux voies à la fois — fiche cochée
-« Administrateur » **et** `RIGHTS_ADMINS=a.porrati, n.hovnanian` — pour qu'ils ne
-puissent pas se retirer l'accès mutuellement par erreur.
+Trois personnes sont **administrateurs désignés**, par les deux voies à la
+fois — fiche cochée « Administrateur » **et**
+`RIGHTS_ADMINS=a.porrati, n.hovnanian, m.borel` — pour qu'elles ne puissent pas
+se retirer l'accès mutuellement par erreur : **`a.porrati`** (Alexis Porrati),
+**`n.hovnanian`** (Nicolas Hovnanian) et **`m.borel`** (Mateo Borel, ajouté le
+18/10/2026 à la demande d'Alexis).
+
+D'autres fiches peuvent porter la case « Administrateur » sans figurer dans
+`RIGHTS_ADMINS` : elles administrent de la même façon, mais un administrateur
+peut leur retirer ce statut, alors qu'une personne désignée garde la main même
+si sa fiche disparaît. Ajouter quelqu'un à la liste se fait dans `.env` :
+
+```bash
+cd /opt/docker/budgetpbdbcompta
+sudo nano .env          # RIGHTS_ADMINS=a.porrati, n.hovnanian, m.borel
+sudo docker compose up -d
+sudo docker logs --tail 8 budgetpbdbcompta | grep 'administrateurs désignés'
+```
 
 Le **compte local de secours a été retiré** à cette occasion : il n'existe plus
 aucun passe-partout, l'accès passe uniquement par l'annuaire. Si LDAP devient

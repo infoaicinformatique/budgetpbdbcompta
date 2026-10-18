@@ -10,8 +10,13 @@ documentation. Les identifiants JS restent en anglais, en camelCase.
   donc **aucun identifiant de test** et aucun passe-partout (README, « Désigner
   les administrateurs »). Une session n'a pas de quoi ouvrir la page : les
   vérifications se font sur `/healthz` et sur le code 401.
-- Administrateurs : `a.porrati` (Alexis Porrati) et `n.hovnanian` (Nicolas
-  Hovnanian), les deux seuls, par fiche **et** par `RIGHTS_ADMINS`.
+- Administrateurs **désignés** (`RIGHTS_ADMINS`, toujours la main même sans
+  fiche) : `a.porrati` (Alexis Porrati), `n.hovnanian` (Nicolas Hovnanian) et,
+  depuis le 18/10/2026, `m.borel` (Mateo Borel). D'autres fiches portent la
+  case « Administrateur » sans être désignées (`m.borel`, `f.leguillanton`,
+  `a.vogelweid`, `t.righetti` au 18/10/2026) : la liste vivante est dans
+  `/data/droits.json`, pas ici. Il n'existe pas de statut intermédiaire
+  (« administrateur délégué ») : administrateur ou non.
 - Historique, décisions, règles métier : `REPRISE-PROJET.md` (1,9 Mo — ne pas
   le lire en entier, chercher par `grep -n '^##'` ou par date `### `).
 - Déploiement et dépannage : `README.md`.
