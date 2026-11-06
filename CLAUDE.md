@@ -115,6 +115,30 @@ Invariants techniques :
   serveur, via `adoptState`).
 - Style JS : `function () {}`, `const`/`let`, pas de modules ni de build.
 
+## Mode ExApp Nextcloud (`nextcloud-exapp.mjs`, dossier `nextcloud/`)
+
+Depuis le 07/11/2026, la même base de code peut aussi être servie par Nextcloud
+AIO (ExApp AppAPI + HaRP, `https://nc.pbcannes.org/exapps/budgetpbdbcompta/`).
+Ce mode ne s'active que si AppAPI injecte `APP_ID` et `APP_SECRET` : la
+production autonome sur AIServer est inchangée.
+
+- `nextcloud-exapp.mjs` : cycle de vie AppAPI, secret vérifié sur chaque
+  requête, identité et groupes lus auprès de Nextcloud, porte
+  `NC_ALLOWED_GROUPS` (groupe `budgetpbdbcompta`). `server.mjs` appelle
+  `nextcloud.intercept()` en tête de `handle()`, et `authenticate` rend alors
+  l'identité Nextcloud par la voie `ldap` (pas de compte local, pas de mot de
+  passe). Clé des droits : identifiant d'annuaire retrouvé par `ldapFindEntry`
+  (identifiant puis courrier ; Nextcloud peut identifier un utilisateur LDAP
+  par un UUID).
+- `budget-app.html` : `NEXTCLOUD_BASE` (préfixe `/exapps/<id>`, vide en accès
+  direct) est ajouté devant chaque chemin de `serverRequest`. **Toute nouvelle
+  sortie réseau doit passer par `serverRequest`**, sinon elle partirait vers
+  la racine de Nextcloud. Contrôle « ExApp Nextcloud » dans `check-budget-app.mjs`.
+- Image `Dockerfile.exapp` (fichiers servis à ajouter aussi à sa liste et au
+  `.dockerignore`), données et `.env` de production dans le volume de l'ExApp
+  (`/data`). Installation, reprise des données, sauvegarde : `nextcloud/README.md`.
+- Tests : `test/nextcloud-exapp.test.mjs` (dans `npm test`).
+
 ## Règles métier (dictées par Alexis — ne pas les changer sans demande)
 
 - Traçabilité : aucun montant global sur un compte ; chaque euro passe par une

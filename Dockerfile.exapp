@@ -1,0 +1,24 @@
+# Image ExApp Nextcloud de Budget Manager (construite depuis la racine du dépôt) :
+#   docker build -f Dockerfile.exapp -t localhost:5000/budgetpbdbcompta:1.0.0 .
+# Même base et mêmes fichiers que le Dockerfile de production, plus l'intégration
+# Nextcloud. Le démarrage se fait en root (lien /data vers le volume de l'ExApp),
+# puis le serveur passe sous l'utilisateur node (su-exec).
+FROM node:22-alpine
+
+RUN apk add --no-cache su-exec
+
+ENV NODE_ENV=production TZ=Europe/Paris
+
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev && npm cache clean --force
+COPY server.mjs auth-ldap.mjs rights.mjs data.mjs presence.mjs preferences.mjs budget-app.html nextcloud-exapp.mjs ./
+COPY nextcloud/static/ ./nextcloud/static/
+COPY nextcloud/start.sh /start.sh
+RUN chmod +x /start.sh
+
+# AppAPI attend l'état « healthy » ; /healthz ne demande pas d'identité.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=20 \
+  CMD wget -qO- "http://127.0.0.1:${APP_PORT:-3000}/healthz" || exit 1
+
+ENTRYPOINT ["/start.sh"]

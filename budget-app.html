@@ -3476,6 +3476,11 @@ let serverRoles = {};
    mode serveur (fichier ouvert en local, http simple) : l'application
    garde alors son stockage dans le navigateur. */
 let serverData = null;
+/* Servie par Nextcloud (ExApp), la page vit sous /exapps/<id>/ alors que le
+   serveur reçoit ses requêtes à la racine (HaRP retire le préfixe) : les
+   chemins d'API sont donc préfixés côté navigateur. Vide en accès direct. */
+const NEXTCLOUD_BASE = typeof location !== 'undefined'
+  ? ((/^\/exapps\/[^/]+/.exec(location.pathname) || [''])[0]) : '';
 
 (function sealNetwork() {
   const nativeFetch = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null;
@@ -3489,7 +3494,7 @@ let serverData = null;
         options.headers['Content-Type'] = 'application/json';
         options.body = JSON.stringify(body);
       }
-      return nativeFetch(path, options).then(function (response) {
+      return nativeFetch(NEXTCLOUD_BASE + path, options).then(function (response) {
         return response.json().catch(function () { return {}; }).then(function (data) {
           if (!response.ok) {
             const error = new Error(data && data.error ? data.error : 'Erreur ' + response.status);
@@ -3603,7 +3608,7 @@ const DIRECTOR_TAB = 'directeur';
  * échange de correctifs, faute de pouvoir distinguer deux fichiers de
  * même nom. À incrémenter à chaque livraison.
  */
-const APP_BUILD = '2026-10-18.2';
+const APP_BUILD = '2026-11-07.1';
 
 const TAB_GROUPS = [
   { id: 'pilotage', label: 'Pilotage', tabs: [DIRECTOR_TAB, 'objectifs'] },
@@ -11384,7 +11389,8 @@ function renderNavPermissions() {
   const signOutButton = document.getElementById('signout-button');
   if (signOutButton) {
     const user = authEnabled() ? currentUser() : null;
-    signOutButton.hidden = !user;
+    // Dans Nextcloud, la déconnexion se fait depuis Nextcloud.
+    signOutButton.hidden = !user || NEXTCLOUD_BASE !== '';
     if (user) signOutButton.textContent = 'Déconnexion (' + user.username + ')';
   }
   // Les six boutons Administration ont rejoint le panneau latéral du compte

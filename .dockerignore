@@ -8,3 +8,6 @@
 !data.mjs
 !presence.mjs
 !preferences.mjs
+!nextcloud-exapp.mjs
+!nextcloud/static/
+!nextcloud/start.sh

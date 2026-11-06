@@ -37,8 +37,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   ldapConfigFromEnv, describeLdapConfig, publicLdapInfo, ldapAuthenticateEntry, ldapListGroupMembers,
-  LdapUnavailableError,
+  ldapFindEntry, LdapUnavailableError,
 } from './auth-ldap.mjs';
+import * as nextcloud from './nextcloud-exapp.mjs';
 import { createRightsStore, parseAdminList, normalizeAccount, normalizeRoleId, RightsError } from './rights.mjs';
 import { createDataStore, declarationOf, DataError } from './data.mjs';
 import { createPresenceStore, PRESENCE_TTL_MS } from './presence.mjs';
@@ -62,7 +63,9 @@ try {
   console.error('Démarrage refusé — ' + err.message);
   process.exit(1);
 }
-const authEnabled = localAuthEnabled || ldapConfig !== null;
+// En ExApp Nextcloud, l'identité vient toujours de Nextcloud : l'accès n'est
+// jamais libre, même sans compte local ni annuaire.
+const authEnabled = localAuthEnabled || ldapConfig !== null || nextcloud.ENABLED;
 
 const RIGHTS_FILE = process.env.RIGHTS_FILE || join(root, 'data', 'droits.json');
 const RIGHTS_ADMINS = parseAdminList(process.env.RIGHTS_ADMINS);
@@ -156,6 +159,7 @@ function parseBasic(header) {
  * libre) ; `account` est l'identifiant canonique, clé des droits.
  */
 async function authenticate(req) {
+  if (nextcloud.ENABLED) return authenticateNextcloud(req);
   if (!authEnabled) return { status: 0, method: 'none' };
   const header = String(req.headers.authorization || '');
   const given = Buffer.from(header);
@@ -203,6 +207,46 @@ async function authenticate(req) {
   return Object.assign({ status: 0, method: 'ldap' }, identity);
 }
 
+/* ---------------- ExApp Nextcloud ----------------
+
+   On ne se connecte qu'à Nextcloud : ni compte local ni mot de passe
+   d'annuaire (nextcloud-exapp.mjs a déjà vérifié la session et le groupe).
+   Reste à retrouver l'identifiant d'annuaire qui sert de clé aux droits :
+   avec un annuaire LDAP, l'identifiant Nextcloud peut être un UUID. On
+   interroge donc l'annuaire (compte de service) par identifiant puis par
+   courrier ; à défaut, l'identifiant Nextcloud lui-même. La voie reste
+   `ldap` pour l'application : ses droits et son écran n'ont qu'un cas. */
+const accountCache = new Map();
+
+async function resolveAccount(identity) {
+  const cached = accountCache.get(identity.uid);
+  if (cached && cached.expires > Date.now()) return cached.entry;
+  let entry = null;
+  if (ldapConfig) {
+    try {
+      entry = await ldapFindEntry(ldapConfig, identity.uid, identity.mail);
+    } catch (err) {
+      if (!(err instanceof LdapUnavailableError)) throw err;
+      console.error('Annuaire injoignable pour retrouver « ' + identity.uid + ' » : ' + err.message);
+    }
+  }
+  if (!entry) entry = { dn: '', account: normalizeAccount(identity.uid), displayName: '', mail: '' };
+  if (accountCache.size > 1000) accountCache.clear();
+  accountCache.set(identity.uid, { expires: Date.now() + LDAP_CACHE_MS, entry });
+  return entry;
+}
+
+async function authenticateNextcloud(req) {
+  const identity = req.nextcloud;
+  if (!identity) return { status: 401 };
+  const entry = await resolveAccount(identity);
+  if (!entry.account) return { status: 401 };
+  return {
+    status: 0, method: 'ldap', username: entry.account, account: entry.account,
+    displayName: identity.displayName || entry.displayName, mail: identity.mail || entry.mail, dn: entry.dn,
+  };
+}
+
 // Rubrique LDAP de Paramètres. L'application s'interdit tout appel réseau
 // (CSP `connect-src 'none'`) : c'est donc la page elle-même qui apporte ces
 // informations, dans un cookie lisible par le script — et non dans le HTML,
@@ -230,9 +274,13 @@ function authInfoCookie(req, auth) {
     info.dn = '';
     value = encodeURIComponent(JSON.stringify(info));
   }
-  const https = TRUST_PROXY && String(req.headers['x-forwarded-proto'] || '').trim() === 'https';
+  const https = nextcloud.ENABLED ? nextcloud.publicIsHttps()
+    : TRUST_PROXY && String(req.headers['x-forwarded-proto'] || '').trim() === 'https';
+  // Dans Nextcloud, la page vit sous /exapps/<id>/ : le cookie y reste
+  // cantonné, sans se poser sur tout le domaine de Nextcloud.
+  const path = nextcloud.ENABLED ? nextcloud.publicPrefix() + '/' : '/';
   // Pas de HttpOnly : le script DOIT pouvoir le lire, c'est sa raison d'être.
-  return `${AUTH_INFO_COOKIE}=${value}; Path=/; SameSite=Strict` + (https ? '; Secure' : '');
+  return `${AUTH_INFO_COOKIE}=${value}; Path=${path}; SameSite=Strict` + (https ? '; Secure' : '');
 }
 
 /* ---------------- Déconnexion ----------------
@@ -342,7 +390,10 @@ function sameOriginWrite(req) {
   const origin = req.headers.origin;
   if (origin) {
     try {
-      if (new URL(origin).host !== req.headers.host) return false;
+      // Derrière HaRP, l'en-tête Host peut désigner le conteneur : l'origine
+      // légitime est alors celle de Nextcloud.
+      const host = new URL(origin).host;
+      if (host !== req.headers.host && !(nextcloud.ENABLED && host === nextcloud.publicHost())) return false;
     } catch (e) {
       return false;
     }
@@ -587,6 +638,13 @@ async function handlePreferencesApi(req, res, url, auth) {
   }
 }
 
+/* Dans Nextcloud, la déconnexion est celle de Nextcloud (le bouton est
+   masqué) : une ancienne adresse /deconnexion ramène simplement à l'application. */
+function backToApp(res) {
+  res.writeHead(302, { Location: nextcloud.publicPrefix() + '/' });
+  return res.end();
+}
+
 const baseHeaders = {
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
@@ -598,13 +656,21 @@ async function handle(req, res) {
   for (const [k, v] of Object.entries(baseHeaders)) res.setHeader(k, v);
   const url = new URL(req.url, `http://${req.headers.host || PUBLIC_HOST}`);
 
+  if (nextcloud.ENABLED) {
+    // Affichée dans un cadre de la page Nextcloud (même origine) : seul ce
+    // cadre-là est permis, jamais un site tiers.
+    res.removeHeader('X-Frame-Options');
+    res.setHeader('Content-Security-Policy', "frame-ancestors 'self'");
+    if (await nextcloud.intercept(req, res, url.pathname)) return;
+  }
+
   if (url.pathname === '/healthz') {
     res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
     return res.end('ok\n');
   }
 
   if (url.pathname === '/deconnexion' && (req.method === 'GET' || req.method === 'HEAD')) {
-    return handleLogout(req, res);
+    return nextcloud.ENABLED ? backToApp(res) : handleLogout(req, res);
   }
 
   const api = url.pathname === API_PREFIX || url.pathname.startsWith(API_PREFIX + '/');
@@ -626,7 +692,8 @@ async function handle(req, res) {
   const denied = auth.status;
   if (denied) {
     const headers = { 'Content-Type': 'text/plain; charset=utf-8' };
-    if (denied === 401) headers['WWW-Authenticate'] = 'Basic realm="Budget Manager", charset="UTF-8"';
+    // Dans Nextcloud, pas de fenêtre d'identifiants : on ne se connecte qu'à Nextcloud.
+    if (denied === 401 && !nextcloud.ENABLED) headers['WWW-Authenticate'] = 'Basic realm="Budget Manager", charset="UTF-8"';
     if (denied === 429) headers['Retry-After'] = String(FAILURE_WINDOW_MS / 1000);
     res.writeHead(denied, headers);
     return res.end(DENIED[denied]);
@@ -637,7 +704,7 @@ async function handle(req, res) {
   if (preferencesApi) return handlePreferencesApi(req, res, url, auth);
 
   if (url.pathname === '/budget-app.html') {
-    res.writeHead(301, { Location: '/' });
+    res.writeHead(301, { Location: nextcloud.publicPrefix() + '/' });
     return res.end();
   }
   if (url.pathname !== '/' && url.pathname !== '/index.html') {
@@ -697,7 +764,10 @@ loadApp();
 server.listen(PORT, HOST, () => {
   console.log(`Budget Manager en écoute sur http://${HOST}:${PORT}`);
   console.log(`URL publique : https://${PUBLIC_HOST}`);
-  console.log('Authentification Basic : ' + (authEnabled ? 'activée' : 'désactivée'));
+  if (nextcloud.ENABLED) {
+    console.log(`ExApp Nextcloud « ${nextcloud.APP_ID} » : connexion par Nextcloud uniquement (${nextcloud.NEXTCLOUD_URL}), groupes ${process.env.NC_ALLOWED_GROUPS || 'tous'}`);
+  }
+  console.log('Authentification Basic : ' + (authEnabled && !nextcloud.ENABLED ? 'activée' : 'désactivée'));
   console.log('  compte local : ' + (localAuthEnabled ? 'oui' : 'non'));
   console.log('  annuaire LDAP : ' + (ldapConfig ? describeLdapConfig(ldapConfig) : 'non'));
   console.log('Droits : ' + RIGHTS_FILE + ' ; administrateurs désignés : ' + (RIGHTS_ADMINS.join(', ') || 'aucun'));
