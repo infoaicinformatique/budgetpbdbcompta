@@ -104,8 +104,32 @@ mkdir -p /srv/backups/budgetpbdbcompta && (crontab -l 2>/dev/null; echo "15 3 * 
 
 ## 5. Mettre à jour
 
-1. Incrémenter `<version>` et `<image-tag>` dans `nextcloud/appinfo/info.xml`.
-2. Lancer `npm test` et les contrôles de `budget-app.html`, puis commiter et pousser.
+### Automatiquement (recommandé) : l'équivalent de Watchtower
+
+Comme la production autonome, que Watchtower met à jour après chaque fusion dans `main`, la version Nextcloud
+peut se mettre à jour seule. Watchtower lui-même ne convient pas : il recrée le conteneur à partir d'une image
+de registre, alors que celui-ci appartient à Nextcloud (AppAPI) et que l'image est construite sur l'hôte AIO.
+
+`nextcloud/auto-update.sh` fait le même travail, lancé par cron toutes les 5 minutes :
+1. il fait un `git fetch` et ne fait rien d'autre si `main` n'a pas bougé ;
+2. il suspend la mise à jour si le clone du serveur contient des modifications locales ;
+3. il sauvegarde le volume de l'app (`backup-exapp.sh`) — pas de sauvegarde, pas de mise à jour ;
+4. il fait `git pull`, puis `install-aio.sh`. Le build a lieu avant la réinstallation : si le build échoue,
+   l'app reste en place.
+
+Mise en place, une fois, sur l'hôte AIO (en root) — le clone doit suivre `main` :
+```bash
+cd /opt/budgetpbdbcompta && git checkout main && git pull
+(crontab -l 2>/dev/null; echo "*/5 * * * * /opt/budgetpbdbcompta/nextcloud/auto-update.sh >> /var/log/budgetpbdbcompta-autoupdate.log 2>&1") | crontab -
+```
+Une fusion dans `main` met alors à jour **les deux versions** en moins de 5 minutes : AIServer par Watchtower,
+Nextcloud par ce script. Suivi : `tail -f /var/log/budgetpbdbcompta-autoupdate.log`.
+
+### Manuellement
+
+1. Incrémenter `<version>` et `<image-tag>` dans `nextcloud/appinfo/info.xml` pour une version marquante. Pour
+   un correctif courant, ce n'est pas obligatoire : l'image est republiée sous le même numéro.
+2. Lancer `npm test` et les contrôles de `budget-app.html`, puis passer par une PR dans `main`.
 3. Sur le serveur AIO :
    ```bash
    cd /opt/budgetpbdbcompta && git pull && git log --oneline -1

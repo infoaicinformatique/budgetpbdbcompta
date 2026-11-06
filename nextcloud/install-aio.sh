@@ -33,11 +33,15 @@ for f in "$ROOT/nextcloud/appinfo/info.xml" "$ROOT/appinfo/info.xml"; do [ -f "$
 for d in "$ROOT/nextcloud/scripts" "$ROOT/scripts"; do [ -d "$d" ] && SCRIPTS="$d" && break; done
 for f in "${DOCKERFILE:-}" "$ROOT/Dockerfile.exapp" "$ROOT/Dockerfile"; do [ -n "$f" ] && [ -f "$f" ] && DOCKERFILE="$f" && break; done
 
-# Lignes de commentaire ignorees : un exemple de balise dans un commentaire serait lu comme la vraie valeur.
-xml() { grep -v '<!--' "$INFO" | sed -n "s:.*<$1>\(.*\)</$1>.*:\1:p" | head -n1; }
+# Commentaires XML retires (sur une ligne ou sur plusieurs) : un exemple de balise dans un
+# commentaire serait sinon lu comme la vraie valeur.
+xml() { sed -e 's/<!--.*-->//g' -e '/<!--/,/-->/d' "$INFO" | sed -n "s:.*<$1>\(.*\)</$1>.*:\1:p" | head -n1; }
 APPID="$(xml id)"; VERSION="$(xml version)"
 REGISTRY="$(xml registry)"; IMAGE="$(xml image)"; TAG="$(xml image-tag)"
 REF="${REGISTRY:+$REGISTRY/}$IMAGE:$TAG"
+if [ -z "$APPID" ] || [ -z "$IMAGE" ] || [ -z "$TAG" ]; then
+  echo "info.xml incomplet (<id>, <image>, <image-tag>) : $INFO" >&2; exit 1
+fi
 
 step() { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 ok()   { printf '    [OK] %s\n' "$*"; }
