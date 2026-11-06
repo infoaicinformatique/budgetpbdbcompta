@@ -1,0 +1,50 @@
+<?xml version="1.0"?>
+<info xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:noNamespaceSchemaLocation="https://apps.nextcloud.com/schema/apps/info.xsd">
+    <id>budgetpbdbcompta</id>
+    <name>Budget Manager</name>
+    <summary>Construction budgetaire Palm Beach Cannes</summary>
+    <description><![CDATA[Budget Manager integre a Nextcloud : connexion unique Nextcloud, acces reserve
+au groupe Nextcloud defini dans NC_ALLOWED_GROUPS, droits fins conserves (droits.json),
+donnees isolees dans le volume de l'ExApp.]]></description>
+    <version>1.0.0</version>
+    <licence>AGPL-3.0-or-later</licence>
+    <author mail="aicinformatique06110@gmail.com">AIC Informatique</author>
+    <namespace>BudgetPbdbCompta</namespace>
+    <category>office</category>
+    <bugs>https://github.com/infoaicinformatique/budgetpbdbcompta/issues</bugs>
+    <dependencies>
+        <nextcloud min-version="32" max-version="36"/>
+    </dependencies>
+    <external-app>
+        <docker-install>
+            <!-- Registre local de l'hote AIO, cree par nextcloud/install-aio.sh -->
+            <registry>localhost:5000</registry>
+            <image>budgetpbdbcompta</image>
+            <image-tag>1.0.0</image-tag>
+        </docker-install>
+        <environment-variables>
+            <variable>
+                <name>NC_ALLOWED_GROUPS</name>
+                <display-name>Groupes Nextcloud autorises</display-name>
+                <description>Identifiants de groupes Nextcloud qui ouvrent l'application (separes par des virgules). Les droits fins restent ceux de Parametres > Droits d'acces.</description>
+                <default>budgetpbdbcompta</default>
+            </variable>
+            <variable>
+                <name>IDENTITY_CACHE_SECONDS</name>
+                <display-name>Delai de prise en compte d'un changement de groupe (s)</display-name>
+                <description>Duree de cache de l'identite Nextcloud</description>
+                <default>60</default>
+            </variable>
+        </environment-variables>
+        <routes>
+            <!-- Pas de client machine : tout passe par une session Nextcloud ; le groupe est verifie par l'application -->
+            <route>
+                <url>^/.*</url>
+                <verb>GET,POST,PUT,DELETE</verb>
+                <access_level>USER</access_level>
+                <headers_to_exclude>[]</headers_to_exclude>
+            </route>
+        </routes>
+    </external-app>
+</info>

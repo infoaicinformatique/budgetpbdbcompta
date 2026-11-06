@@ -77,6 +77,48 @@ Cinq onglets :
   (le format ZIP autorise le stockage brut : on écrit l'archive à la main avec
   les CRC32 calculés, donc pas de SheetJS à charger).
 
+### Budget Manager dans Nextcloud (ExApp AIO), connexion par Nextcloud (07/11/2026)
+
+Demande : servir Budget Manager comme application de Nextcloud (instance AIO,
+nc.pbcannes.org), accès réservé au groupe Nextcloud `budgetpbdbcompta`, en
+gardant les droits actuels de chacun. La version autonome (production sur
+AIServer, docker compose, Basic + annuaire) est **inchangée** : tout le mode
+Nextcloud ne s'active que si AppAPI injecte `APP_ID` et `APP_SECRET`.
+
+- `nextcloud-exapp.mjs` (nouveau) : cycle de vie AppAPI (`/heartbeat`,
+  `/init`, `/enabled` qui pose l'entrée de menu et le script du cadre),
+  vérification du secret AppAPI sur chaque requête, identité et groupes lus
+  auprès de Nextcloud au nom de la personne (`/cloud/user`, cache 60 s),
+  porte fermée hors de `NC_ALLOWED_GROUPS` (page « Accès refusé »).
+- `server.mjs` : en ExApp, `authenticate` rend l'identité Nextcloud par la
+  voie `ldap` (l'application n'a qu'un cas) ; ni compte local ni mot de passe
+  d'annuaire. La clé des droits reste l'identifiant d'annuaire : retrouvé par
+  `ldapFindEntry` (compte de service, par identifiant puis par courrier, car
+  Nextcloud peut identifier un utilisateur LDAP par un UUID), sinon
+  l'identifiant Nextcloud. Cookie `bm-auth` cantonné à `/exapps/<id>/`,
+  cadre permis à Nextcloud seul (`frame-ancestors 'self'`, plus de
+  `X-Frame-Options: DENY` en ExApp), pas de fenêtre Basic sur un 401,
+  origine Nextcloud admise par `sameOriginWrite` (derrière HaRP, `Host` peut
+  désigner le conteneur), `/deconnexion` ramène à l'application.
+- `budget-app.html` (2026-11-07.1) : `NEXTCLOUD_BASE` (préfixe `/exapps/<id>`
+  déduit de l'adresse, vide en accès direct) ajouté devant chaque chemin de
+  `serverRequest`, seule sortie réseau — le SAS et sa liste blanche sont
+  inchangés. « Déconnexion » masqué dans Nextcloud.
+- Déploiement : `Dockerfile.exapp`, `nextcloud/` (info.xml, `start.sh` qui
+  relie `/data` au volume de l'ExApp et relit `/data/.env` et
+  `/data/ldap-ca.pem` repris de la production, `install-aio.sh`, scripts de
+  contrôle et de sauvegarde, README). `.dockerignore` : liste blanche
+  complétée.
+- Contrôles : `test/nextcloud-exapp.test.mjs` (11 tests, serveur réel face à
+  un faux Nextcloud : secret, groupe, droits, cookie, origine, cycle de vie,
+  cache) et trois tests `ldapFindEntry` dans `test/auth-ldap.test.mjs`
+  (`npm test` : 78). `check-budget-app.mjs` : contrôle « ExApp Nextcloud »
+  (préfixe sur toute requête, bouton masqué) et contrôle « Déconnexion »
+  ajusté ; 572 contrôles sans écart.
+- Remarque : sous Windows, `check:app` ne se lance pas (`import()` d'un chemin
+  `c:`) et sept contrôles CSS échouent sur une copie en CRLF ; c'était déjà le
+  cas sur `main`. Vérifier sur une copie en fins de ligne LF (comme le serveur).
+
 ### « Retirer l'accès » refusé : « origine non vérifiée » (18/10/2026)
 
 Signalement : quand Mateo Borel clique sur « retirer l'accès », la page

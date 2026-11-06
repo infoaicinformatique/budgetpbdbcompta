@@ -197,6 +197,40 @@ export async function ldapListGroupMembers(config, ClientClass) {
   });
 }
 
+/**
+ * Retrouve une personne de l'annuaire SANS mot de passe, au nom du compte de
+ * service : d'abord par identifiant (filtre LDAP_SEARCH_FILTER), puis par
+ * adresse de courrier. Sert en ExApp Nextcloud, où l'identité vient de
+ * Nextcloud : son identifiant interne d'un utilisateur LDAP peut être un UUID
+ * plutôt que le sAMAccountName qui sert de clé aux droits. Renvoie
+ * `{ dn, account, displayName, mail }` ou `null` (inconnu, ou ambigu).
+ */
+export async function ldapFindEntry(config, login, mail, ClientClass) {
+  if (!config.searchBase || !config.bindDn) return null;
+  return withDirectory(config, ClientClass, async function (client) {
+    await bindService(client, config);
+    const filters = [];
+    if (typeof login === 'string' && USERNAME_PATTERN.test(login)) {
+      filters.push(fill(config.searchFilter, escapeFilterValue(login)));
+    }
+    if (typeof mail === 'string' && /^[^\s@]+@[^\s@]+$/.test(mail)) {
+      const m = escapeFilterValue(mail);
+      filters.push('(|(mail=' + m + ')(userPrincipalName=' + m + '))');
+    }
+    for (const filter of filters) {
+      const { searchEntries } = await client.search(config.searchBase, {
+        scope: 'sub', filter: filter, attributes: ENTRY_ATTRIBUTES, sizeLimit: 2,
+      });
+      // Plusieurs résultats : on refuse plutôt que de choisir au hasard.
+      if (searchEntries.length === 1) {
+        const entry = searchEntries[0];
+        return { dn: entry.dn, account: accountOf(entry, ''), displayName: displayNameOf(entry), mail: mailOf(entry) };
+      }
+    }
+    return null;
+  });
+}
+
 /** Ouvre une connexion sur la première URL joignable et y exécute `fn(client)`. */
 async function withDirectory(config, ClientClass, fn) {
   const LdapClient = ClientClass || Client;

@@ -1562,12 +1562,23 @@ check('Adresses de courrier : lues dans l’annuaire, affichées, jamais conserv
   }
 });
 
+check('ExApp Nextcloud : chemins d’API préfixés par /exapps/<id>, déconnexion masquée (07/11/2026)', () => {
+  // Servie par Nextcloud, la page vit sous /exapps/<id>/ alors que le serveur reçoit
+  // ses requêtes à la racine : sans préfixe, chaque appel d’API partirait vers Nextcloud.
+  assert.ok(appSource.includes('/^\\/exapps\\/[^/]+/.exec(location.pathname)'), 'NEXTCLOUD_BASE doit être déduit de /exapps/<id>');
+  assert.ok(/nativeFetch\(NEXTCLOUD_BASE \+ path, options\)/.test(appSource), 'serverRequest doit préfixer ses chemins par NEXTCLOUD_BASE');
+  assert.ok(!/nativeFetch\(path,/.test(appSource), 'plus aucun appel d’API sans préfixe');
+  assert.ok(/signOutButton\.hidden = !user \|\| NEXTCLOUD_BASE !== '';/.test(appSource), 'dans Nextcloud, « Déconnexion » est masqué');
+});
+
 check('Déconnexion : identifié par l’annuaire, le bouton passe par /deconnexion (28/09/2026)', () => {
   // Basic n'a pas de déconnexion : seul un 401 du serveur fait oublier au
   // navigateur ses identifiants. Le bouton doit donc y mener, et rester visible.
   assert.ok(/if \(serverSession\) \{\s*location\.href = '\/deconnexion';/.test(appSource),
     'en mode serveur, « Déconnexion » doit mener à /deconnexion');
-  assert.ok(/signOutButton\.hidden = !user;/.test(appSource), 'le bouton reste visible pour une personne de l’annuaire');
+  // Seule exception (07/11/2026) : servie par Nextcloud, la page masque le bouton,
+  // la déconnexion étant celle de Nextcloud (voir le contrôle « ExApp Nextcloud »).
+  assert.ok(/signOutButton\.hidden = !user( \|\| NEXTCLOUD_BASE !== '')?;/.test(appSource), 'le bouton reste visible pour une personne de l’annuaire');
   const serverSource = readFileSync(join(root, '..', 'server.mjs'), 'utf8');
   assert.ok(/url\.pathname === '\/deconnexion'[\s\S]{0,120}handleLogout\(req, res\)/.test(serverSource),
     'server.mjs doit traiter /deconnexion avant le contrôle d’accès');

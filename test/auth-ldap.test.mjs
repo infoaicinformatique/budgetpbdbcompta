@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { InvalidCredentialsError } from 'ldapts';
 import {
   ldapConfigFromEnv, ldapAuthenticate, escapeFilterValue, LdapUnavailableError, publicLdapInfo,
-  ldapAuthenticateEntry, ldapListGroupMembers,
+  ldapAuthenticateEntry, ldapListGroupMembers, ldapFindEntry,
 } from '../auth-ldap.mjs';
 
 const PEOPLE = 'ou=people,dc=pb,dc=fr';
@@ -245,4 +245,52 @@ test('ldapListGroupMembers : membres du groupe, même ceux qu’on ne peut pas l
     { dn: USER, account: 'prenom.nom', displayName: 'Prénom Nom', mail: 'prenom.nom@pb.org' },
   ], 'triés par nom affiché, à défaut par identifiant puis DN');
   assert.deepEqual(await ldapListGroupMembers(search(), AdClient), [], 'sans groupe configuré : liste vide');
+});
+
+/* ExApp Nextcloud : retrouver l'identifiant d'annuaire sans mot de passe. */
+function findDirectory() {
+  const people = [
+    { dn: 'cn=Alexis Porrati,' + PEOPLE, sAMAccountName: 'A.Porrati', displayName: 'Alexis Porrati', mail: 'a.porrati@pb.fr' },
+    { dn: 'cn=Homonyme 1,' + PEOPLE, sAMAccountName: 'h.un', mail: 'commun@pb.fr' },
+    { dn: 'cn=Homonyme 2,' + PEOPLE, sAMAccountName: 'h.deux', mail: 'commun@pb.fr' },
+  ];
+  const log = [];
+  class FakeClient {
+    constructor() { this.boundAs = null; }
+    async bind(dn, password) {
+      if (dn !== SERVICE || password !== 'svcpass') throw new InvalidCredentialsError('bad', 49);
+      this.boundAs = dn;
+    }
+    async search(base, opts) {
+      log.push([opts.filter, this.boundAs]);
+      const sam = /sAMAccountName=([^)]*)\)/.exec(opts.filter);
+      const mail = /\(mail=([^)]*)\)/.exec(opts.filter);
+      const hits = people.filter((p) => (sam && p.sAMAccountName.toLowerCase() === sam[1].toLowerCase())
+        || (!sam && mail && p.mail === mail[1]));
+      return { searchEntries: hits };
+    }
+    async unbind() {}
+  }
+  return { FakeClient, log };
+}
+
+test('ldapFindEntry : par identifiant, puis par courrier, au nom du compte de service', async () => {
+  const { FakeClient, log } = findDirectory();
+  const byLogin = await ldapFindEntry(search(), 'a.porrati', '', FakeClient);
+  assert.equal(byLogin.account, 'a.porrati');
+  assert.equal(byLogin.displayName, 'Alexis Porrati');
+  // Identifiant Nextcloud illisible (UUID d'un utilisateur LDAP) : le courrier le retrouve.
+  const byMail = await ldapFindEntry(search(), '3f2a9c1e-uuid', 'a.porrati@pb.fr', FakeClient);
+  assert.equal(byMail.account, 'a.porrati');
+  assert.ok(log.every((entry) => entry[1] === SERVICE));
+});
+
+test('ldapFindEntry : inconnu ou ambigu = null, jamais une personne au hasard', async () => {
+  const { FakeClient } = findDirectory();
+  assert.equal(await ldapFindEntry(search(), 'inconnu', 'personne@pb.fr', FakeClient), null);
+  assert.equal(await ldapFindEntry(search(), 'zz', 'commun@pb.fr', FakeClient), null);
+});
+
+test('ldapFindEntry : sans recherche ni compte de service, rien à chercher', async () => {
+  assert.equal(await ldapFindEntry(direct(), 'a.porrati', 'a.porrati@pb.fr', findDirectory().FakeClient), null);
 });
