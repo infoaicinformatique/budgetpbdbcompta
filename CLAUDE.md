@@ -138,6 +138,9 @@ production autonome sur AIServer est inchangée.
   `.dockerignore`), données et `.env` de production dans le volume de l'ExApp
   (`/data`). Installation, reprise des données, sauvegarde : `nextcloud/README.md`.
 - Tests : `test/nextcloud-exapp.test.mjs` (dans `npm test`).
+- Mise à jour : `nextcloud/auto-update.sh` (cron toutes les 5 min sur l'hôte AIO) reconstruit et
+  réenregistre l'ExApp après chaque fusion dans `main`, comme Watchtower pour AIServer : une fusion met
+  donc à jour **les deux versions**.
 
 ## Règles métier (dictées par Alexis — ne pas les changer sans demande)
 
