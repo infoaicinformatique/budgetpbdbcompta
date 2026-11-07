@@ -12,7 +12,7 @@
     "start:public": "HOST=0.0.0.0 node server.mjs",
     "dev": "npm --prefix excel-grid run dev",
     "verify": "npm --prefix excel-grid run verify",
-    "test": "node --test test/auth-ldap.test.mjs test/rights.test.mjs test/data.test.mjs test/presence.test.mjs test/preferences.test.mjs test/server.test.mjs test/nextcloud-exapp.test.mjs"
+    "test": "node --test test/auth-ldap.test.mjs test/rights.test.mjs test/data.test.mjs test/presence.test.mjs test/preferences.test.mjs test/server.test.mjs test/nextcloud-exapp.test.mjs test/dockerfile.test.mjs"
   },
   "dependencies": {
     "ldapts": "^9.2.0"
